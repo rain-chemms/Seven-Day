@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://bip820y7bpvyl"
-path="res://.godot/imported/missile_launcher.glb-a255476345ef5dad57490db9b52f9252.scn"
+uid="uid://yx8q0k53sodb"
+path="res://.godot/imported/barracks.glb-a56f5247c1c342176703b3d08e3fcbf0.scn"
 
 [deps]
 
-source_file="res://gameAsset/models/missile_launcher/missile_launcher.glb"
-dest_files=["res://.godot/imported/missile_launcher.glb-a255476345ef5dad57490db9b52f9252.scn"]
+source_file="res://gameAsset/models/barracks/barracks.glb"
+dest_files=["res://.godot/imported/barracks.glb-a56f5247c1c342176703b3d08e3fcbf0.scn"]
 
 [params]
 

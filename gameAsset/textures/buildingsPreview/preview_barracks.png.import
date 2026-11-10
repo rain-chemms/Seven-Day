@@ -2,24 +2,20 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dchtg7xp1wkn0"
-path.s3tc="res://.godot/imported/missile_launcher_missile_launcher_atlas.png-2ba1b336ea13a01fcd4ec2e9dc12b07f.s3tc.ctex"
+uid="uid://ml4o01auaec2"
+path="res://.godot/imported/preview_barracks.png-fd5c85dbd6b3f93a36b2934f582eb73b.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
-"vram_texture": true
-}
-generator_parameters={
-"md5": "602068eb67d4a1a66fe42fd6969e3daa"
+"vram_texture": false
 }
 
 [deps]
 
-source_file="res://gameAsset/models/missile_launcher/missile_launcher_missile_launcher_atlas.png"
-dest_files=["res://.godot/imported/missile_launcher_missile_launcher_atlas.png-2ba1b336ea13a01fcd4ec2e9dc12b07f.s3tc.ctex"]
+source_file="res://gameAsset/textures/buildingsPreview/preview_barracks.png"
+dest_files=["res://.godot/imported/preview_barracks.png-fd5c85dbd6b3f93a36b2934f582eb73b.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
@@ -27,7 +23,7 @@ compress/rdo_quality_loss=0.0
 compress/hdr_compression=1
 compress/normal_map=0
 compress/channel_pack=0
-mipmaps/generate=true
+mipmaps/generate=false
 mipmaps/limit=-1
 roughness/mode=0
 roughness/src_normal=""
@@ -41,4 +37,4 @@ process/normal_map_invert_y=false
 process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
-detect_3d/compress_to=0
+detect_3d/compress_to=1
