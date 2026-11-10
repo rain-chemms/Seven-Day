@@ -1,0 +1,18 @@
+[gd_resource type="ShaderMaterial" format=3 uid="uid://c6svgntxeqks4"]
+
+[ext_resource type="Material" uid="uid://c12ilq4kr1p1g" path="res://gameAsset/materials/fighter/toon_outline.tres" id="1_2n42a"]
+[ext_resource type="Shader" uid="uid://cdhi21bgwl3pt" path="res://gameAsset/shaders/toon_type/toon_cel.gdshader" id="2_dnjqj"]
+[ext_resource type="Texture2D" uid="uid://d36rrvti8kmbo" path="res://gameAsset/models/fighter/fighter_fighter_atlas.png" id="3_cmfd3"]
+
+[resource]
+render_priority = 0
+next_pass = ExtResource("1_2n42a")
+shader = ExtResource("2_dnjqj")
+shader_parameter/albedo_tex = ExtResource("3_cmfd3")
+shader_parameter/albedo_tint = Color(1, 1, 1, 1)
+shader_parameter/band_low = 0.42
+shader_parameter/band_high = 0.72
+shader_parameter/level_dark = 0.62
+shader_parameter/level_mid = 0.82
+shader_parameter/level_lit = 1.0
+shader_parameter/ambient_boost = 0.18

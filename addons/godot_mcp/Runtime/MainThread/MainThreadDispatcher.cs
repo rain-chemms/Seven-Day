@@ -1,0 +1,487 @@
+/*
+┌──────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)             │
+│  Repository: GitHub (https://github.com/IvanMurzak/Godot-MCP)    │
+│  Copyright (c) 2026 Ivan Murzak                                  │
+│  Licensed under the Apache License, Version 2.0.                 │
+│  See the LICENSE file in the project root for more information.  │
+└──────────────────────────────────────────────────────────────────┘
+*/
+#nullable enable
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+using com.IvanMurzak.Godot.MCP.Connection;
+using Godot;
+
+namespace com.IvanMurzak.Godot.MCP.MainThreadDispatch
+{
+    /// <summary>
+    /// A Godot <see cref="Node"/> that drains a queue of <see cref="Action"/>s on the editor
+    /// main thread, once per <see cref="Node._Process"/> tick. This is the Godot analog of
+    /// Unity's <c>MainThreadDispatcher</c> (an <c>Update()</c>-pumped <c>MonoBehaviour</c>):
+    /// Godot has no <c>EditorApplication.update</c> static hook, so the work is pumped from a
+    /// long-lived editor Node added to the <see cref="SceneTree"/> by <c>GodotMcpPlugin</c>.
+    ///
+    /// Off-thread callers enqueue via <see cref="Enqueue"/>; the action runs on the next
+    /// <see cref="_Process"/> tick on the main thread. <see cref="GodotMainThread"/> wraps this
+    /// with a <see cref="System.Threading.Tasks.TaskCompletionSource{T}"/> so callers get the
+    /// delegate's value/exception back as an awaitable, matching the ergonomics of Unity's
+    /// <c>MainThread.Instance.Run</c>.
+    /// </summary>
+    public partial class MainThreadDispatcher : Node
+    {
+        /// <summary>
+        /// The managed thread id captured when this dispatcher entered the tree. Godot calls
+        /// <see cref="_EnterTree"/> on the engine main thread, so this is the main-thread id.
+        /// Defaults to a sentinel (<c>-1</c>, which no real <see cref="Thread.ManagedThreadId"/>
+        /// takes) until <see cref="_EnterTree"/> runs, so a pre-boot caller is correctly treated
+        /// as off-main-thread rather than capturing a wrong id from whatever thread first touches
+        /// this type.
+        /// </summary>
+        public static int MainThreadId { get; private set; } = -1;
+
+        /// <summary>True when the calling thread is the captured Godot main thread.</summary>
+        public static bool IsMainThread => Thread.CurrentThread.ManagedThreadId == MainThreadId;
+
+        /// <summary>A queued action and, for awaited work, how to fail its awaiter instead of running it (see <see cref="RefusalReason"/>).</summary>
+        readonly struct WorkItem
+        {
+            public WorkItem(Action run, Action<Exception>? refuse)
+            {
+                Run = run;
+                Refuse = refuse;
+            }
+
+            public readonly Action Run;
+            public readonly Action<Exception>? Refuse;
+        }
+
+        static readonly ConcurrentQueue<WorkItem> _actions = new ConcurrentQueue<WorkItem>();
+
+        static volatile string? _refusalReason;
+
+        /// <summary>
+        /// When set, no queued work runs any more: awaited work (<see cref="Enqueue(Action, Action{Exception})"/> with a
+        /// refusal callback) is refused with an <see cref="InvalidOperationException"/> carrying this message, at enqueue or
+        /// when drained, and fire-and-forget work is dropped (its callers expect a live dispatcher, not a throw). The editor sets it when the C# assembly starts unloading, so a tool body queued
+        /// by a call in flight never runs inside the unload and its blocked caller returns at once. Null = run as usual.
+        /// </summary>
+        public static string? RefusalReason
+        {
+            get => _refusalReason;
+            set => _refusalReason = value;
+        }
+
+        /// <summary>
+        /// True while queued AWAITED work runs on the main thread (a tool call's body, through <c>GodotMainThread</c>): code
+        /// reached from it is nested inside that call.
+        /// </summary>
+        public static bool IsRunningAwaitedWork => _runningAwaited > 0;
+
+        static int _runningAwaited;
+
+        /// <summary>
+        /// The currently-installed dispatcher, or <c>null</c> when none is in the tree. <b>Marked
+        /// <c>volatile</c></b> so its store/load is ordered relative to the <see cref="_hasEverEntered"/>
+        /// volatile publish: <see cref="_EnterTree"/> writes <c>_instance = this</c> BEFORE
+        /// <c>_hasEverEntered = true</c>, and a background-thread <see cref="Enqueue"/> reads <c>_hasEverEntered</c>
+        /// then <c>_instance</c>. Without the acquire/release semantics a reader could observe a fresh
+        /// <c>_hasEverEntered==true</c> against a stale <c>_instance==null</c> at the trailing boot edge and throw
+        /// even though a live dispatcher is already in the tree — reintroducing the issue #169 symptom one frame
+        /// later. The two volatile accesses keep the "is there an instance / has one ever entered" decision
+        /// reading a coherent pair.
+        /// </summary>
+        static volatile MainThreadDispatcher? _instance;
+
+        /// <summary>
+        /// Test-only override of "a dispatcher is currently in the tree." Production NEVER sets this — it is
+        /// always <c>false</c> there and <see cref="InstancePresent"/> falls through to the real
+        /// <see cref="_instance"/>. The unit tests cannot construct a Godot <see cref="Node"/> (it faults the
+        /// binary-less host), so they flip this flag via the simulate-* seams to model boot/teardown edges
+        /// while keeping the throw-vs-buffer decision in <see cref="Enqueue"/> byte-for-byte identical to prod.
+        /// </summary>
+        static bool _instancePresentForTests;
+
+        /// <summary>
+        /// True when a dispatcher is currently installed and able to drain the queue. In production this is
+        /// just "<see cref="_instance"/> is non-null"; the test-only <see cref="_instancePresentForTests"/>
+        /// lets the Node-less unit tests model the same condition without a live instance.
+        /// </summary>
+        static bool InstancePresent => _instance != null || _instancePresentForTests;
+
+        /// <summary>
+        /// True once ANY dispatcher instance has entered the tree at least once. Combined with
+        /// <see cref="_instance"/> being <c>null</c>, this disambiguates the two reasons no dispatcher is
+        /// currently installed: <c>false</c> = "never booted yet" (the early-boot window — buffer and drain
+        /// when one arrives), <c>true</c> = "booted then torn down" (plugin unloaded / between editor reloads —
+        /// fail fast so a pending awaiter does not hang on a queue nothing will drain). Written only on the
+        /// editor main thread (<see cref="_EnterTree"/>); read in the otherwise-thread-safe <see cref="Enqueue"/>.
+        /// Both this flag and <see cref="_instance"/> are <c>volatile</c>, so the <see cref="_EnterTree"/> publish
+        /// order (write <c>_instance</c> first, then this flag) is preserved for a concurrent reader: a fresh
+        /// <c>_hasEverEntered==true</c> can never be paired with a stale <c>_instance==null</c>, so a live, just-booted
+        /// dispatcher is never mistaken for a torn-down one (which would wrongly throw). The remaining boot-edge
+        /// straddle is benign and resolves the same either way: it either buffers an action a live dispatcher will
+        /// drain next tick, or it throws only on a genuinely torn-down dispatcher — both correct.
+        /// </summary>
+        static volatile bool _hasEverEntered;
+
+        /// <summary>
+        /// Per-tick callbacks invoked on every main-thread <see cref="_Process"/> tick (after the queued
+        /// actions are drained), each receiving the frame <c>delta</c> in seconds. Unlike a dock Control's
+        /// own <see cref="Node._Process"/> — which Godot skips while the dock tab is hidden — the dispatcher
+        /// is a non-dock editor Node added under the <c>EditorPlugin</c>, so it ticks for the whole plugin
+        /// lifetime regardless of which dock tab is active. This is what makes the connection panel's periodic
+        /// status re-sync reliable even when its tab is not the foreground one (issue #42). Thread-affinity:
+        /// register/unregister + invocation all happen on the editor main thread.
+        /// </summary>
+        static event Action<double>? _onProcess;
+
+        /// <summary>
+        /// Register a per-frame <paramref name="callback"/> (receives the frame delta in seconds) invoked on
+        /// every main-thread tick. Returns an <see cref="IDisposable"/> that unregisters it — store it and
+        /// dispose on teardown so a freed subscriber stops being ticked. Safe to call before any dispatcher
+        /// is in the tree (the callback simply starts firing once one is).
+        /// </summary>
+        public static IDisposable RegisterProcess(Action<double> callback)
+        {
+            if (callback == null)
+                throw new ArgumentNullException(nameof(callback));
+
+            _onProcess += callback;
+            return new ProcessRegistration(callback);
+        }
+
+        sealed class ProcessRegistration : IDisposable
+        {
+            Action<double>? _callback;
+            public ProcessRegistration(Action<double> callback) => _callback = callback;
+
+            public void Dispose()
+            {
+                if (_callback == null)
+                    return;
+                _onProcess -= _callback;
+                _callback = null;
+            }
+        }
+
+        /// <summary>The currently-installed dispatcher instance, or <c>null</c> when none is in the tree.</summary>
+        public static MainThreadDispatcher? Instance => _instance;
+
+        /// <summary>
+        /// Queue an action to run on the next main-thread <see cref="_Process"/> tick. Thread-safe.
+        /// <para>
+        /// <b>Early-boot buffering (issue #169).</b> The dispatcher Node is added to the tree via
+        /// <c>CallDeferred(AddChild)</c>, so it lands a frame after <c>GodotMcpRuntime.Build()</c> returns.
+        /// A tool handler that marshals to the main thread in that window — before any dispatcher has yet
+        /// entered the tree — must NOT throw: the action is buffered in the static queue and drained the
+        /// moment the first dispatcher enters the tree (<see cref="_EnterTree"/>), with FIFO ordering
+        /// preserved. This turns the install race into a deferred run.
+        /// </para>
+        /// <para>
+        /// <b>Post-teardown fail-fast.</b> Once a dispatcher HAS booted and then been removed (plugin
+        /// unloaded / between editor reloads), nothing remains to drain the queue, so a pending awaiter
+        /// would hang forever. In that state (<see cref="_instance"/> is <c>null</c> but
+        /// <see cref="_hasEverEntered"/> is <c>true</c>) <see cref="Enqueue"/> throws
+        /// <see cref="InvalidOperationException"/> immediately, exactly as before.
+        /// </para>
+        /// </summary>
+        public static void Enqueue(Action action) => Enqueue(action, null);
+
+        /// <summary>
+        /// <see cref="Enqueue(Action)"/> for work someone awaits: <paramref name="refuse"/> fails the awaiter instead of
+        /// running <paramref name="action"/> once <see cref="RefusalReason"/> is set.
+        /// </summary>
+        public static void Enqueue(Action action, Action<Exception>? refuse)
+        {
+            if (action == null)
+                throw new ArgumentNullException(nameof(action));
+
+            if (_refusalReason is { } reason)
+            {
+                if (refuse != null)
+                    throw new InvalidOperationException(reason);
+                return;
+            }
+
+            // No dispatcher currently in the tree: buffer if one has never booted yet (it will arrive and
+            // drain — the #169 early-boot window), but fail fast if one booted and was torn down (nothing
+            // left to drain → the awaiter would hang). With a live instance, this is the normal enqueue path.
+            if (!InstancePresent && _hasEverEntered)
+                throw new InvalidOperationException(
+                    $"No {nameof(MainThreadDispatcher)} is in the tree; cannot enqueue main-thread work. " +
+                    "The dispatcher booted and was removed (plugin unloaded / editor reload); nothing would " +
+                    "drain the queue. It is added by GodotMcpPlugin._EnterTree and removed on _ExitTree.");
+
+            _actions.Enqueue(new WorkItem(action, refuse));
+        }
+
+        /// <summary>
+        /// Run fire-and-forget main-thread work (typically a UI update raised from a SignalR / thread-pool callback):
+        /// inline when already on the main thread, otherwise queued (buffered before the first dispatcher boots).
+        /// Once the dispatcher has been torn down (plugin teardown: the dispatcher is a child of the plugin, so it
+        /// leaves the tree first) an off-thread call is DROPPED: nothing would drain it, and touching a Godot Node
+        /// off the main thread is illegal ("Caller thread can't call this function"). The dispatch never throws (an
+        /// inline action's own exception still reaches the caller).
+        /// </summary>
+        public static void RunOnMainThread(Action action)
+        {
+            if (IsMainThread)
+            {
+                action();
+                return;
+            }
+
+            try { Enqueue(action); }
+            catch (InvalidOperationException) { } // the dispatcher was torn down: nothing will drain it, drop
+        }
+
+        public override void _EnterTree()
+        {
+            MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            _instance = this;
+            _hasEverEntered = true;
+
+            // Drain anything buffered before this first dispatcher arrived (issue #169: tool handlers that
+            // marshalled to the main thread in the Build()-returns → deferred-AddChild window). Running it
+            // here — on the engine main thread, which is where _EnterTree fires — flushes the early-boot
+            // backlog as soon as the dispatcher enters the tree rather than waiting for the first _Process
+            // tick, and preserves FIFO order. (An action enqueued AFTER this loop observes the queue empty
+            // is not lost — it is picked up on the next _Process tick, which runs exactly once per frame.)
+            DrainQueue();
+        }
+
+        public override void _ExitTree()
+        {
+            if (ReferenceEquals(_instance, this))
+                _instance = null;
+
+            // Drain anything left so pending awaiters do not hang forever, but BOUND the drain to the
+            // items already queued at this moment (see DrainQueueBounded). The unbounded DrainQueue used
+            // on the normal _Process tick keeps draining until the queue empties; at teardown that is a
+            // liveness hazard, because an action body (or, before GodotMainThread switched to
+            // RunContinuationsAsynchronously, an awaiter continuation) that re-enqueues could make the
+            // loop run forever while the editor is mid-teardown. Snapshotting the count first means a body
+            // that re-enqueues lands its work in the queue but does NOT extend this drain — the teardown
+            // terminates deterministically. (NOTE: a drained body still runs its FULL body here and may
+            // touch the SceneTree while the editor tears the dispatcher down; callers must not assume the
+            // tree is fully alive in work that could still be pending at _ExitTree time.)
+            DrainQueueBounded();
+
+            // End any hold episode: the static outlives this node (plugin disable/enable), and a stale start time
+            // would make the next hold warn at once (or never, after a warning already fired).
+            _heldSinceMs = -1;
+        }
+
+        public override void _Process(double delta)
+        {
+            DrainQueue();
+
+            // Fire per-tick subscribers (e.g. the connection panel's status re-sync). Snapshot the delegate
+            // so a callback that unregisters mid-invocation does not perturb the running invocation list.
+            var onProcess = _onProcess;
+            if (onProcess != null)
+            {
+                try
+                {
+                    onProcess(delta);
+                }
+                catch (Exception ex)
+                {
+                    GodotMcpLog.Error($"[Godot-MCP] MainThreadDispatcher per-tick callback threw: {ex}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Optional editor-supplied predicate: while it returns <c>true</c> queued actions wait for a later tick. Godot's
+        /// modal <c>ProgressDialog</c> runs <c>Main::iteration()</c> from inside the operation it reports (registering
+        /// script classes, importing, saving ...), so <see cref="_Process"/> also ticks in that nested frame; an MCP call
+        /// run there re-enters the editor mid-operation (on Godot 4.4: "Task 'update_scripts_classes' already exists",
+        /// then the editor stops answering). <c>GodotMcpPlugin</c> sets it to "the progress dialog is showing". Main thread only.
+        /// </summary>
+        public static Func<bool>? HoldWhile { get; set; }
+
+        /// <summary>A hold longer than this is logged once: a progress task that never ends would stall every MCP call.</summary>
+        const long LongHoldMs = 30_000;
+
+        static bool _draining;
+        static long _heldSinceMs = -1;
+
+        /// <summary>
+        /// Run the queued actions in order, unless the editor holds them (<see cref="HoldWhile"/>) or this is a nested
+        /// tick inside a running action (an action whose editor call shows progress pumps one); held actions run on the
+        /// next ordinary tick.
+        /// </summary>
+        static void DrainQueue()
+        {
+            if (_draining)
+                return;
+            _draining = true;
+            try
+            {
+                while (!_actions.IsEmpty && (_refusalReason != null || !IsHeld()) && _actions.TryDequeue(out var item))
+                    InvokeDrained(item);
+            }
+            finally
+            {
+                _draining = false;
+            }
+        }
+
+        static bool IsHeld()
+        {
+            bool held;
+            try
+            {
+                held = HoldWhile?.Invoke() == true;
+            }
+            catch (Exception ex)
+            {
+                // A broken predicate must not stall every MCP call: log it and drain as before.
+                GodotMcpLog.Error($"[Godot-MCP] MainThreadDispatcher hold check threw; ignoring it: {ex}");
+                HoldWhile = null;
+                held = false;
+            }
+            if (!held)
+            {
+                _heldSinceMs = -1;
+            }
+            else if (_heldSinceMs < 0)
+            {
+                _heldSinceMs = System.Environment.TickCount64;
+            }
+            else if (_heldSinceMs != long.MaxValue && System.Environment.TickCount64 - _heldSinceMs > LongHoldMs)
+            {
+                _heldSinceMs = long.MaxValue;
+                GodotMcpLog.Warning($"[Godot-MCP] MCP calls have waited over {LongHoldMs / 1000} s for the editor's progress dialog to close");
+            }
+            return held;
+        }
+
+        /// <summary>
+        /// Drain only the actions already queued at the moment this is called — at most a snapshot of the
+        /// current <see cref="ConcurrentQueue{T}.Count"/> — so a drained body that re-enqueues cannot make
+        /// the loop run unboundedly. Used at <see cref="_ExitTree"/> teardown, where the unbounded
+        /// <see cref="DrainQueue"/> would be a liveness hazard against re-enqueueing work while the editor is
+        /// tearing the dispatcher down. Re-enqueued items are simply left in the queue (no live dispatcher
+        /// will drain them afterward; <see cref="Enqueue"/> then fails fast for any later caller because
+        /// <see cref="_hasEverEntered"/> is set). FIFO order of the snapshot is preserved.
+        /// </summary>
+        static void DrainQueueBounded()
+        {
+            // Snapshot the bound BEFORE dequeuing. ConcurrentQueue.Count is a point-in-time read; capturing it
+            // first caps the iteration at the items present now, so any item a drained body re-enqueues is not
+            // pulled into this same drain pass.
+            var budget = _actions.Count;
+            for (var i = 0; i < budget && _actions.TryDequeue(out var item); i++)
+            {
+                InvokeDrained(item);
+            }
+        }
+
+        /// <summary>
+        /// Settle what is queued now (main thread): with <see cref="RefusalReason"/> set that fails every queued awaiter
+        /// without running its body. Used by the editor's reload drain, which waits on the main thread for the tool
+        /// calls whose bodies it just refused.
+        /// </summary>
+        public static void FlushQueued() => DrainQueueBounded();
+
+        /// <summary>
+        /// Invoke one drained action, swallowing and surfacing any throw without killing the pump loop. The
+        /// action is responsible for routing its own exceptions back to its awaiter (GodotMainThread wraps the
+        /// body in a try/catch). A throw here would only mean a bug in the action wrapper itself.
+        /// </summary>
+        static void InvokeDrained(WorkItem item)
+        {
+            try
+            {
+                if (_refusalReason is { } reason)
+                    item.Refuse?.Invoke(new InvalidOperationException(reason));
+                else if (item.Refuse == null)
+                    item.Run.Invoke();
+                else
+                {
+                    _runningAwaited++;
+                    try { item.Run.Invoke(); }
+                    finally { _runningAwaited--; }
+                }
+            }
+            catch (Exception ex)
+            {
+                GodotMcpLog.Error($"[Godot-MCP] MainThreadDispatcher action threw: {ex}");
+            }
+        }
+
+        // ---------------------------------------------------------------------------------------------------
+        // Pure-managed test seams (issue #169). The buffer/drain lifecycle lives entirely in the static
+        // members above (_actions / _instance / _hasEverEntered / Enqueue / DrainQueue); none of it needs a
+        // live Godot Node. But _EnterTree / _ExitTree — the only members that mutate _instance — are Node
+        // lifecycle callbacks, and constructing a MainThreadDispatcher (a Godot Node) faults the binary-less
+        // xUnit host with AccessViolationException. These seams let the unit tests model the boot/teardown
+        // edges and drain the queue WITHOUT instantiating a Node, so the early-boot-buffering path is
+        // CI-unit-testable. They are internal (same-assembly only) and never referenced by production code.
+
+        /// <summary>Test-only: number of actions currently buffered (not yet drained).</summary>
+        internal static int PendingActionCountForTests => _actions.Count;
+
+        /// <summary>Test-only: true once any dispatcher has entered the tree (the fail-fast vs buffer edge).</summary>
+        internal static bool HasEverEnteredForTests => _hasEverEntered;
+
+        /// <summary>
+        /// Test-only: model the first dispatcher entering the tree WITHOUT constructing a Godot Node.
+        /// Mirrors <see cref="_EnterTree"/>'s pure-managed effects (capture the main-thread id, mark an
+        /// instance present and ever-entered, drain the early-boot backlog) but never touches native Godot.
+        /// </summary>
+        internal static void SimulateInstanceEnteredForTests()
+        {
+            // Presence is faked via _instancePresentForTests — a real instance is a Node we cannot construct
+            // in the binary-less host. _instance stays null here; production sets it from the real _EnterTree.
+            MainThreadId = Thread.CurrentThread.ManagedThreadId;
+            _hasEverEntered = true;
+            _instancePresentForTests = true;
+            DrainQueue();
+        }
+
+        /// <summary>
+        /// Test-only: model the dispatcher leaving the tree (teardown). Mirrors <see cref="_ExitTree"/>'s
+        /// pure-managed effects — mark no instance present and drain anything still pending via the SAME
+        /// bounded drain teardown uses — so that the unit tests exercise the real termination guarantee and a
+        /// subsequent <see cref="Enqueue"/> takes the post-teardown fail-fast branch.
+        /// </summary>
+        internal static void SimulateInstanceExitedForTests()
+        {
+            _instancePresentForTests = false;
+            DrainQueueBounded();
+        }
+
+        /// <summary>Test-only: drain the buffered actions on the calling thread (no Node, no tick).</summary>
+        internal static void DrainForTests() => DrainQueue();
+
+        /// <summary>
+        /// Test-only: model the bounded teardown drain (<see cref="_ExitTree"/>) directly, WITHOUT also
+        /// flipping the instance-present flag. Lets a test assert the snapshot-and-bound termination guarantee
+        /// against a re-enqueueing body in isolation from the fail-fast lifecycle transition.
+        /// </summary>
+        internal static void DrainBoundedForTests() => DrainQueueBounded();
+
+        /// <summary>
+        /// Test-only: reset ALL static lifecycle state to its pre-boot defaults. Static state outlives a
+        /// single xUnit test, so a test exercising the boot/teardown edges MUST call this first to start from
+        /// a clean "never booted, nothing buffered" baseline.
+        /// </summary>
+        internal static void ResetForTests()
+        {
+            while (_actions.TryDequeue(out _)) { }
+            _instance = null;
+            _instancePresentForTests = false;
+            _hasEverEntered = false;
+            _refusalReason = null;
+            _runningAwaited = 0;
+            HoldWhile = null;
+            _heldSinceMs = -1;
+            MainThreadId = -1;
+        }
+    }
+}

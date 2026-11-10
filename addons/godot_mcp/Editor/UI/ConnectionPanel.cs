@@ -1,0 +1,1591 @@
+/*
+┌──────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)             │
+│  Repository: GitHub (https://github.com/IvanMurzak/Godot-MCP)    │
+│  Copyright (c) 2026 Ivan Murzak                                  │
+│  Licensed under the Apache License, Version 2.0.                 │
+│  See the LICENSE file in the project root for more information.  │
+└──────────────────────────────────────────────────────────────────┘
+*/
+#if TOOLS
+#nullable enable
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using com.IvanMurzak.Godot.MCP.Connection;
+using com.IvanMurzak.Godot.MCP.MainThreadDispatch;
+using Godot;
+using AuthState = com.IvanMurzak.McpPlugin.AuthState;
+using McpClientData = com.IvanMurzak.McpPlugin.Common.Model.McpClientData;
+using McpServerConsts = com.IvanMurzak.McpPlugin.Common.Consts.MCP.Server;
+
+namespace com.IvanMurzak.Godot.MCP.UI
+{
+    /// <summary>
+    /// The connection section of the Godot-MCP editor dock — the Godot <see cref="Control"/> analog of
+    /// Unity-MCP's <c>MainWindowEditor.Connection</c>, ported 1:1 to Unity-MCP's vertical TIMELINE design. A
+    /// <see cref="VBoxContainer"/> the <see cref="GodotMcpDock"/> drops into its Body, wired to a
+    /// <see cref="GodotMcpConnection"/>. It renders, top to bottom:
+    /// <list type="bullet">
+    ///   <item>A "Connection" header (20px bold) with a right-aligned Custom|Cloud segmented control.</item>
+    ///   <item>Amber alert panels — "Authorization Required" (Cloud, no token) / "Connection Required"
+    ///   (ready but not connected).</item>
+    ///   <item>A vertical timeline of three points — Godot, MCP server, AI agent — each with a status circle
+    ///   (filled green online / green ring connecting / filled orange disconnected) in a 20px indicator column
+    ///   joined by a 2px connecting line, an underlined 13px label, and the point's content.</item>
+    ///   <item>The Godot point: a right-aligned Connect/Disconnect button.</item>
+    ///   <item>The MCP-server point: a frame-group card holding the Server URL (Custom mode) / cloud auth row
+    ///   (Cloud mode) and the Authorization segmented + masked token field.</item>
+    ///   <item>The AI-agent point: a status circle + label (no connecting line below).</item>
+    /// </list>
+    ///
+    /// <para>
+    /// Editor-only (<c>#if TOOLS</c>): it builds live Godot UI <see cref="Node"/>s, so it is verified via
+    /// the headless Godot smoke (<c>test.md</c> Suite 3), not the plain-xUnit host. ALL presentation
+    /// decisions (status reduction, label/button text, circle state, segmented index/selection, alert
+    /// visibility, URL validation) live in the pure-managed <see cref="ConnectionPanelView"/> /
+    /// <see cref="SegmentedControlModel"/> / <see cref="DockTheme"/> so they ARE unit-tested.
+    /// </para>
+    /// </summary>
+    [Tool]
+    public partial class ConnectionPanel : VBoxContainer
+    {
+        // = null! suppresses CS8618 for the Godot-required parameterless ctor (below): Godot's hot-reload
+        // re-instantiates [Tool] scripts via new() and cannot set this readonly field; the parameterized
+        // ctor assigns the real value for the live-wired instance.
+        readonly GodotMcpConnection _connection = null!;
+
+        /// <summary>
+        /// Raised after the user changes any connection setting that affects the RESOLVED MCP-client URL or token
+        /// (server URL, Custom/Cloud mode, auth option, generated/cloud token). The dock subscribes so the AI-agent
+        /// section re-evaluates its config state and shows the "Reconfiguration Required" alert + the Reconfigure
+        /// button when the written agent config no longer matches the new URL — mirroring Unity, where each
+        /// configurator re-checks IsReconfigureNeeded() whenever the connection settings change.
+        /// </summary>
+        public event System.Action? ConfigChanged;
+
+        // Header: Custom|Cloud mode segmented control.
+        Control _modeSegmented = null!;
+        static readonly IReadOnlyList<string> ModeOptions = new[] { ModeLabelCustom, ModeLabelCloud };
+        const string ModeLabelCustom = "Custom";
+        const string ModeLabelCloud = "Cloud";
+
+        // Alert panels (amber WarningFrame): shown/hidden per ConnectionPanelView rules.
+        PanelContainer _authRequiredAlert = null!;
+        PanelContainer _connectionRequiredAlert = null!;
+
+        // Timeline circles (re-styled in place per status change).
+        Panel _timelineGodotCircle = null!;
+        Panel _timelineServerCircle = null!;
+        Panel _timelineAgentCircle = null!;
+
+        // The MCP-server timeline point (circle + server card), captured so the WHOLE point can be hidden in
+        // Cloud mode. The Unity gold reference shows NO "MCP server" point in Cloud — just the Godot connection
+        // status + the AI-agent point (the cloud token/Authorize row lives above the timeline, under the header).
+        // The MCP-server point (Server URL, Start, Transport, Authorization) is Custom-mode only.
+        HBoxContainer _serverTimelinePoint = null!;
+
+        // Godot point: the underlined "Godot" label (now carries the status — "Godot" / "Godot: connecting..." /
+        // "Godot: connected") + a single Connect/Stop toggle button.
+        PanelContainer _godotUnderline = null!;
+        Button _connectButton = null!;
+
+        // MCP-server point content.
+        Label _agentLabel = null!;
+
+        // AI-agent point: the muted summary suffix is _agentLabel above; this VBox holds the live per-agent rows
+        // (one per connected MCP client / AI session), rebuilt by RefreshAgents from the connection's ActiveAgents.
+        VBoxContainer _agentListContainer = null!;
+
+        // Custom-mode server-URL + auth.
+        VBoxContainer _customHostRow = null!;
+        LineEdit _hostField = null!;
+        Label _overrideNote = null!;
+
+        // Custom-mode authorization segmented (none|oauth|token) + masked token + Generate.
+        Control _authSegmented = null!;
+        VBoxContainer _tokenRow = null!;
+        LineEdit _tokenField = null!;
+        Button _generateTokenButton = null!;
+        static readonly IReadOnlyList<string> AuthOptions = new[] { AuthLabelNone, AuthLabelOauth, AuthLabelToken };
+        const string AuthLabelNone = "none";
+        const string AuthLabelOauth = "oauth";
+        const string AuthLabelToken = "token";
+
+        // Cloud-mode auth section (device-code flow). The DEFAULT view (mcp-authorize e1 · PR 5) shows a sign-in /
+        // account-state chip + the derived per-project connection URL + Authorize/Revoke — NOT a raw token field.
+        // The masked token field is hidden behind the "Advanced: use access token" opt-in (device flow / machine
+        // store from PR 2 mean the token is no longer user-entered on the golden path).
+        VBoxContainer _cloudAuthRow = null!;
+        Label _cloudSignInStatus = null!;
+        Label _cloudConnectionUrl = null!;
+        DockCheckBox _cloudAdvancedToggle = null!;
+        VBoxContainer _cloudTokenLine = null!;
+        LineEdit _cloudTokenField = null!;
+        Button _authorizeButton = null!;
+        Button _revokeButton = null!;
+        Label _cloudAuthStatus = null!;
+
+        // F6 sign-out confirmation ("signs out all tools on this machine") shown before the machine-wide
+        // sign-out revokes every stored credential family and deletes the shared machine store.
+        ConfirmationDialog _signOutConfirm = null!;
+
+        // "Advanced: use access token" opt-in for the Cloud path (default OFF → the raw masked token field is
+        // hidden; the sign-in chip conveys the account state instead).
+        bool _useCloudAccessToken;
+
+        // The in-flight device-auth flow (null when none has run). Recreated per Authorize click.
+        GodotDeviceAuthFlow? _deviceAuthFlow;
+
+        // The D4 assisted-sign-in ladder (oauth-client-error-hygiene e2, 02 §C5): both the automatic
+        // sign-in-required verdict and the manual Authorize click funnel into StartAuthorizeFlow through
+        // it. The auto entry is once-per-editor-session + carousel-guarded (its default session store is a
+        // process env var, so the gate survives the collectible-ALC hot-reload); the manual entry is never
+        // gated. = null! for the Godot-required parameterless ctor (see _connection above).
+        readonly GodotAssistedSignIn _assistedSignIn = null!;
+
+        // The handler subscribed to _deviceAuthFlow.OnStateChanged, stored in a field (not an inline lambda)
+        // so it can be deterministically removed before the flow is replaced or the panel is freed. An inline
+        // `+= state => ...` was a genuine per-Authorize-click leak: every click built a NEW flow whose
+        // OnStateChanged event rooted a fresh closure (capturing that flow + this panel) that was never `-=`d,
+        // so each prior flow instance accumulated. Same remove-before-replace discipline as GodotMcpDock's
+        // _configChangedHandler / the SerialDisposable swaps in GodotMcpConnection.
+        System.Action<GodotDeviceAuthFlowState>? _authFlowStateChangedHandler;
+
+        // Local-server hosting (Custom mode): the Start/Stop button on the MCP-server timeline point, the
+        // "Local server: …" status line, and the manager that downloads + runs the pinned shared
+        // gamedev-mcp-server binary. The server circle (_timelineServerCircle) reflects this LOCAL server's
+        // lifecycle (Stopped/Starting/Running/Stopping) — the connection's own hub state is shown by the
+        // Godot circle. This is the #1 "server-less client" carve-out reversal: the plugin can now HOST its
+        // own server, not only connect to an external/cloud one.
+        // = null! suppresses CS8618 for the Godot-required parameterless ctor (see _connection above).
+        readonly GodotMcpServerManager _serverManager = null!;
+        VBoxContainer _localServerRow = null!;
+        Label _serverStatusLabel = null!;
+        Button _serverStartStopButton = null!;
+
+        // The last server status the panel rendered, so re-seeds/re-applies are idempotent and quiet.
+        GodotMcpServerStatus? _renderedServerStatus;
+
+        // The last status the panel actually RENDERED, so the periodic re-sync only re-applies (and traces)
+        // when the live status has drifted from what is on screen — keeping the per-tick check cheap and quiet.
+        ConnectionStatus? _renderedStatus;
+
+        // DEV-ONLY status override (set by the dev-control bridge's inject endpoint). When non-null the
+        // periodic re-sync (SyncFromConnection) is short-circuited so an injected status STICKS on screen
+        // instead of being reverted to the live connection status within ~0.5s. Cleared by
+        // DevClearStatusOverride, after which the panel re-converges to the real live status. This field is
+        // ONLY ever written by the DevControlServer (env-gated, 127.0.0.1) — it has no effect in a shipped
+        // addon (the server never starts unless GODOT_MCP_DEV_CONTROL=1).
+        ConnectionStatus? _devStatusOverride;
+
+        // DEV-ONLY connected-agent override (set by the dev-control bridge's inject endpoint). When non-null,
+        // RefreshAgents renders THIS list instead of the live connection's ActiveAgents — so the smoke harness / a
+        // terminal can paint a fake AI-agent session list onto the live dock without a real external MCP client.
+        // Cleared by DevClearAgentsOverride. ONLY ever written by the env-gated, 127.0.0.1 DevControlServer.
+        IReadOnlyList<McpClientData>? _devAgentsOverride;
+
+        // Accumulated frame delta for the periodic re-sync. Reset each time it crosses the interval so the
+        // re-sync runs at a steady ~ResyncIntervalSeconds cadence regardless of frame rate.
+        double _resyncAccumulator;
+
+        // Registration of the re-sync into the main-thread dispatcher's per-tick hook (disposed in _ExitTree).
+        // The dispatcher — NOT this dock Control — is the pump, because Godot skips a dock Control's own
+        // _Process while its tab is hidden, whereas the dispatcher (a non-dock editor Node) always ticks.
+        System.IDisposable? _resyncRegistration;
+
+        /// <summary>Re-sync cadence: re-read + re-apply the live connection status this often (seconds).</summary>
+        const double ResyncIntervalSeconds = 0.5;
+
+        /// <summary>
+        /// Vertical offset (px) that drops a timeline status dot down so its CENTER lines up with the middle of the
+        /// underlined point label next to it. Derived from the label/dot sizes — roughly
+        /// (underlined-label line height − dot diameter) / 2 — so it tracks <see cref="DockTheme.FontSizeUnderlinedLabel"/>
+        /// (a bigger label needs a larger drop). Tuned live against the dock.
+        /// </summary>
+        const int TimelineCircleTopOffset = 13;
+
+        /// <summary>
+        /// Parameterless ctor for Godot's C# hot-reload bridge (godotengine/godot#51626): a "Build Project"
+        /// reload re-instantiates every live [Tool] script via its parameterless ctor, so a parameter-only
+        /// class throws MissingMemberException ("does not define a parameterless constructor") and breaks the
+        /// reload (it crashed the editor before this was added). The reloaded plugin re-adds a FRESH, wired
+        /// dock (see GodotMcpPlugin's reload re-entry), so this re-instantiated shell is a discarded orphan —
+        /// it only has to exist without faulting.
+        /// </summary>
+        public ConnectionPanel() { }
+
+        public ConnectionPanel(GodotMcpConnection connection)
+        {
+            _connection = connection;
+
+            // The local-server manager downloads + runs the shared gamedev-mcp-server binary on demand,
+            // pinned to GodotMcpServerView.ServerVersion (NOT the addon version — the two diverge). Owned
+            // by the panel for the panel's lifetime; its StatusChanged is (un)subscribed in
+            // _EnterTree/_ExitTree alongside the connection events (same #42/#56 reparent discipline).
+            _serverManager = new GodotMcpServerManager(
+                GD.Print,
+                GD.PushWarning,
+                GD.PushError);
+
+            _assistedSignIn = new GodotAssistedSignIn(StartAuthorizeFlow);
+
+            Name = "ConnectionPanel";
+            BuildUi();
+
+            // Initial mode visibility (the cheap, idempotent part). The connection wiring — event
+            // subscription, status seed, and re-sync registration — is done in _EnterTree so that a
+            // dock-layout reload (which DETACHES then RE-ATTACHES this Control, firing _ExitTree → _EnterTree)
+            // re-arms all of it. Doing it only in the ctor was the residual #42 bug: the editor reparents the
+            // dock during "Loading docks" right as the handshake completes, the original wiring was torn down
+            // by _ExitTree, and nothing re-seeded the re-attached panel — so it stayed on "Connecting…".
+            ApplyModeVisibility(_connection.Config.ActiveMode);
+        }
+
+        /// <summary>
+        /// (Re)arm the panel's connection wiring every time it enters the editor tree — including the
+        /// re-attach the editor performs during dock-layout restore. Subscribes to the connection events,
+        /// re-seeds the label from the LIVE status (the event only fires on CHANGE, so a status reached while
+        /// detached must be pulled in here), and registers the dispatcher-pumped periodic re-sync. Pairs with
+        /// <see cref="_ExitTree"/>, which tears all three down. Idempotent against duplicate subscription:
+        /// the handlers are removed first.
+        /// </summary>
+        public override void _EnterTree()
+        {
+            // Hot-reload creates an unwired shell before the plugin replaces the dock.
+            if (_connection == null)
+                return;
+            // Remove-then-add so a re-entry never double-subscribes. The connection marshals these events onto
+            // the editor main thread, so the handlers may touch Controls directly.
+            _connection.ConnectionStatusChanged -= OnConnectionStatusChanged;
+            _connection.ConnectionStatusChanged += OnConnectionStatusChanged;
+            _connection.AuthorizationRejected -= OnAuthorizationRejected;
+            _connection.AuthorizationRejected += OnAuthorizationRejected;
+
+            // The account provider's OWN credential state (oauth-client-error-hygiene e2, 02 §C3): the
+            // panel no longer relies solely on the connection's authorization-rejected signal (whose
+            // semantics stay "try to recover") — a terminal sign-in-required verdict and the SignedIn
+            // recovery edge both reach the panel from here. These fire on arbitrary threads; the handlers
+            // marshal onto the editor main thread themselves.
+            _connection.Account.SignInRequired -= OnAccountSignInRequired;
+            _connection.Account.SignInRequired += OnAccountSignInRequired;
+            _connection.Account.AuthStateChanged -= OnAccountAuthStateChanged;
+            _connection.Account.AuthStateChanged += OnAccountAuthStateChanged;
+
+            // Same remove-then-add discipline for the local-server manager's status stream (#42/#56): the
+            // manager outlives the panel's tree membership, so a status reached while the panel was detached
+            // (e.g. the ~5s startup verification completing during a dock reparent) is pulled in by the
+            // re-seed below. The manager marshals its raises onto the editor main thread, so the handler may
+            // touch Controls directly.
+            _serverManager.StatusChanged -= OnServerStatusChanged;
+            _serverManager.StatusChanged += OnServerStatusChanged;
+
+            // Same remove-then-add discipline for the connection's live AI-agent stream: an agent that connected
+            // while the panel was detached (e.g. during a dock reparent) is pulled in by the RefreshAgents re-seed
+            // below. AgentsUpdated is marshalled onto the editor main thread, so the handler may touch Controls.
+            _connection.AgentsUpdated -= OnAgentsUpdated;
+            _connection.AgentsUpdated += OnAgentsUpdated;
+
+            // Re-seed from the LIVE status: a status reached while the panel was detached (e.g. Connected
+            // arriving during the dock reparent) is pulled onto the label here, since the change event was
+            // missed. This is the load-bearing #42 fix — the panel ALWAYS converges to the real status on
+            // (re)entry, independent of event-delivery timing.
+            ApplyStatus(_connection.ConnectionStatus);
+            ApplyServerStatus(_serverManager.Status);
+            ApplyModeVisibility(_connection.Config.ActiveMode);
+            RefreshAgents();
+
+            // Re-seed the sign-in-required state too: a terminal verdict that fired while the panel was
+            // detached (dock reparent) was missed by the event, so pull it from the provider's live State —
+            // the same #42 convergence discipline as the status re-seed above. Goes through the once-gated
+            // ladder, so a reparent never re-opens the browser once the session's auto-open is spent.
+            if (_connection.Account.AuthState == AuthState.SignInRequired)
+                ApplySignInRequired();
+
+            // Belt-and-suspenders convergence: register a per-frame re-sync into the main-thread dispatcher's
+            // tick hook. Every ResyncIntervalSeconds it re-reads the LIVE connection status off the connection
+            // (NOT off the event) and re-applies it if the label has drifted. Reaches the real status within
+            // ~0.5s even if a push was lost to the off-thread marshalling / de-dup boundary, and covers a
+            // Reconnect settling on the new connection's status. The dispatcher pumps it (not this Control's
+            // own _Process), so it ticks even when the dock tab is hidden.
+            _resyncAccumulator = 0.0;
+            _resyncRegistration?.Dispose();
+            _resyncRegistration = MainThreadDispatcher.RegisterProcess(OnResyncTick);
+        }
+
+        void BuildUi()
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            AddThemeConstantOverride("separation", 8);
+
+            // --- Header row: "Connection" (20px bold) + right-aligned Custom|Cloud segmented ---
+            var headerRow = new HBoxContainer { Name = "HeaderRow" };
+            AddChild(headerRow);
+
+            var headerLabel = new Label { Name = "HeaderLabel", Text = "Connection" };
+            DockStyle.ApplyHeader(headerLabel);
+            headerRow.AddChild(headerLabel);
+
+            headerRow.AddChild(new Control { Name = "HeaderSpacer", SizeFlagsHorizontal = SizeFlags.ExpandFill });
+
+            _modeSegmented = DockStyle.SegmentedControl(
+                "ModeSegmented",
+                ModeOptions,
+                SegmentedControlModel.IndexOf(ModeOptions, ModeLabelForMode(_connection.Config.ConnectionMode)),
+                OnModeSegmentSelected);
+            headerRow.AddChild(_modeSegmented);
+
+            // --- Alert panels (shown/hidden per ConnectionPanelView rules) ---
+            _authRequiredAlert = DockStyle.AlertPanel(
+                "AuthRequiredAlert",
+                ConnectionPanelView.AuthorizationRequiredTitle,
+                ConnectionPanelView.AuthorizationRequiredMessage,
+                ConnectionPanelView.AuthorizeButtonText,
+                OnAuthorizeButtonPressed);
+            AddChild(_authRequiredAlert);
+
+            _connectionRequiredAlert = DockStyle.AlertPanel(
+                "ConnectionRequiredAlert",
+                ConnectionPanelView.ConnectionRequiredTitle,
+                ConnectionPanelView.ConnectionRequiredMessage,
+                ConnectionPanelView.ButtonTextConnect,
+                () => _connection.Connect());
+            AddChild(_connectionRequiredAlert);
+
+            // --- Cloud-mode auth row (masked token + Revoke/Authorize), DIRECTLY under the header and ABOVE
+            //     the timeline (Unity gold reference). Shown only in Cloud mode; in Cloud the MCP-server
+            //     timeline point is hidden entirely, so this row must NOT live inside the server card. ---
+            BuildCloudAuthRow();
+
+            // --- Vertical timeline: Godot -> MCP server -> AI agent ---
+            var timeline = new VBoxContainer { Name = "Timeline" };
+            timeline.AddThemeConstantOverride("separation", 0);
+            AddChild(timeline);
+
+            // Point 1 — Godot: a single underlined label that CARRIES the status + a right-aligned Connect/Stop toggle.
+            _timelineGodotCircle = DockStyle.TimelineCircle("GodotCircle", ConnectionPanelView.TimelinePointState.Disconnected);
+
+            _connectButton = new Button { Name = "ConnectButton" };
+            DockStyle.ConnectPressed(_connectButton, this, MethodName.OnConnectButtonPressed);
+
+            var godotContent = new HBoxContainer { Name = "GodotContent", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            godotContent.AddThemeConstantOverride("separation", 8);
+            // The underlined "Godot" label now folds in the status (ApplyStatus retitles it to
+            // "Godot: connecting..." / "Godot: connected") — there is no longer a separate status suffix label.
+            _godotUnderline = DockStyle.UnderlinedSubLabel("GodotLabel", ConnectionPanelView.GodotLineLabel(ConnectionStatus.Disconnected));
+            godotContent.AddChild(_godotUnderline);
+            godotContent.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+            godotContent.AddChild(_connectButton);
+            timeline.AddChild(MakeTimelinePoint(_timelineGodotCircle, godotContent, isLast: false, circleTopOffset: TimelineCircleTopOffset));
+
+            // Point 2 — MCP server: a frame-group card with the server URL / cloud auth + authorization rows.
+            _timelineServerCircle = DockStyle.TimelineCircle("ServerCircle", ConnectionPanelView.TimelinePointState.Disconnected);
+            var serverContent = new VBoxContainer { Name = "ServerContent", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            serverContent.AddThemeConstantOverride("separation", 4);
+            // The "MCP server" label now lives INSIDE the card (see BuildServerCard) so it's framed by the rounded
+            // rectangle, like Unity's frame-mcp-server. The server circle is offset down to line up with it.
+            BuildServerCard(serverContent);
+            _serverTimelinePoint = MakeTimelinePoint(_timelineServerCircle, serverContent, isLast: false,
+                circleTopOffset: DockTheme.CardMargin + DockTheme.CardContentPadding + TimelineCircleTopOffset);
+            timeline.AddChild(_serverTimelinePoint);
+
+            // Point 3 — AI agent: circle + a header row (underlined label + live session summary) over a list of
+            // connected agents (Copilot / Claude / …), driven by the connection's AgentsUpdated. LAST point (no line).
+            _timelineAgentCircle = DockStyle.TimelineCircle("AgentCircle", ConnectionPanelView.TimelinePointState.Disconnected);
+
+            var agentContent = new VBoxContainer { Name = "AgentContent", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            agentContent.AddThemeConstantOverride("separation", 2);
+
+            // Header row: underlined "AI agent" + the muted "(N connected)" / "(connects on demand)" summary.
+            var agentHeader = new HBoxContainer { Name = "AgentHeader", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            agentHeader.AddThemeConstantOverride("separation", 6);
+            agentHeader.Alignment = BoxContainer.AlignmentMode.Begin;
+            agentHeader.AddChild(DockStyle.UnderlinedSubLabel("AgentLabel", "AI agent"));
+            _agentLabel = new Label { Name = "AgentSuffix", Text = AgentSessionView.Summary(0), SizeFlagsVertical = SizeFlags.ShrinkCenter };
+            DockStyle.ApplyDescription(_agentLabel);
+            _agentLabel.AutowrapMode = TextServer.AutowrapMode.Off; // single line — never wrap to one char per line in the narrow row
+            agentHeader.AddChild(_agentLabel);
+            agentContent.AddChild(agentHeader);
+
+            // Live connected-agent rows (one per active MCP client session). Rebuilt by RefreshAgents; hidden empty.
+            _agentListContainer = new VBoxContainer { Name = "AgentList", SizeFlagsHorizontal = SizeFlags.ExpandFill, Visible = false };
+            _agentListContainer.AddThemeConstantOverride("separation", 0);
+            agentContent.AddChild(_agentListContainer);
+
+            timeline.AddChild(MakeTimelinePoint(_timelineAgentCircle, agentContent, isLast: true, circleTopOffset: TimelineCircleTopOffset));
+        }
+
+        /// <summary>
+        /// Build the MCP-server point's frame-group card content: the Custom-mode server-URL row + override
+        /// note, the Cloud-mode device-auth row, and the Authorization (none|required) segmented + masked
+        /// token field. These are reparented INTO a styled card by <see cref="DockStyle.Card"/>.
+        /// </summary>
+        void BuildServerCard(VBoxContainer parent)
+        {
+            var card = new VBoxContainer { Name = "ServerCardContent", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            card.AddThemeConstantOverride("separation", 4);
+
+            // The "MCP server" underlined title — INSIDE the framed card (Unity's frame-mcp-server includes it).
+            card.AddChild(DockStyle.UnderlinedSubLabel("ServerLabel", "MCP server"));
+
+            // --- Custom-mode server-URL row (shown only in Custom mode) ---
+            _customHostRow = new VBoxContainer { Name = "CustomHostRow" };
+            _customHostRow.AddThemeConstantOverride("separation", 4);
+            card.AddChild(_customHostRow);
+
+            // Server URL on ONE inline row — Unity's "Server URL <input>" (label left, input filling the rest),
+            // not a stacked label-over-field.
+            var hostLine = new HBoxContainer { Name = "HostLine", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            hostLine.AddThemeConstantOverride("separation", 8);
+            hostLine.Alignment = BoxContainer.AlignmentMode.Center;
+            _customHostRow.AddChild(hostLine);
+
+            hostLine.AddChild(new Label { Name = "HostLabel", Text = "Server URL" });
+
+            _hostField = new LineEdit
+            {
+                Name = "HostField",
+                PlaceholderText = GodotMcpConfig.DefaultCustomHost,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill
+            };
+            DockStyle.ApplyInput(_hostField);
+            // Commit on Enter and on focus-out (mirrors the Unity reference's FocusOut commit). Connected via
+            // object+method Callables (not delegate +=) so they never enter the ManagedCallable hot-reload registry.
+            _hostField.Connect(LineEdit.SignalName.TextSubmitted, new Callable(this, MethodName.OnHostSubmitted));
+            _hostField.Connect(Control.SignalName.FocusExited, new Callable(this, MethodName.OnHostFocusExited));
+            hostLine.AddChild(_hostField);
+
+            // --- Authorization (Custom mode only): none | oauth | token (segmented) ---
+            var authLine = new HBoxContainer { Name = "AuthLine" };
+            _customHostRow.AddChild(authLine);
+
+            authLine.AddChild(new Label { Name = "AuthLabel", Text = "Authorization Token" });
+            authLine.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+
+            _authSegmented = DockStyle.SegmentedControl(
+                "AuthSegmented",
+                AuthOptions,
+                SegmentedControlModel.IndexOf(AuthOptions, AuthLabelForOption(_connection.Config.AuthOption)),
+                OnAuthSegmentSelected);
+            authLine.AddChild(_authSegmented);
+
+            // --- Token row (shown only when Authorization == token): masked field + Generate ---
+            _tokenRow = new VBoxContainer { Name = "TokenRow" };
+            _customHostRow.AddChild(_tokenRow);
+
+            var tokenLine = new HBoxContainer { Name = "TokenLine" };
+            _tokenRow.AddChild(tokenLine);
+
+            _tokenField = new LineEdit
+            {
+                Name = "TokenField",
+                // Masked + read-only: the token is never shown in clear text and is only changed via
+                // Generate (never typed/logged). Mirrors the Unity reference's password token field.
+                Secret = true,
+                Editable = false,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill
+            };
+            tokenLine.AddChild(_tokenField);
+
+            _generateTokenButton = new Button { Name = "GenerateTokenButton", Text = "New" };
+            DockStyle.ConnectPressed(_generateTokenButton, this, MethodName.OnGenerateTokenPressed);
+            tokenLine.AddChild(_generateTokenButton);
+
+            // --- Local-server hosting row (Custom mode only): Start/Stop the version-matched server binary ---
+            // The plugin can HOST its own server here (download-if-needed + launch), not just connect to an
+            // external/cloud one. Hidden in Cloud mode (no local server is launched against the cloud host).
+            _localServerRow = new VBoxContainer { Name = "LocalServerRow" };
+            _localServerRow.AddThemeConstantOverride("separation", 4);
+            _customHostRow.AddChild(_localServerRow);
+
+            var serverLine = new HBoxContainer { Name = "LocalServerLine", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+
+            _serverStatusLabel = new Label { Name = "LocalServerStatus" };
+            DockStyle.ApplySubLabel(_serverStatusLabel);
+            serverLine.AddChild(_serverStatusLabel);
+
+            serverLine.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
+
+            _serverStartStopButton = new Button { Name = "LocalServerStartStopButton" };
+            DockStyle.ConnectPressed(_serverStartStopButton, this, MethodName.OnServerStartStopPressed);
+            serverLine.AddChild(_serverStartStopButton);
+
+            _localServerRow.AddChild(serverLine);
+
+            // --- Env/.env override note (shown when a process env / .env value forces mode or host) ---
+            _overrideNote = new Label
+            {
+                Name = "OverrideNote",
+                Text = "Overridden by environment (GODOT_MCP_*) — UI changes won't take effect.",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart
+            };
+            _overrideNote.AddThemeColorOverride("font_color", new Color(0.92f, 0.74f, 0.20f));
+            card.AddChild(_overrideNote);
+
+            // The MCP-server config IS wrapped in the blue frame-group card — this is one of the only two frames
+            // the dock keeps (Unity's `frame-mcp-server`). The Server URL row inside is now inline (label + input).
+            parent.AddChild(DockStyle.Card(card, "Server"));
+        }
+
+        /// <summary>
+        /// Build the Cloud-mode auth row — masked cloud token field + Revoke/Authorize + a status line — and add
+        /// it DIRECTLY to the panel, under the header and above the timeline (Unity gold reference). Shown only in
+        /// Cloud mode (toggled by <see cref="ApplyModeVisibility"/>). It deliberately lives OUTSIDE the MCP-server
+        /// card because in Cloud mode that entire timeline point is hidden — the cloud token UI must survive.
+        /// </summary>
+        void BuildCloudAuthRow()
+        {
+            _cloudAuthRow = new VBoxContainer { Name = "CloudAuthRow", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            _cloudAuthRow.AddThemeConstantOverride("separation", 4);
+            AddChild(_cloudAuthRow);
+
+            // --- Row 1: sign-in / account-state chip (left) + Revoke / Authorize (right). The chip REPLACES the
+            //     raw token field on the default path (mcp-authorize e1 · PR 5): the device flow / machine store
+            //     own the credential, so the user sees signed-in / signed-out state, not a token to copy. ---
+            var accountLine = new HBoxContainer { Name = "CloudAccountLine", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            accountLine.Alignment = BoxContainer.AlignmentMode.Center;
+            _cloudAuthRow.AddChild(accountLine);
+
+            _cloudSignInStatus = new Label { Name = "CloudSignInStatus", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            DockStyle.ApplyDescription(_cloudSignInStatus);
+            _cloudSignInStatus.AutowrapMode = TextServer.AutowrapMode.Off;
+            accountLine.AddChild(_cloudSignInStatus);
+
+            _revokeButton = new Button { Name = "RevokeButton", Text = "Sign out" };
+            DockStyle.ConnectPressed(_revokeButton, this, MethodName.OnRevokeButtonPressed);
+            accountLine.AddChild(_revokeButton);
+
+            _authorizeButton = new Button { Name = "AuthorizeButton", Text = ConnectionPanelView.AuthorizeButtonText };
+            DockStyle.ConnectPressed(_authorizeButton, this, MethodName.OnAuthorizeButtonPressed);
+            accountLine.AddChild(_authorizeButton);
+
+            // --- Row 2: the derived per-project connection URL (the /p/<pin> + derived port the configurators
+            //     write — PRs 3–4). Muted; hidden when the pinned URL cannot be resolved. ---
+            _cloudConnectionUrl = new Label
+            {
+                Name = "CloudConnectionUrl",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                Visible = false
+            };
+            DockStyle.ApplyDescription(_cloudConnectionUrl);
+            _cloudAuthRow.AddChild(_cloudConnectionUrl);
+
+            // --- Row 3: "Advanced: use access token" opt-in (right-aligned) — reveals the legacy masked token
+            //     field below (Row 4). Default OFF: the golden path never surfaces the raw token. ---
+            var advancedLine = new HBoxContainer { Name = "CloudAdvancedLine", SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            advancedLine.Alignment = BoxContainer.AlignmentMode.Center;
+            _cloudAuthRow.AddChild(advancedLine);
+
+            var advancedLabel = new Label { Name = "CloudAdvancedLabel", Text = ConnectionPanelView.AdvancedUseAccessTokenLabel };
+            DockStyle.ApplyDescription(advancedLabel);
+            advancedLabel.AutowrapMode = TextServer.AutowrapMode.Off;
+            advancedLine.AddChild(advancedLabel);
+
+            advancedLine.AddChild(new Control { Name = "CloudAdvancedSpacer", SizeFlagsHorizontal = SizeFlags.ExpandFill });
+
+            // Object+method Callable on the checkbox instance (no delegate += into the ManagedCallable hot-reload
+            // registry) — mirrors SkillsPanel's auto-generate toggle.
+            _cloudAdvancedToggle = new DockCheckBox { Name = "CloudAdvancedToggle", ButtonPressed = _useCloudAccessToken };
+            _cloudAdvancedToggle.BindToggled(OnCloudAdvancedToggled);
+            _cloudAdvancedToggle.Connect(BaseButton.SignalName.Toggled, new Callable(_cloudAdvancedToggle, DockCheckBox.MethodName.OnToggled));
+            advancedLine.AddChild(_cloudAdvancedToggle);
+
+            // --- Row 4 (hidden by default): the masked, read-only cloud token field. Revealed only by the
+            //     "Advanced: use access token" opt-in. Never editable — set only by the device-auth flow. ---
+            _cloudTokenLine = new VBoxContainer { Name = "CloudTokenLine", SizeFlagsHorizontal = SizeFlags.ExpandFill, Visible = false };
+            _cloudAuthRow.AddChild(_cloudTokenLine);
+
+            _cloudTokenField = new LineEdit
+            {
+                Name = "CloudTokenField",
+                // Masked + read-only: the access token is never shown in clear text and is only ever set by
+                // the device-auth flow (never typed/logged). Mirrors the Custom-mode token field.
+                Secret = true,
+                Editable = false,
+                PlaceholderText = ConnectionPanelView.CloudTokenPlaceholder,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill
+            };
+            _cloudTokenLine.AddChild(_cloudTokenField);
+
+            _cloudAuthStatus = new Label
+            {
+                Name = "CloudAuthStatus",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                Visible = false // hidden until there's a message — an empty label would otherwise reserve a line and
+                                // open a large gap between the token row and the timeline in Cloud mode.
+            };
+            _cloudAuthRow.AddChild(_cloudAuthStatus);
+
+            // F6.1: the machine-wide sign-out confirmation. Sign-out is no longer a local token wipe — it
+            // revokes + deletes the SHARED machine credential store, signing out every AI-Game-Dev tool on
+            // this machine, so it always confirms first. Object+method Callable (no delegate += into the
+            // ManagedCallable hot-reload registry) — same discipline as the buttons above.
+            _signOutConfirm = new ConfirmationDialog
+            {
+                Name = "SignOutConfirmDialog",
+                Title = "Sign out",
+                DialogText = ConnectionPanelView.SignOutConfirmText,
+            };
+            _signOutConfirm.Connect(AcceptDialog.SignalName.Confirmed, new Callable(this, MethodName.OnSignOutConfirmed));
+            AddChild(_signOutConfirm);
+        }
+
+        /// <summary>
+        /// Toggle the "Advanced: use access token" opt-in for the Cloud path — reveal / hide the raw masked token
+        /// field (Row 4 of the cloud auth row). Panel-local UI state only; no connection/config mutation.
+        /// </summary>
+        void OnCloudAdvancedToggled(bool pressed)
+        {
+            if (_useCloudAccessToken == pressed)
+                return;
+
+            _useCloudAccessToken = pressed;
+            _cloudTokenLine.Visible = ConnectionPanelView.ShowCloudTokenField(_useCloudAccessToken);
+        }
+
+        /// <summary>
+        /// Set the Cloud-auth status line text and collapse the label when the text is empty (so an empty status
+        /// does not reserve a blank line that pushes the timeline down in Cloud mode). Single sink for every
+        /// status update (device-auth flow, revoke, server rejection).
+        /// </summary>
+        void SetCloudAuthStatusText(string text)
+        {
+            _cloudAuthStatus.Text = text;
+            _cloudAuthStatus.Visible = !string.IsNullOrEmpty(text);
+        }
+
+        /// <summary>
+        /// Compose one timeline point: a 20px indicator column (the status circle, and below it a 2px
+        /// connecting line that ExpandFills to span the gap to the next point — hidden on the LAST point) next
+        /// to the point's <paramref name="content"/>. Mirrors Unity-MCP's timeline row.
+        /// </summary>
+        static HBoxContainer MakeTimelinePoint(Panel circle, Control content, bool isLast, int circleTopOffset = 4)
+        {
+            var row = new HBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+            row.AddThemeConstantOverride("separation", 8);
+
+            // Indicator column: circle on top, connecting line filling the rest (hidden on the last point).
+            var indicator = new VBoxContainer
+            {
+                Name = "Indicator",
+                CustomMinimumSize = new Vector2(DockTheme.TimelineIndicatorWidth, 0)
+            };
+            indicator.AddThemeConstantOverride("separation", 0);
+
+            // Push the circle down by circleTopOffset so its center lines up with the point's TITLE text (the title
+            // sits at the content top for Godot/AI-agent, or inside the card's margin+padding for MCP server).
+            var circleWrap = new MarginContainer { Name = "CircleWrap" };
+            circleWrap.AddThemeConstantOverride("margin_top", circleTopOffset);
+            circleWrap.AddChild(circle);
+            indicator.AddChild(circleWrap);
+
+            var line = DockStyle.TimelineLine();
+            line.Visible = !isLast;
+            indicator.AddChild(line);
+
+            row.AddChild(indicator);
+            row.AddChild(content);
+            return row;
+        }
+
+        static string ModeLabelForMode(GodotMcpConnectionMode mode) =>
+            mode == GodotMcpConnectionMode.Cloud ? ModeLabelCloud : ModeLabelCustom;
+
+        static string AuthLabelForOption(McpServerConsts.AuthOption option) =>
+            GodotMcpConfig.NormalizeAuthOption(option) switch
+            {
+                McpServerConsts.AuthOption.oauth => AuthLabelOauth,
+                McpServerConsts.AuthOption.token => AuthLabelToken,
+                _ => AuthLabelNone
+            };
+
+        static McpServerConsts.AuthOption AuthOptionForLabel(string label) =>
+            label == AuthLabelOauth ? McpServerConsts.AuthOption.oauth :
+            label == AuthLabelToken ? McpServerConsts.AuthOption.token :
+            McpServerConsts.AuthOption.none;
+
+        void OnConnectionStatusChanged(ConnectionStatus status) => ApplyStatus(status);
+
+        /// <summary>
+        /// Push a <see cref="ConnectionStatus"/> into the Godot status label, the Connect button, the Godot
+        /// timeline circle, and the alert-panel visibility. All derived presentation comes from
+        /// <see cref="ConnectionPanelView"/>. The "Godot" circle tracks the hub connection state; the
+        /// "MCP server" circle is driven SEPARATELY by the LOCAL server's lifecycle (see
+        /// <see cref="ApplyServerStatus"/>) now that the plugin can host its own server; the "AI agent"
+        /// circle stays neutral (no live agent-info channel — the label reads "AI agent (connects on demand)").
+        /// </summary>
+        void ApplyStatus(ConnectionStatus status)
+        {
+            var pointState = ConnectionPanelView.PointState(status);
+
+            // The underlined "Godot" label carries the status now ("Godot" / "Godot: connecting..." / "Godot: connected").
+            DockStyle.SetUnderlinedSubLabelText(_godotUnderline, ConnectionPanelView.GodotLineLabel(status));
+            _connectButton.Text = ConnectionPanelView.ButtonText(status);
+            // A single always-enabled toggle: primary (cyan) "Connect" when disconnected; secondary (gray) "Stop"
+            // when connected OR connecting.
+            if (status == ConnectionStatus.Disconnected)
+                DockStyle.ApplyPrimaryButton(_connectButton);
+            else
+                DockStyle.ApplySecondaryButton(_connectButton);
+
+            DockStyle.ApplyTimelineCircle(_timelineGodotCircle, pointState);
+
+            _renderedStatus = status;
+            ApplyAlertVisibility(status);
+
+            // A live hub connection disproves "sign in required" (e.g. the reactive refresh healed the
+            // credential without a state edge) — clear that status line so it cannot linger stale. Only the
+            // sign-in-required text is cleared; unrelated status messages are left alone.
+            if (status == ConnectionStatus.Connected && ConnectionPanelView.IsSignInRequiredStatus(_cloudAuthStatus?.Text))
+                SetCloudAuthStatusText(string.Empty);
+
+            // Trace the actual render so a Trace smoke run shows the terminal Connected reaching the label
+            // (pairs with the connection's "status: X -> Y" push trace — see GodotMcpConnection.PublishStatus).
+            _connection.LogStatusTrace($"[Godot-MCP] ApplyStatus rendered status: {status}");
+        }
+
+        /// <summary>
+        /// Show/hide the two amber alert panels per the pure-managed
+        /// <see cref="ConnectionPanelView.ShowAuthorizationRequired"/> /
+        /// <see cref="ConnectionPanelView.ShowConnectionRequired"/> rules, driven by the live mode, whether a
+        /// cloud token is stored, and the current status.
+        /// </summary>
+        void ApplyAlertVisibility(ConnectionStatus status)
+        {
+            var isCloud = _connection.Config.ActiveMode == GodotMcpConnectionMode.Cloud;
+            // Signed in via the machine store (F1) OR the legacy sink (O8 read-fallback) — a
+            // machine-store sign-in must not render the "Authorization Required" alert (task f1).
+            var hasCloudToken = ConnectionPanelView.IsCloudSignedIn(
+                _connection.Account.IsSignedIn, _connection.Config.CloudToken);
+
+            _authRequiredAlert.Visible = ConnectionPanelView.ShowAuthorizationRequired(isCloud, hasCloudToken);
+            _connectionRequiredAlert.Visible = ConnectionPanelView.ShowConnectionRequired(isCloud, hasCloudToken, status);
+        }
+
+        void OnServerStatusChanged(GodotMcpServerStatus status) => ApplyServerStatus(status);
+
+        /// <summary>
+        /// Render the LOCAL server's lifecycle onto the MCP-server timeline point: the "Local server: …"
+        /// status line, the Start/Stop button (text + disabled state from the pure-managed
+        /// <see cref="GodotMcpServerView"/>), and the server timeline circle (filled green Running/External,
+        /// green ring while Starting/Stopping, orange disc Stopped). Idempotent + quiet: a re-apply of the
+        /// already-rendered status is harmless. Runs on the editor main thread (the manager marshals its
+        /// raises there).
+        /// </summary>
+        void ApplyServerStatus(GodotMcpServerStatus status)
+        {
+            _serverStatusLabel.Text = GodotMcpServerView.ServerStatusLabel(status);
+            _serverStartStopButton.Text = GodotMcpServerView.ServerButtonText(status);
+            _serverStartStopButton.Disabled = GodotMcpServerView.ServerButtonDisabled(status);
+
+            // Primary (cyan) when the click starts the server; secondary (gray) when it stops it.
+            if (status == GodotMcpServerStatus.Running)
+                DockStyle.ApplySecondaryButton(_serverStartStopButton);
+            else
+                DockStyle.ApplyPrimaryButton(_serverStartStopButton);
+
+            DockStyle.ApplyTimelineCircle(_timelineServerCircle, GodotMcpServerView.ServerPointState(status));
+            _renderedServerStatus = status;
+        }
+
+        /// <summary>
+        /// Handle a click on the local-server Start/Stop button. When stopped, downloads the version-matched
+        /// binary if needed then launches it with <c>client-transport=streamableHttp</c> on the
+        /// ProjectIdentity-derived local port (mcp-authorize g3 — <see cref="GodotMcpConnection.ResolveLocalServerPort"/>,
+        /// which MATCHES the port the shared config writer writes into the AI-client config, so the server
+        /// bind port == the written config port; no fixed 8080 on the default path). The launch args are built
+        /// per the active auth mode (mcp-authorize g5): <c>none</c> = anonymous loopback; <c>token</c> = the
+        /// offline shared secret (never logged); <c>oauth</c> = the ai-game.dev issuer + this project's pinned
+        /// loopback public URL so the account-gated server can validate the plugin's account JWT. When running,
+        /// terminates it. The download/launch is fire-and-forget; the status circle + button converge via the
+        /// manager's <see cref="GodotMcpServerManager.StatusChanged"/> stream. The button is disabled by
+        /// <see cref="ApplyServerStatus"/> during transient states, so a double-click cannot race a start/stop.
+        /// </summary>
+        public void OnServerStartStopPressed()
+        {
+            if (_serverManager.Status == GodotMcpServerStatus.Running)
+            {
+                _serverManager.StopServer();
+                return;
+            }
+            StartServer();
+        }
+
+        /// <summary>
+        /// At a C# assembly reload: let go of the local server without stopping it; the reloaded plugin's panel
+        /// re-attaches to it (<see cref="GodotMcpServerManager.DetachForReload"/>).
+        /// </summary>
+        public void DetachLocalServerForReload() => _serverManager.DetachForReload();
+
+        /// <summary>
+        /// Start the local server unless it is already running or starting — the Start half of
+        /// <see cref="OnServerStartStopPressed"/>, also used by the plugin when <c>GODOT_MCP_START_SERVER</c> asks for
+        /// it (CLI-launched headless editors).
+        /// </summary>
+        public void StartServer()
+        {
+            if (_serverManager.Status != GodotMcpServerStatus.Stopped)
+                return;
+
+            var port = _connection.ResolveLocalServerPort();
+            var timeoutMs = com.IvanMurzak.McpPlugin.Common.Consts.Hub.DefaultTimeoutMs;
+            var authOption = _connection.Config.ActiveAuthOption; // normalized none/oauth/token (env-aware)
+
+            string? token = null;
+            string? authIssuer = null;
+            string? publicUrl = null;
+            switch (authOption)
+            {
+                case McpServerConsts.AuthOption.token:
+                    // Offline shared secret — passed only in the launch args, never logged.
+                    token = _connection.Config.ResolveCustomToken();
+                    break;
+
+                case McpServerConsts.AuthOption.oauth:
+                    // Account-gated loopback server: hand it the ai-game.dev issuer + this project's pinned
+                    // loopback public URL (http://localhost:<derived>/mcp/p/<pin>) so its resource-server
+                    // validates the account JWT the plugin presents on the hub (design Part A).
+                    authIssuer = GodotMcpConfig.DefaultCloudBaseUrl;
+                    publicUrl = Agents.AgentConfiguratorSettingsFactory.Create(_connection.Config).PinnedHttpUrl;
+                    break;
+            }
+
+            // Fire-and-forget: StartServerAsync downloads-if-needed then launches; status changes drive the UI.
+            _ = _serverManager.StartServerAsync(port, timeoutMs, authOption, token, authIssuer, publicUrl);
+        }
+
+        /// <summary>
+        /// Per-frame tick fired by the main-thread dispatcher. Accumulates <paramref name="delta"/> and runs
+        /// the cheap <see cref="SyncFromConnection"/> drift check once every <see cref="ResyncIntervalSeconds"/>s.
+        /// Driven by the dispatcher (a non-dock editor Node that always ticks) rather than this Control's own
+        /// <see cref="Node._Process"/>, which Godot skips while the dock tab is hidden — see the registration
+        /// in <see cref="_EnterTree"/>.
+        /// </summary>
+        void OnResyncTick(double delta)
+        {
+            _resyncAccumulator += delta;
+            if (_resyncAccumulator < ResyncIntervalSeconds)
+                return;
+
+            _resyncAccumulator = 0.0;
+            SyncFromConnection();
+        }
+
+        /// <summary>
+        /// Re-read the LIVE connection status DIRECTLY off <see cref="GodotMcpConnection.ConnectionStatus"/>
+        /// (bypassing the <see cref="GodotMcpConnection.ConnectionStatusChanged"/> event) and re-apply it
+        /// when it differs from what the panel last rendered. Driven by the periodic dispatcher re-sync so the
+        /// label converges to the real status within ~<see cref="ResyncIntervalSeconds"/>s even if a status push
+        /// was lost to the off-thread marshalling / de-dup boundary OR to a dock-layout reload that
+        /// re-instantiated/detached the panel mid-handshake (the root cause of issue #42), or a Reconnect
+        /// rebuilt the connection. Cheap and quiet: when the live status already matches the rendered one this
+        /// is a single enum comparison and returns without touching any Control. Runs on the editor main thread.
+        /// </summary>
+        void SyncFromConnection()
+        {
+            // A dev-injected status pins the label: skip the live re-sync so the injection sticks on screen
+            // (see _devStatusOverride). DEV-ONLY — never set in a shipped addon.
+            if (_devStatusOverride != null)
+                return;
+
+            var live = _connection.ConnectionStatus;
+            if (_renderedStatus == live)
+                return;
+
+            _connection.LogStatusTrace(
+                $"[Godot-MCP] re-sync: label '{_renderedStatus}' drifted from live '{live}' — re-applying.");
+            ApplyStatus(live);
+        }
+
+        public void OnConnectButtonPressed()
+        {
+            // Single toggle: "Connect" only when fully disconnected; otherwise "Stop" — disconnect when connected,
+            // or cancel the in-flight attempt when connecting (Disconnect() stops the client's retry loop).
+            if (_connection.ConnectionStatus == ConnectionStatus.Disconnected)
+                _connection.Connect();
+            else
+                _connection.Disconnect();
+        }
+
+        /// <summary>
+        /// Handle a Custom|Cloud segment click: persist the chosen PERSISTED mode and reconnect only when the
+        /// change actually moves the LIVE active mode (under an env override ActiveMode is pinned, so a
+        /// persisted-only edit must not tear down the current connection). Re-renders the segmented selection
+        /// and the mode-dependent sections afterward.
+        /// </summary>
+        void OnModeSegmentSelected(int index)
+        {
+            var mode = index == SegmentedControlModel.IndexOf(ModeOptions, ModeLabelCloud)
+                ? GodotMcpConnectionMode.Cloud
+                : GodotMcpConnectionMode.Custom;
+
+            if (_connection.Config.ConnectionMode == mode)
+            {
+                ApplyModeVisibility(_connection.Config.ActiveMode);
+                return;
+            }
+
+            var liveModeBefore = _connection.Config.ActiveMode;
+            _connection.Config.ConnectionMode = mode;
+            _connection.Save();
+            ApplyModeVisibility(_connection.Config.ActiveMode);
+
+            if (_connection.Config.ActiveMode != liveModeBefore)
+                _connection.Reconnect();
+
+            ConfigChanged?.Invoke(); // mode change can swap the resolved URL → agent section re-checks config
+        }
+
+        /// <summary>
+        /// Persist the chosen Custom-mode authorization option (none/oauth/token) and reconnect so the
+        /// credential routing takes effect. When set to <c>token</c> with no secret yet, generate one so the
+        /// connection has a bearer to send. Persists even under an env override (the override note explains
+        /// the env value wins live); only reconnects when the live mode is Custom.
+        /// </summary>
+        void OnAuthSegmentSelected(int index)
+        {
+            var label = index >= 0 && index < AuthOptions.Count ? AuthOptions[index] : AuthLabelNone;
+            var authOption = AuthOptionForLabel(label);
+
+            if (_connection.Config.AuthOption == authOption)
+            {
+                ApplyAuthVisibility();
+                return;
+            }
+
+            _connection.Config.AuthOption = authOption;
+
+            // token mode needs a static secret to send; mint one if none is stored yet.
+            if (authOption == McpServerConsts.AuthOption.token &&
+                string.IsNullOrEmpty(_connection.Config.CustomToken))
+            {
+                _connection.Config.CustomToken = GodotMcpTokenGenerator.Generate();
+            }
+
+            _connection.Save();
+            ApplyAuthVisibility();
+
+            // Only a live Custom connection is affected by the auth/token routing.
+            if (_connection.Config.ActiveMode == GodotMcpConnectionMode.Custom)
+                _connection.Reconnect();
+
+            ConfigChanged?.Invoke(); // auth option / token changed → agent section re-checks config
+        }
+
+        /// <summary>
+        /// Generate a fresh Custom-mode token, persist it, and reconnect so the new bearer is used. The
+        /// token is never logged and is shown only as a masked field. Generating a secret implies the user
+        /// wants the offline token-gated mode, so this also sets <see cref="GodotMcpConfig.AuthOption"/> to
+        /// <c>token</c>.
+        /// </summary>
+        public void OnGenerateTokenPressed()
+        {
+            _connection.Config.CustomToken = GodotMcpTokenGenerator.Generate();
+            _connection.Config.AuthOption = McpServerConsts.AuthOption.token;
+
+            _connection.Save();
+            ApplyAuthVisibility();
+
+            if (_connection.Config.ActiveMode == GodotMcpConnectionMode.Custom)
+                _connection.Reconnect();
+
+            ConfigChanged?.Invoke(); // new token → agent section re-checks config
+        }
+
+        public void OnHostSubmitted(string text) => CommitHost(text);
+
+        public void OnHostFocusExited() => CommitHost(_hostField.Text);
+
+        /// <summary>
+        /// Validate + persist a Custom-mode server URL, then reconnect. Invalid input (not an absolute
+        /// http/https URL) is rejected: the field is reverted to the configured host and no write/reconnect
+        /// happens. A no-op edit (unchanged value) is ignored so a focus-out without a change does not
+        /// needlessly tear down a live connection.
+        /// </summary>
+        void CommitHost(string text)
+        {
+            if (!ConnectionPanelView.IsValidServerUrl(text))
+            {
+                // Reject: restore the displayed value to the current configured host.
+                _hostField.Text = _connection.Config.ResolveCustomHost();
+                GodotMcpLog.Warning($"[Godot-MCP] ignored invalid server URL: '{text}' (must be an absolute http/https URL).");
+                return;
+            }
+
+            var normalized = text.Trim().Trim('"').TrimEnd('/');
+            // The field shows the repaired URL; leaving it untouched must not save that (or reconnect).
+            var stored = _connection.Config.CustomHost;
+            var changed = stored != normalized && _connection.Config.RepairLocalHost(stored) != normalized;
+            if (changed)
+            {
+                _connection.Config.CustomHost = normalized;
+                _connection.Save();
+            }
+            // Show the URL the plugin connects to: a portless loopback URL gets the project port
+            // (http://localhost/mcp → http://localhost:<port>, GodotMcpConfig.RepairLocalHost).
+            _hostField.Text = _connection.Config.ResolveCustomHost();
+            if (!changed)
+                return;
+
+            // Only a Custom-mode host change warrants a reconnect; in Cloud mode the field is hidden.
+            if (_connection.Config.ActiveMode == GodotMcpConnectionMode.Custom)
+                _connection.Reconnect();
+
+            // The resolved MCP URL changed → the AI-agent section must re-check its config (show Reconfigure).
+            ConfigChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Drive the editable Custom section off the PERSISTED <see cref="GodotMcpConfig.ConnectionMode"/>
+        /// (so editing the segmented control / URL / auth always targets the layer the user can change), while
+        /// the override note surfaces when an env/.env value is forcing the LIVE active mode away from that
+        /// persisted choice. The segmented control stays interactive even when overridden — a persisted edit
+        /// "does something" (it takes effect once the override is gone) and does NOT corrupt precedence, since
+        /// env/.env is read live by the config resolvers. The host field shows the EFFECTIVE custom host (env
+        /// override visible) for transparency. Re-renders the mode segmented selection + alert visibility too.
+        /// </summary>
+        void ApplyModeVisibility(GodotMcpConnectionMode activeMode)
+        {
+            // Editable controls follow the PERSISTED mode (what the user is editing).
+            var persistedMode = _connection.Config.ConnectionMode;
+            var persistedCustom = persistedMode == GodotMcpConnectionMode.Custom;
+
+            // Re-render the mode segmented to the persisted mode.
+            DockStyle.SetSegmentedSelection(
+                _modeSegmented,
+                SegmentedControlModel.IndexOf(ModeOptions, ModeLabelForMode(persistedMode)));
+
+            // The ENTIRE MCP-server timeline point (circle + Server URL / Start / Transport / Authorization card)
+            // is Custom-mode only. In Cloud mode it is hidden, leaving the timeline as Godot -> AI agent and the
+            // cloud token/Authorize row (above the timeline) as the only server-side UI (Unity gold reference).
+            _serverTimelinePoint.Visible = persistedCustom;
+            _customHostRow.Visible = persistedCustom;
+            _cloudAuthRow.Visible = !persistedCustom;
+
+            if (persistedCustom)
+            {
+                // Show the EFFECTIVE custom host (env GODOT_MCP_HOST wins over the persisted value).
+                _hostField.Text = _connection.Config.ResolveCustomHost();
+                ApplyAuthVisibility();
+            }
+            else
+            {
+                ApplyCloudAuthState();
+            }
+
+            // The active mode differs from the persisted mode only when an env/.env override forced it.
+            var overridden = activeMode != persistedMode;
+            _overrideNote.Visible = overridden;
+
+            _hostField.Editable = true;
+            ApplyAlertVisibility(_connection.ConnectionStatus);
+        }
+
+        /// <summary>
+        /// Render the Custom-mode authorization controls from the persisted config: the auth segmented
+        /// reflects <see cref="GodotMcpConfig.AuthOption"/> (normalized), the masked token row is shown only
+        /// in <c>token</c> mode, and the field carries the stored Custom token (masked). The token is never
+        /// shown in clear text or logged. Always reads/writes the PERSISTED layer (env auth override is
+        /// surfaced by the override note, not by disabling these controls).
+        /// </summary>
+        void ApplyAuthVisibility()
+        {
+            var authOption = GodotMcpConfig.NormalizeAuthOption(_connection.Config.AuthOption);
+            DockStyle.SetSegmentedSelection(
+                _authSegmented,
+                SegmentedControlModel.IndexOf(AuthOptions, AuthLabelForOption(authOption)));
+
+            // The masked token field + Generate button are meaningful ONLY in token mode (the offline
+            // shared-secret path). none = anonymous loopback; oauth = the account JWT (no static token here).
+            var isToken = authOption == McpServerConsts.AuthOption.token;
+            _tokenRow.Visible = isToken;
+            _tokenField.Text = isToken ? (_connection.Config.CustomToken ?? string.Empty) : string.Empty;
+        }
+
+        /// <summary>
+        /// Render the Cloud-mode auth controls from the account sign-in state (unified-machine-auth f1):
+        /// signed in when the MACHINE STORE holds a usable credential (the F1 golden path) or — for the O8
+        /// read-fallback window — when the legacy persisted <see cref="GodotMcpConfig.CloudToken"/> still
+        /// carries one. The masked Advanced field shows only the LEGACY sink token (the machine-store
+        /// credential is never surfaced), and the Sign out button is visible whenever signed in. Called on
+        /// Cloud-mode entry and after every credential change. No token is ever shown in clear text or logged.
+        /// </summary>
+        void ApplyCloudAuthState()
+        {
+            var token = _connection.Config.CloudToken;
+            var hasToken = ConnectionPanelView.IsCloudSignedIn(_connection.Account.IsSignedIn, token);
+
+            // Sign-in / account-state chip (the default-path replacement for the raw token field): signed-in when a
+            // cloud credential is stored (machine store first, legacy sink fallback), signed-out otherwise.
+            _cloudSignInStatus.Text = ConnectionPanelView.CloudSignInStatusLabel(hasToken);
+            _cloudSignInStatus.AddThemeColorOverride("font_color", DockStyle.Rgb(ConnectionPanelView.CloudSignInStatusColor(hasToken)));
+
+            // Derived per-project connection URL (the /p/<pin> + derived port a configurator writes — PRs 3–4).
+            // Built from the shared settings' pinned URL; hidden when it can't be resolved.
+            var pinnedUrl = Agents.AgentConfiguratorSettingsFactory.Create(_connection.Config).PinnedHttpUrl;
+            var urlText = ConnectionPanelView.ConnectionUrlLabel(pinnedUrl);
+            _cloudConnectionUrl.Text = urlText;
+            _cloudConnectionUrl.Visible = !string.IsNullOrEmpty(urlText);
+
+            // Advanced (masked) token field — carries ONLY the legacy sink token (the machine-store
+            // credential is never surfaced here), shown only under the "Advanced: use access token" opt-in.
+            // Empty text → the masked LineEdit shows its PlaceholderText ("Token — press Authorize").
+            _cloudTokenField.Text = token ?? string.Empty;
+            _cloudTokenLine.Visible = ConnectionPanelView.ShowCloudTokenField(_useCloudAccessToken);
+
+            // "Sign out" only when signed in (machine store or legacy fallback).
+            _revokeButton.Visible = hasToken;
+        }
+
+        /// <summary>
+        /// Start (or cancel) the device-code authorization flow. While running, the button shows "Cancel"
+        /// and a click cancels the in-flight flow. The flow runs on a background task; every state change is
+        /// marshalled onto the editor main thread before touching any <see cref="Control"/>. On
+        /// <see cref="GodotDeviceAuthFlowState.WaitingForUser"/> the verification URL is opened in the
+        /// browser; on <see cref="GodotDeviceAuthFlowState.Authorized"/> the returned token is persisted and
+        /// the connection reconnects. The token is never logged.
+        /// </summary>
+        public void OnAuthorizeButtonPressed()
+        {
+            // A click while a flow is running means "Cancel".
+            if (_deviceAuthFlow != null && GodotDeviceAuthFlow.IsRunning(_deviceAuthFlow.State))
+            {
+                _deviceAuthFlow.Cancel();
+                return;
+            }
+
+            // The manual ladder entry — never gated: the user's own Authorize must keep working after the
+            // session's D4 auto-open budget is spent (the carousel guard applies to the AUTO entry only).
+            _assistedSignIn.OnManualAuthorize();
+        }
+
+        /// <summary>
+        /// Start a fresh device-authorization flow — the ONE flow entry both ladder paths invoke (the
+        /// manual Authorize click via <see cref="GodotAssistedSignIn.OnManualAuthorize"/>, and the D4
+        /// once-gated auto-open via <see cref="GodotAssistedSignIn.OnSignInRequiredVerdict"/>). The flow's
+        /// WaitingForUser transition opens the default browser at the verification URL
+        /// (<see cref="OnAuthFlowStateChanged"/>), and the run polls until approval / device-code expiry /
+        /// cancellation — never re-initiating unattended.
+        /// </summary>
+        void StartAuthorizeFlow()
+        {
+            // Release the previous flow's state-change subscription before replacing it, so the old flow
+            // instance + its closure are not leaked on every Authorize click (each click builds a new flow).
+            if (_deviceAuthFlow != null && _authFlowStateChangedHandler != null)
+                _deviceAuthFlow.OnStateChanged -= _authFlowStateChangedHandler;
+
+            _deviceAuthFlow?.Cancel();
+            var flow = new GodotDeviceAuthFlow();
+            _deviceAuthFlow = flow;
+
+            _authFlowStateChangedHandler = state =>
+            {
+                // OnStateChanged fires on the flow's background task thread; hop to the editor main thread
+                // before touching Controls (dropped once the dispatcher is torn down).
+                MainThreadDispatcher.RunOnMainThread(() => OnAuthFlowStateChanged(flow, state));
+            };
+            flow.OnStateChanged += _authFlowStateChangedHandler;
+
+            // Fire-and-forget; the state-change handler drives the status/button/browser UI, and the awaited
+            // outcome drives the post-sign-in UI + reconnect. The credential itself never reaches this panel:
+            // the F1 flow persists it into the MACHINE STORE via the guarded two-lock-hold commit
+            // (GodotCloudAccountController → GodotAccountAuth.SignInAsync), and — unified-machine-auth O8 —
+            // Config.CloudToken (the plaintext user:// sink) is no longer written on authorize.
+            _ = RunAuthFlowAsync(flow);
+        }
+
+        async Task RunAuthFlowAsync(GodotDeviceAuthFlow flow)
+        {
+            var outcome = await GodotCloudAccountController.SignInAsync(
+                _connection.Account, flow, _connection.CloudBaseUrl, _connection.Config);
+
+            // Render + reconnect on the editor main thread (the awaited continuation may run off-thread).
+            MainThreadDispatcher.RunOnMainThread(() => ApplySignInOutcome(flow, outcome));
+        }
+
+        /// <summary>
+        /// Apply a finished F1 sign-in attempt to the UI, and — when the machine is now signed in —
+        /// reconnect so the connection presents the machine-store JWT. MUST run on the editor main thread.
+        /// Ignores a stale flow (a newer Authorize click replaced <see cref="_deviceAuthFlow"/>). No token
+        /// material flows through here — <see cref="GodotAccountSignInResult"/> is non-secret by contract.
+        /// </summary>
+        void ApplySignInOutcome(GodotDeviceAuthFlow flow, GodotAccountSignInResult outcome)
+        {
+            if (!ReferenceEquals(_deviceAuthFlow, flow))
+                return;
+
+            var message = ConnectionPanelView.SignInOutcomeMessage(outcome);
+            if (!string.IsNullOrEmpty(message))
+                SetCloudAuthStatusText(message);
+
+            ApplyCloudAuthState();
+            ApplyAlertVisibility(_connection.ConnectionStatus);
+
+            // Reconnect so the fresh machine-store bearer is used — only meaningful when the live mode is
+            // Cloud and the sign-in actually yielded a usable credential.
+            if (outcome.Succeeded && _connection.Config.ActiveMode == GodotMcpConnectionMode.Cloud)
+                _connection.Reconnect();
+
+            ConfigChanged?.Invoke(); // account state changed → agent section re-checks config
+        }
+
+        /// <summary>
+        /// Apply one device-auth flow state transition to the UI (status line, button label, browser-open).
+        /// MUST run on the editor main thread. Ignores events from a stale flow (a newer Authorize click
+        /// replaced <see cref="_deviceAuthFlow"/>). Credential persistence happens in the machine-store
+        /// commit inside <see cref="RunAuthFlowAsync"/> (via <see cref="GodotCloudAccountController"/>),
+        /// not here.
+        /// </summary>
+        void OnAuthFlowStateChanged(GodotDeviceAuthFlow flow, GodotDeviceAuthFlowState state)
+        {
+            // Drop late events from a flow that has been superseded by a newer one.
+            if (!ReferenceEquals(_deviceAuthFlow, flow))
+                return;
+
+            // Status line. UserCode is safe to show; the access token never reaches this string.
+            SetCloudAuthStatusText(ConnectionPanelView.CloudAuthStatusMessage(state, flow.UserCode, flow.ErrorMessage));
+            _authorizeButton.Text = ConnectionPanelView.CloudAuthButtonText(state);
+
+            // Open the verification URL so the user can approve in the browser.
+            if (state == GodotDeviceAuthFlowState.WaitingForUser && !string.IsNullOrEmpty(flow.VerificationUriComplete))
+                OS.ShellOpen(flow.VerificationUriComplete);
+        }
+
+        /// <summary>
+        /// DEV-ONLY (reached exclusively from <see cref="DevSimulateCloudAuthorized"/>): persist a token into
+        /// the LEGACY <see cref="GodotMcpConfig.CloudToken"/> sink, refresh the masked field + alerts, and
+        /// reconnect. The REAL authorize path no longer writes this sink (unified-machine-auth O8 — it
+        /// commits to the machine store via <see cref="GodotCloudAccountController"/>); this seam survives
+        /// one release so the dev-control bridge can exercise the O8 read-fallback + migrate-on-touch
+        /// states without a live OAuth round-trip, and is removed with the rest of the sink write path in
+        /// the f4 follow-up. MUST run on the editor main thread. Never logs the token.
+        /// </summary>
+        void ApplyAuthorizedToken(string token)
+        {
+            _connection.Config.CloudToken = token;
+            _connection.Config.CloudTokenServerTarget = _connection.CloudBaseUrl;
+            _connection.Save();
+            ApplyCloudAuthState();
+            ApplyAlertVisibility(_connection.ConnectionStatus);
+
+            // Reconnect so the new bearer is used — only meaningful when the live mode is Cloud.
+            if (_connection.Config.ActiveMode == GodotMcpConnectionMode.Cloud)
+                _connection.Reconnect();
+
+            ConfigChanged?.Invoke(); // cloud token changed → agent section re-checks config
+        }
+
+        /// <summary>
+        /// DEV-ONLY: simulate a LEGACY-sink Cloud authorization by persisting <paramref name="token"/> into
+        /// <see cref="GodotMcpConfig.CloudToken"/> (<see cref="ApplyAuthorizedToken"/>) — set + save the
+        /// token, refresh the masked field / Sign out button / alerts, and Reconnect(). NOTE (task f1): the
+        /// REAL authorize path no longer writes this sink — it commits to the machine store — so this hook
+        /// now specifically seeds the O8 read-fallback state (and still exercises persist → reconnect + the
+        /// stale-rejection guard) without a live browser OAuth round-trip. Never logs the token; the seam is
+        /// removed with the sink write path in f4.
+        /// </summary>
+        public void DevSimulateCloudAuthorized(string token) => ApplyAuthorizedToken(token);
+
+        /// <summary>
+        /// "Sign out" pressed: show the F6.1 confirmation ("signs out all tools on this machine") — the
+        /// actual machine-wide sign-out runs in <see cref="OnSignOutConfirmed"/> only after the user
+        /// confirms. Cancelling changes nothing.
+        /// </summary>
+        public void OnRevokeButtonPressed() => _signOutConfirm.PopupCentered();
+
+        /// <summary>
+        /// The confirmed F6 machine-wide sign-out: best-effort RFC 7009 revocation of every stored family +
+        /// the lock-protocol machine-store delete (<see cref="GodotAccountAuth.SignOutMachineWideAsync"/>),
+        /// then — locally — drop the LEGACY <see cref="GodotMcpConfig.CloudToken"/> sink value too (the
+        /// Godot analog of the App dropping its keychain entry, F6.2; without this the O8 migrate-on-touch
+        /// would resurrect the credential from the sink on the next boot). Fire-and-forget async; the UI is
+        /// updated on the editor main thread when the sign-out settles.
+        /// </summary>
+        public void OnSignOutConfirmed() => _ = RunSignOutAsync();
+
+        async Task RunSignOutAsync()
+        {
+            var result = await _connection.Account.SignOutMachineWideAsync();
+
+            void Render()
+            {
+                if (result.StoreDeleted)
+                {
+                    // Local F6.2 cleanup: the legacy sink must not survive a machine-wide sign-out.
+                    _connection.Config.CloudToken = null;
+                    _connection.Save();
+                    SetCloudAuthStatusText(ConnectionPanelView.SignedOutStatusText);
+                }
+                else
+                {
+                    // Busy lock: the store was NOT deleted (F6 — never unlink outside the lock protocol);
+                    // keep the signed-in rendering honest and ask the user to retry.
+                    SetCloudAuthStatusText(ConnectionPanelView.SignOutBusyStatusText);
+                }
+
+                ApplyCloudAuthState();
+                ApplyAlertVisibility(_connection.ConnectionStatus);
+
+                if (result.StoreDeleted && _connection.Config.ActiveMode == GodotMcpConnectionMode.Cloud)
+                    _connection.Disconnect();
+
+                ConfigChanged?.Invoke(); // account state changed → agent section re-checks config
+            }
+
+            MainThreadDispatcher.RunOnMainThread(Render);
+        }
+
+        /// <summary>
+        /// Handle a server-side authorization rejection (the connection's
+        /// <see cref="GodotMcpConnection.AuthorizationRejected"/> fired, already on the main thread). The
+        /// what-to-render decision is the pure-managed
+        /// <see cref="ConnectionPanelView.AuthorizationRejectedPresentation"/> (unit-tested — the e2
+        /// silent-red fix is pinned there):
+        /// <list type="bullet">
+        ///   <item><b>Signed in (machine store):</b> render the sign-in-required state. Recovery still
+        ///   belongs to the connection's reactive refresh (<c>TryAccountRefreshAndReconnect</c> — design
+        ///   08 A1; the rejection's semantics stay "try to recover"), and neither the machine store nor the
+        ///   legacy sink is wiped — but the user now SEES the state instead of the pre-e2 silent early
+        ///   return. A refresh that heals clears this status on the next Connected render; a terminal
+        ///   verdict escalates via the provider's <c>OnSignInRequired</c> (the D4 ladder).</item>
+        ///   <item><b>Signed out (legacy-sink token only):</b> drop the rejected cloud token, persist,
+        ///   revert the UI to Authorize, and warn WITHOUT logging the token (unchanged pre-e2 behavior).</item>
+        /// </list>
+        /// </summary>
+        void OnAuthorizationRejected()
+        {
+            var presentation = ConnectionPanelView.AuthorizationRejectedPresentation(
+                isCloudMode: _connection.Config.ActiveMode == GodotMcpConnectionMode.Cloud,
+                accountSignedIn: _connection.Account.IsSignedIn);
+
+            switch (presentation)
+            {
+                case ConnectionPanelView.AuthRejectedPresentation.SignInRequired:
+                    SetCloudAuthStatusText(ConnectionPanelView.SignInRequiredStatusText);
+                    ApplyCloudAuthState();
+                    ApplyAlertVisibility(_connection.ConnectionStatus);
+                    return;
+
+                case ConnectionPanelView.AuthRejectedPresentation.ClearLegacyTokenAndPrompt:
+                    _connection.Config.CloudToken = null;
+                    _connection.Save();
+                    SetCloudAuthStatusText(ConnectionPanelView.AuthorizationRejectedPromptText);
+                    ApplyCloudAuthState();
+                    ApplyAlertVisibility(_connection.ConnectionStatus);
+
+                    GodotMcpLog.Warning("[Godot-MCP] server rejected the authorization token; cleared — press Authorize.");
+                    return;
+
+                default:
+                    // None — a Custom-mode rejection is the Custom token's concern.
+                    return;
+            }
+        }
+
+        /// <summary>
+        /// The provider's terminal sign-in-required verdict (e.g. an <c>invalid_grant</c> refresh
+        /// rejection — <see cref="GodotAccountAuth.SignInRequired"/>, any thread): marshal onto the editor
+        /// main thread and render + run the D4 ladder.
+        /// </summary>
+        void OnAccountSignInRequired()
+        {
+            MainThreadDispatcher.RunOnMainThread(ApplySignInRequired);
+        }
+
+        /// <summary>
+        /// Render the sign-in-required state and run the D4 assisted ladder: the FIRST verdict of the
+        /// editor session auto-starts the authorize flow (which opens the default browser at the
+        /// device-flow verification URL and polls until the user approves); every recurrence — the carousel
+        /// guard — renders the persistent status only, manual Authorize still working. MUST run on the
+        /// editor main thread. No-op outside Cloud mode (the account credential is not in play there, and
+        /// the cloud auth row is hidden).
+        /// </summary>
+        void ApplySignInRequired()
+        {
+            if (_connection.Config.ActiveMode != GodotMcpConnectionMode.Cloud)
+                return;
+
+            SetCloudAuthStatusText(ConnectionPanelView.SignInRequiredStatusText);
+            ApplyCloudAuthState();
+            ApplyAlertVisibility(_connection.ConnectionStatus);
+
+            // D4 auto-open — never stomp a flow that is already running (a click mid-flow means Cancel;
+            // an unattended verdict must not). Skipping BEFORE the gate keeps the session's auto-open
+            // budget unspent for a verdict that arrives after the running flow settles.
+            if (_deviceAuthFlow != null && GodotDeviceAuthFlow.IsRunning(_deviceAuthFlow.State))
+                return;
+
+            _assistedSignIn.OnSignInRequiredVerdict();
+        }
+
+        /// <summary>
+        /// The provider's credential-state edge (<see cref="GodotAccountAuth.AuthStateChanged"/>, any
+        /// thread): marshal onto the editor main thread, clear a now-disproved sign-in-required status on
+        /// the SignedIn edge (the C3 resume — e.g. a peer surface re-authorized the machine), render the
+        /// sign-in-required status on the SignInRequired edge (belt-and-braces with
+        /// <see cref="OnAccountSignInRequired"/> — status only, the ladder rides the verdict event), and
+        /// re-render the account chip/alerts on every edge.
+        /// </summary>
+        void OnAccountAuthStateChanged(AuthState state)
+        {
+            void Render()
+            {
+                if (state == AuthState.SignedIn && ConnectionPanelView.IsSignInRequiredStatus(_cloudAuthStatus.Text))
+                    SetCloudAuthStatusText(string.Empty);
+                else if (state == AuthState.SignInRequired && _connection.Config.ActiveMode == GodotMcpConnectionMode.Cloud)
+                    SetCloudAuthStatusText(ConnectionPanelView.SignInRequiredStatusText);
+
+                ApplyCloudAuthState();
+                ApplyAlertVisibility(_connection.ConnectionStatus);
+            }
+
+            MainThreadDispatcher.RunOnMainThread(Render);
+        }
+
+        /// <summary>
+        /// Re-render the panel from current connection state. Forwarded from <see cref="GodotMcpDock.Refresh"/>.
+        /// Safe to call repeatedly.
+        /// </summary>
+        public void Refresh()
+        {
+            ApplyModeVisibility(_connection.Config.ActiveMode);
+            ApplyStatus(_connection.ConnectionStatus);
+            ApplyServerStatus(_serverManager.Status);
+            RefreshAgents();
+        }
+
+        void OnAgentsUpdated() => RefreshAgents();
+
+        /// <summary>
+        /// Re-render the AI-agent timeline point from the connection's live <see cref="GodotMcpConnection.ActiveAgents"/>:
+        /// the muted summary suffix ("(N connected)" / "(connects on demand)"), one list row per connected MCP client
+        /// (Copilot / Claude / …), and the agent circle (filled green when ≥1 agent is connected). All text/dot
+        /// decisions come from the pure-managed <see cref="AgentSessionView"/>. Runs on the editor main thread
+        /// (<see cref="GodotMcpConnection.AgentsUpdated"/> is marshalled there); cheap + idempotent so re-seeds are quiet.
+        /// </summary>
+        void RefreshAgents()
+        {
+            var agents = _devAgentsOverride ?? _connection.ActiveAgents;
+            var count = agents?.Count ?? 0;
+
+            _agentLabel.Text = AgentSessionView.Summary(count);
+            DockStyle.ApplyTimelineCircle(_timelineAgentCircle, AgentSessionView.DotState(count));
+
+            // Rebuild the per-agent rows. Detach + free synchronously so a stale row never lingers (QueueFree alone
+            // would defer to the next idle frame and briefly double the list).
+            foreach (var child in _agentListContainer.GetChildren())
+            {
+                _agentListContainer.RemoveChild(child);
+                child.QueueFree();
+            }
+
+            if (count > 0)
+            {
+                foreach (var agent in agents!)
+                {
+                    var row = new Label { Name = "AgentRow", Text = "• " + AgentSessionView.RowLabel(agent) };
+                    DockStyle.ApplyDescription(row);
+                    row.AutowrapMode = TextServer.AutowrapMode.Off;
+                    _agentListContainer.AddChild(row);
+                }
+            }
+
+            _agentListContainer.Visible = count > 0;
+        }
+
+        // --- DEV-ONLY inject API (driven by the env-gated, 127.0.0.1 DevControlServer) ------------------------
+        //
+        // These exist purely so a terminal / AI agent can paint a FAKE state onto the LIVE dock for test +
+        // AI-driven development. They are no-ops in a shipped addon because the server that calls them only
+        // starts when GODOT_MCP_DEV_CONTROL=1. ALL of them must run on the editor main thread (the caller
+        // hops via MainThreadDispatcher).
+
+        /// <summary>
+        /// DEV-ONLY: paint a fake <see cref="ConnectionStatus"/> onto the dock and PIN it — the periodic
+        /// re-sync is suppressed (see <see cref="_devStatusOverride"/>) so the injected status sticks instead
+        /// of being reverted to the live status within ~<see cref="ResyncIntervalSeconds"/>s. Clear it with
+        /// <see cref="DevClearStatusOverride"/>.
+        /// </summary>
+        public void DevInjectStatus(ConnectionStatus status)
+        {
+            _devStatusOverride = status;
+            ApplyStatus(status);
+        }
+
+        /// <summary>
+        /// DEV-ONLY: drop the injected-status pin and re-converge to the LIVE connection status (so the dock
+        /// resumes reflecting reality). Pairs with <see cref="DevInjectStatus"/>.
+        /// </summary>
+        public void DevClearStatusOverride()
+        {
+            _devStatusOverride = null;
+            ApplyStatus(_connection.ConnectionStatus);
+        }
+
+        /// <summary>
+        /// DEV-ONLY: paint a fake local-server <see cref="GodotMcpServerStatus"/> onto the MCP-server timeline
+        /// point. No override is needed — the server status has no periodic re-sync (unlike the connection
+        /// status), so the injected value persists until the next real <c>StatusChanged</c>.
+        /// </summary>
+        public void DevInjectServerStatus(GodotMcpServerStatus status) => ApplyServerStatus(status);
+
+        /// <summary>
+        /// DEV-ONLY: paint a fake connected-agent list onto the AI-agent timeline point (green dot + per-agent rows
+        /// + "(N connected)" summary) and PIN it (RefreshAgents renders the override until cleared), so the smoke
+        /// harness can exercise the live agent display without a real external MCP client. Pairs with
+        /// <see cref="DevClearAgentsOverride"/>. No-op in a shipped addon (the caller only runs when GODOT_MCP_DEV_CONTROL=1).
+        /// </summary>
+        public void DevInjectAgents(IReadOnlyList<McpClientData> agents)
+        {
+            _devAgentsOverride = agents ?? System.Array.Empty<McpClientData>();
+            RefreshAgents();
+        }
+
+        /// <summary>DEV-ONLY: drop the injected agent list and re-converge to the LIVE <see cref="GodotMcpConnection.ActiveAgents"/>.</summary>
+        public void DevClearAgentsOverride()
+        {
+            _devAgentsOverride = null;
+            RefreshAgents();
+        }
+
+        public override void _ExitTree()
+        {
+            if (_connection == null)
+                return;
+            // Unsubscribe so a freed panel does not receive a late main-thread push.
+            _connection.ConnectionStatusChanged -= OnConnectionStatusChanged;
+            _connection.AuthorizationRejected -= OnAuthorizationRejected;
+            _serverManager.StatusChanged -= OnServerStatusChanged;
+            _connection.AgentsUpdated -= OnAgentsUpdated;
+            _connection.Account.SignInRequired -= OnAccountSignInRequired;
+            _connection.Account.AuthStateChanged -= OnAccountAuthStateChanged;
+
+            // Unregister the periodic re-sync so the dispatcher no longer ticks into a freed panel.
+            _resyncRegistration?.Dispose();
+            _resyncRegistration = null;
+
+            // Cancel any in-flight device-auth flow so its background poll loop stops touching a freed panel,
+            // and drop its state-change subscription so the flow + its closure are released (no teardown leak).
+            if (_deviceAuthFlow != null && _authFlowStateChangedHandler != null)
+                _deviceAuthFlow.OnStateChanged -= _authFlowStateChangedHandler;
+            _deviceAuthFlow?.Cancel();
+            _deviceAuthFlow = null;
+            _authFlowStateChangedHandler = null;
+
+            // NOTE: the local-server manager is NOT disposed here — _ExitTree fires on every dock reparent
+            // (#42/#56), and disposing would kill a running server on a benign layout reload. The manager is
+            // disposed only when the panel is permanently freed (NotificationPredelete below), which stops
+            // any hosted server so we never leak a process.
+        }
+
+        /// <summary>
+        /// On permanent free (plugin disabled / editor teardown — NOT a dock reparent, which is _ExitTree),
+        /// dispose the local-server manager so any hosted server process is stopped and not orphaned.
+        /// </summary>
+        public override void _Notification(int what)
+        {
+            if (what == NotificationPredelete)
+                _serverManager?.Dispose();
+        }
+    }
+}
+#endif

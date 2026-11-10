@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "extensions": [
+    {
+      "name": "Particles Tools",
+      "description": "RQL module for Godot GPU particles (2D & 3D): validated emitter settings and Restart() for the core rql-query / rql-mutate tools, plus an agent guide.",
+      "packageId": "com.IvanMurzak.Godot.MCP.Particles",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-Particles/README.md",
+      "tools": []
+    },
+    {
+      "name": "Tilemap Tools",
+      "description": "RQL module for Godot TileMapLayer (4.3+): used-cell rows and SetCell / EraseCell / Clear for the core rql-query / rql-mutate tools, plus an agent guide.",
+      "packageId": "com.IvanMurzak.Godot.MCP.Tilemap",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-Tilemap/README.md",
+      "tools": []
+    },
+    {
+      "name": "Navigation Tools",
+      "description": "RQL module for Godot navigation (2D & 3D): validated agent, region and link settings, region Bake() and polygon outlines for the core rql-query / rql-mutate tools, plus an agent guide.",
+      "packageId": "com.IvanMurzak.Godot.MCP.Navigation",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-Navigation/README.md",
+      "tools": []
+    },
+    {
+      "name": "Animation Tools",
+      "description": "RQL module for Godot AnimationPlayer: libraries, animations, tracks and keys for the core rql-query / rql-mutate tools, plus an agent guide.",
+      "packageId": "com.IvanMurzak.Godot.MCP.Animation",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-Animation/README.md",
+      "tools": []
+    },
+    {
+      "name": "CSG Tools",
+      "description": "RQL module for Godot CSG (constructive solid geometry): validated box / sphere / cylinder / torus dimensions and rootShape for the core rql-query / rql-mutate tools, plus an agent guide.",
+      "packageId": "com.IvanMurzak.Godot.MCP.CSG",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-CSG/README.md",
+      "tools": []
+    },
+    {
+      "name": "GridMap Tools",
+      "description": "RQL module for Godot GridMap (3D tile maps): validated settings, cell rows and SetCell / ClearCell / Clear for the core rql-query / rql-mutate tools, plus an agent guide.",
+      "packageId": "com.IvanMurzak.Godot.MCP.GridMap",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-GridMap/README.md",
+      "tools": []
+    },
+    {
+      "name": "PhantomCamera Tools",
+      "description": "RQL module for the Godot Phantom Camera addon: a phantomcamera source that lists virtual cameras and hosts with their modes by name, and validated SetFollow / SetLookAt calls.",
+      "packageId": "com.IvanMurzak.Godot.MCP.PhantomCamera",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-PhantomCamera/README.md",
+      "tools": [],
+      "addonRequired": {
+        "name": "Phantom Camera",
+        "assetLibId": "1822",
+        "repo": "ramokz/phantom-camera",
+        "license": "MIT"
+      }
+    },
+    {
+      "name": "Beehave Tools",
+      "description": "RQL module for the Godot Beehave addon (behaviour trees): a beehave source that lists trees and their nodes with their Beehave classes; build trees with the core AddChild.",
+      "packageId": "com.IvanMurzak.Godot.MCP.Beehave",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-Beehave/README.md",
+      "tools": [],
+      "addonRequired": {
+        "name": "Beehave",
+        "assetLibId": "1349",
+        "repo": "bitbrain/beehave",
+        "license": "MIT"
+      }
+    },
+    {
+      "name": "Dialogic Tools",
+      "description": "RQL module for the Godot Dialogic addon: a dialogic source that lists timelines and characters, creates them and appends timeline text.",
+      "packageId": "com.IvanMurzak.Godot.MCP.Dialogic",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-Dialogic/README.md",
+      "tools": [],
+      "addonRequired": {
+        "name": "Dialogic",
+        "repo": "dialogic-godot/dialogic",
+        "license": "MIT"
+      }
+    },
+    {
+      "name": "Terrain3D Tools",
+      "description": "RQL module for the Terrain3D addon (TokisanGames heightmap terrain): terrain3d source with validated ChangeRegionSize, addon check and material creation for the core rql-query / rql-mutate tools, plus an agent guide.",
+      "packageId": "com.IvanMurzak.Godot.MCP.Terrain3D",
+      "version": null,
+      "gitUrl": "https://github.com/IvanMurzak/Godot-MCP/blob/main/extensions/Godot-AI-Terrain3D/README.md",
+      "tools": [],
+      "addonRequired": {
+        "name": "Terrain3D",
+        "assetLibId": "3892",
+        "repo": "TokisanGames/Terrain3D",
+        "license": "MIT"
+      }
+    }
+  ]
+}

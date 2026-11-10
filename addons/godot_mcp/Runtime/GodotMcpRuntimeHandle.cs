@@ -1,0 +1,154 @@
+/*
+┌──────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)             │
+│  Repository: GitHub (https://github.com/IvanMurzak/Godot-MCP)    │
+│  Copyright (c) 2026 Ivan Murzak                                  │
+│  Licensed under the Apache License, Version 2.0.                 │
+│  See the LICENSE file in the project root for more information.  │
+└──────────────────────────────────────────────────────────────────┘
+*/
+#nullable enable
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using com.IvanMurzak.Godot.MCP.Connection;
+using com.IvanMurzak.McpPlugin;
+
+namespace com.IvanMurzak.Godot.MCP.Runtime
+{
+    /// <summary>
+    /// The runtime MCP connection handle returned by <see cref="GodotMcpRuntime.Build"/> — the Godot analog
+    /// of the object Unity-MCP's <c>UnityMcpPluginRuntime.Initialize(...).Build()</c> returns. Wraps the
+    /// built reused <see cref="IMcpPlugin"/> (SignalR client) and exposes the minimal in-game surface:
+    /// <see cref="Connect"/> / <see cref="Disconnect"/>.
+    ///
+    /// <para>
+    /// <b>Default OFF.</b> Building a handle does NOT open a connection. The game must call
+    /// <see cref="Connect"/> explicitly — the security-required opt-in. Auto-reconnect/backoff (when the
+    /// resolved <see cref="GodotMcpConfig.KeepConnected"/> is true) is handled inside the reused client, not
+    /// reimplemented here.
+    /// </para>
+    /// </summary>
+    public sealed class GodotMcpRuntimeHandle : IDisposable
+    {
+        readonly IMcpPlugin _plugin;
+        readonly GodotMcpConfig _config;
+        readonly bool _uninstallErrorCaptureOnDispose;
+        int _disposed;
+
+        readonly bool _connectWhenRunFromEditor;
+
+        internal GodotMcpRuntimeHandle(IMcpPlugin plugin, GodotMcpConfig config,
+            bool uninstallErrorCaptureOnDispose = false, bool connectWhenRunFromEditor = false)
+        {
+            _plugin = plugin ?? throw new ArgumentNullException(nameof(plugin));
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+            _uninstallErrorCaptureOnDispose = uninstallErrorCaptureOnDispose;
+            _connectWhenRunFromEditor = connectWhenRunFromEditor;
+        }
+
+        internal const string RunFromEditorMessage =
+            "[Godot-MCP] runtime: not connecting: this game was started from the Godot editor and inherits its GODOT_MCP_* settings, " +
+            "so it would join the editor's MCP server. To connect the game too, call ConnectWhenRunFromEditor() on the runtime " +
+            "builder or set " + GodotMcpEnv.RuntimeFromEditor + "=1.";
+
+        /// <summary>
+        /// Whether <see cref="Connect"/> stays offline: a game the editor started (<paramref name="editorPid"/> is the editor
+        /// plugin's marker, inherited from the editor process, and that editor still runs) connects only when the developer opted
+        /// in. A marker an IDE or the Project Manager inherited from an editor that has quit does not count. Pure (unit-tested).
+        /// </summary>
+        internal static bool StaysOfflineWhenRunFromEditor(string? editorPid, bool isEditorProcess, bool optedIn, string? optInEnv,
+            Func<string, bool> editorRunning) =>
+            !isEditorProcess && !string.IsNullOrEmpty(editorPid) && !optedIn && !IsTrue(optInEnv) && editorRunning(editorPid!);
+
+        /// <summary>Whether the process <paramref name="pid"/> runs (the editor that set the marker).</summary>
+        static bool ProcessRuns(string pid)
+        {
+            if (!int.TryParse(pid, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var id))
+                return false;
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(id);
+                return !process.HasExited;
+            }
+            catch (Exception) { return false; } // gone, or not ours to inspect
+        }
+
+        static bool IsTrue(string? value) =>
+            GodotMcpConfig.NormalizeEnv(value) is { } v && (v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>The resolved connection config (host / token / mode) this handle connects with.</summary>
+        public GodotMcpConfig Config => _config;
+
+        /// <summary>The built reused MCP plugin instance (SignalR client + managers).</summary>
+        public IMcpPlugin Plugin => _plugin;
+
+        /// <summary>
+        /// Open the MCP connection to the configured server. Idempotent in the sense the reused client
+        /// guards re-entry; when <see cref="GodotMcpConfig.KeepConnected"/> is true the client also re-arms
+        /// its own auto-reconnect intent here. Returns <c>true</c> when the initial connect succeeded
+        /// (the client keeps retrying afterwards if <c>KeepConnected</c>).
+        /// <para>
+        /// In a game started from the Godot editor (Play) it does not connect and returns <c>false</c>: that game inherits the
+        /// editor's <c>GODOT_MCP_HOST</c>, so it would join the editor's server as a second plugin. Opt in with
+        /// <see cref="GodotMcpRuntimeBuilder.ConnectWhenRunFromEditor"/> or <c>GODOT_MCP_RUNTIME_FROM_EDITOR=1</c>.
+        /// </para>
+        /// </summary>
+        public Task<bool> Connect(CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            // IsEditorHint: true in the editor only (OS.HasFeature("editor") is also true in a game run from it).
+            if (StaysOfflineWhenRunFromEditor(System.Environment.GetEnvironmentVariable(GodotMcpEnv.EditorPid),
+                    global::Godot.Engine.IsEditorHint(), _connectWhenRunFromEditor,
+                    System.Environment.GetEnvironmentVariable(GodotMcpEnv.RuntimeFromEditor), ProcessRuns))
+            {
+                GodotMcpLog.Info(RunFromEditorMessage);
+                return Task.FromResult(false);
+            }
+            return _plugin.Connect(cancellationToken);
+        }
+
+        /// <summary>
+        /// Close the MCP connection and stop auto-reconnect (the reused client flips its own
+        /// <c>KeepConnected</c> to false inside <see cref="IConnection.Disconnect"/>). The handle remains
+        /// reusable — a subsequent <see cref="Connect"/> re-arms the connection.
+        /// </summary>
+        public Task Disconnect(CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            return _plugin.Disconnect(cancellationToken);
+        }
+
+        /// <summary>
+        /// Tear down the handle: synchronously kill the live connection (immediate disconnect — cancels the
+        /// reconnect loop and fire-and-forgets the transport teardown) and dispose the reused plugin. Safe
+        /// to call multiple times. Call this on game shutdown / when the connection is no longer needed.
+        /// </summary>
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            try { _plugin.DisconnectImmediate(); }
+            catch { /* best-effort: never throw out of Dispose */ }
+
+            try { _plugin.Dispose(); }
+            catch { /* best-effort: never throw out of Dispose */ }
+
+            // Uninstall in-game runtime error capture IFF this handle's Build installed it (opt-in via
+            // WithRuntimeErrorCapture). Removes the engine logger + the AppDomain/TaskScheduler fault hooks and
+            // clears RuntimeErrorCollector.Current. Idempotent + defensive in RuntimeErrorCapture.Uninstall.
+            if (_uninstallErrorCaptureOnDispose)
+            {
+                try { RuntimeErrorCapture.Uninstall(); }
+                catch { /* best-effort: never throw out of Dispose */ }
+            }
+        }
+
+        void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(GodotMcpRuntimeHandle));
+        }
+    }
+}

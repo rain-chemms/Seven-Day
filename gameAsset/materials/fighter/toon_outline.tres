@@ -1,0 +1,11 @@
+[gd_resource type="ShaderMaterial" format=3 uid="uid://c12ilq4kr1p1g"]
+
+[ext_resource type="Shader" uid="uid://djp3u88ja0yd5" path="res://gameAsset/shaders/toon_type/toon_outline.gdshader" id="1_lprks"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_lprks")
+shader_parameter/outline_color = Color(0.231, 0.18, 0.086, 1)
+shader_parameter/width = 0.018
+shader_parameter/screen_uniform = false
+shader_parameter/reference_distance = 12.0
