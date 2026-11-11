@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://gt0m157q4s7o"]
 
-[ext_resource type="PackedScene" uid="uid://yevy27clwbv3" path="res://gameAsset/models/fighter/fighter.glb" id="1_kk1fe"]
+[ext_resource type="PackedScene" uid="uid://yevy27clwbv3" path="res://gameAsset/models/militaries/fighter/fighter.glb" id="1_kk1fe"]
 [ext_resource type="Material" uid="uid://c6svgntxeqks4" path="res://gameAsset/materials/fighter/toon_cel.tres" id="2_vlk76"]
 
 [node name="fighter" unique_id=1541406446 instance=ExtResource("1_kk1fe")]
