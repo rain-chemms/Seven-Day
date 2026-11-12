@@ -67,6 +67,14 @@ public partial class CardHandView : Control
         return true;
     }
 
+    /// <summary>临时隐藏某张卡（出牌飞行期间用），布局保持不变。</summary>
+    public void SetCardVisible(int index, bool visible)
+    {
+        if (index < 0 || index >= _cards.Count)
+            return;
+        _cards[index].Visible = visible;
+    }
+
     /// <summary>重建整手牌（张数或内容变化时调用）。</summary>
     public void Refresh()
     {

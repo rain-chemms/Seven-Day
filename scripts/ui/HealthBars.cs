@@ -47,15 +47,27 @@ public partial class HealthBars : Control
 
     public void SetCamera(Camera3D camera) => _camera = camera;
 
-    /// <summary>每帧由战斗场景更新要画的血条（目标值）。</summary>
+    /// <summary>每帧由战斗场景更新要画的血条（目标值）；顺带在这里做血量渐变与重绘。</summary>
     public void SetBars(List<Bar> bars)
     {
+        // 自己算帧间隔，不依赖 _Process（Control 的 _Process 有时不会自动启用，
+        // 会导致画布不重绘、血条像钉在屏幕上一样不跟着镜头走）
+        double now = Time.GetTicksMsec() / 1000.0;
+        float dt = _lastTime > 0 ? Mathf.Clamp((float)(now - _lastTime), 0f, 0.1f) : 0.016f;
+        _lastTime = now;
+
         _bars.Clear();
         if (bars != null)
             _bars.AddRange(bars);
+
+        TickRatios(dt);
+        QueueRedraw();
     }
 
-    public override void _Process(double delta)
+    private double _lastTime;
+
+    /// <summary>平滑血量：显示值追目标、残影慢半拍。</summary>
+    private void TickRatios(float dt)
     {
         if (_bars.Count == 0)
         {
@@ -64,7 +76,6 @@ public partial class HealthBars : Control
             return;
         }
 
-        float dt = (float)delta;
         var alive = new HashSet<(bool, int)>();
 
         foreach (Bar bar in _bars)
@@ -97,8 +108,6 @@ public partial class HealthBars : Control
             _shown.Remove(key);
             _ghost.Remove(key);
         }
-
-        QueueRedraw();
     }
 
     /// <summary>调试：某个血条的显示值 / 残影值。</summary>

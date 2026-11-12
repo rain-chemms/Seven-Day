@@ -93,6 +93,7 @@
   {
     "id": "missileSilo",
     "nameZh": "巡航导弹井",
+    "hiddenParts": ["Silo_Missile", "Silo_Flame"],
     "nameEn": "Missile Silo",
     "hp": [200, 300, 400],
     "income": [0, 0, 0],

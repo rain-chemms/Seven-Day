@@ -22,6 +22,13 @@ public sealed class Cell
 
     public bool Contested => ControlPlayer && ControlEnemy;
     public bool PassableGround => Terrain != TerrainType.Water && Building == null;
+
+    /// <summary>
+    /// 陆军能否进入这一格：不能过水；有建筑时只能是**己方**建筑
+    /// （允许走进并停留在自家建筑上，但不能进敌方建筑）。
+    /// </summary>
+    public bool CanGroundEnter(PlayerId owner) =>
+        Terrain != TerrainType.Water && (Building == null || Building.Owner == owner);
 }
 
 public sealed class BuildingInst
@@ -179,6 +186,12 @@ public sealed class BattleState
         Cell cell = Cell(coord);
         if (cell == null || cell.Building != null)
             return false;
+
+        // 敌方单位站着的格子不能造（否则会出现「陆军停在敌方建筑上」）
+        PlayerId foe = player == PlayerId.Player ? PlayerId.Enemy : PlayerId.Player;
+        if (cell.Units.Any(u => u.Alive && u.Owner == foe))
+            return false;
+
         if (!cell.ControlPlayer && !cell.ControlEnemy)
             return false;
         bool mine = player == PlayerId.Player ? cell.ControlPlayer : cell.ControlEnemy;
@@ -325,7 +338,7 @@ public sealed class BattleState
                 Cell cell = Cell(nb);
                 if (cell == null)
                     continue;
-                if (!u.IsAir && !cell.PassableGround)
+                if (!u.IsAir && !cell.CanGroundEnter(u.Owner))
                     continue;
                 if (visited.ContainsKey(nb))
                     continue;

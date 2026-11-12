@@ -53,7 +53,7 @@ public static class ModelUtil
         return total;
     }
 
-    private static FitInfo Analyze(Node3D model, bool includeHidden = false)
+    private static FitInfo Analyze(Node3D model, bool includeHidden = false, string[] exclude = null)
     {
         var info = new FitInfo();
         Aabb? total = null;
@@ -63,6 +63,11 @@ public static class ModelUtil
         foreach (MeshInstance3D mi in model.FindChildren("*", "MeshInstance3D", true, false).Cast<MeshInstance3D>())
         {
             if (mi.Mesh == null || (!includeHidden && !mi.Visible))
+                continue;
+
+            // 被 hiddenParts 隐藏的部件（导弹、尾焰）不参与尺寸/落地计算，
+            // 否则它们伸到地面以下的高度会把整座建筑顶起来悬空
+            if (exclude != null && System.Array.IndexOf(exclude, mi.Name.ToString()) >= 0)
                 continue;
 
             Transform3D rel = mi.Transform;
@@ -200,12 +205,12 @@ public static class ModelUtil
     /// 返回缩放系数，height 返回缩放后的模型高度。
     /// </summary>
     public static float FitAndGround(Node3D model, float target, out float height, bool fitDiagonal = false,
-        bool includeHidden = false)
+        bool includeHidden = false, string[] exclude = null)
     {
         height = 0f;
         // 建筑的各级是「加法」，按**所有**网格（含当前等级隐藏的）来量尺寸，
         // 这样升级时整栋楼的缩放保持一致，不会每升一级就变一下大小。
-        FitInfo info = Analyze(model, includeHidden);
+        FitInfo info = Analyze(model, includeHidden, exclude);
         Aabb b = info.Full;
 
         Vector2 center = info.GroundCenter;
@@ -239,7 +244,7 @@ public static class ModelUtil
     /// 按等级只显示对应那一个，其余隐藏，升级时就等于换了模型。
     /// 炮口闪光、炮塔、导弹这类小部件（Flash/Flame/Missile/Barrel/Turret）始终显示。
     /// </summary>
-    public static void SetBuildingLevel(Node3D model, int level)
+    public static void SetBuildingLevel(Node3D model, int level, string[] hiddenParts = null)
     {        if (model == null)
             return;
 
@@ -295,6 +300,23 @@ public static class ModelUtil
                 mi.Visible = level >= 2;
             else
                 mi.Visible = true;   // 基础模型（以及挂在它下面的炮塔/炮管等部件）始终显示
+
+            // 弹药类部件（导弹、尾焰）按配置隐藏，只留建筑本体
+            if (mi.Visible && hiddenParts != null)
+            {
+                string nodeName = mi.Name.ToString();
+                foreach (string part in hiddenParts)
+                {
+                    if (string.IsNullOrEmpty(part))
+                        continue;
+                    // 精确匹配节点名：用 Contains 会把 MissileSilo 这种主体也一起隐藏掉
+                    if (nodeName == part)
+                    {
+                        mi.Visible = false;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -303,7 +325,7 @@ public static class ModelUtil
     /// height 返回缩放后的模型高度（用来把站在建筑上的单位抬起来）。
     /// </summary>
     public static Node3D SpawnModel(string path, Node3D parent, float targetWidth, int buildingLevel,
-        out float height, Color? outlineColor = null)
+        out float height, Color? outlineColor = null, string[] hiddenParts = null)
     {
         height = 0f;
         if (string.IsNullOrEmpty(path) || !ResourceLoader.Exists(path))
@@ -325,10 +347,11 @@ public static class ModelUtil
         // 按《建筑的指南》设置等级可见性（Lv0/Lv1/Lv2 逐级叠加），
         // 尺寸则按「所有网格」统一量，升级时不会忽大忽小。
         if (buildingLevel > 0)
-            SetBuildingLevel(n3, Mathf.Clamp(buildingLevel, 1, 3));
+            SetBuildingLevel(n3, Mathf.Clamp(buildingLevel, 1, 3), hiddenParts);
 
         float scale = FitAndGround(n3, targetWidth, out height,
-            fitDiagonal: buildingLevel > 0, includeHidden: buildingLevel > 0);
+            fitDiagonal: buildingLevel > 0, includeHidden: buildingLevel > 0,
+            exclude: hiddenParts);
         ToonMaterial.Apply(n3, path, scale, outlineColor);
         return n3;
     }

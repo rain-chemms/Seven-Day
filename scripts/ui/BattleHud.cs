@@ -355,6 +355,26 @@ public partial class BattleHud : CanvasLayer
 
     public void HideArrow() => _arrow?.HideArrow();
 
+    /// <summary>出牌飞行期间隐藏手牌里对应的那张卡。</summary>
+    public void SetHandCardVisible(int index, bool visible) => _hand.SetCardVisible(index, visible);
+
+    /// <summary>
+    /// 出牌飞行动画：复制一张卡从手牌位置沿曲线飞到目标格，落地后回调（再真正生效）。
+    /// </summary>
+    public void FlyCard(int cardIndex, CardDef card, Vector2 targetScreen, Action onArrive)
+    {
+        if (card == null || !_hand.TryGetCardRect(cardIndex, out Rect2 from))
+        {
+            onArrive?.Invoke();
+            return;
+        }
+
+        var fly = new CardFlyEffect { Name = "CardFly" };
+        _root.AddChild(fly);
+        fly.OnArrive = onArrive;
+        fly.Play(card, from, targetScreen);
+    }
+
     /// <summary>血条层：设置相机与每帧的数据。</summary>
     public void SetHealthCamera(Camera3D camera) => _bars?.SetCamera(camera);
 

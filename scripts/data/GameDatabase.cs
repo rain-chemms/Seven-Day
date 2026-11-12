@@ -42,6 +42,12 @@ public sealed class BuildingDef
     /// <summary>花多少钱可以让这座防御建筑在当回合多开一次炮；0 = 不支持。</summary>
     public int ExtraFireCost { get; set; }
 
+    /// <summary>
+    /// 需要隐藏的部件名关键字（例如导弹发射井里的 Missile / Flame）：
+    /// 这些是「弹药」而不是建筑本体，摆在格子上会穿到平台下面去。
+    /// </summary>
+    public string[] HiddenParts { get; set; } = System.Array.Empty<string>();
+
     public int MaxLevel => Hp.Length;
 
     public int HpAt(int level) => Hp[Mathf.Clamp(level - 1, 0, Hp.Length - 1)];

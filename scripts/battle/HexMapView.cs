@@ -53,6 +53,8 @@ public partial class HexMapView : Node3D
 
     /// <summary>当前被选中（黄色描边）的单位 id，-1 表示没有。</summary>
     private int _selectedUnitId = -1;
+    private int _selectedBuildingId = -1;
+    private readonly Dictionary<int, (string Path, float Scale, PlayerId Owner)> _buildingMaterials = new();
 
     private Node3D _ringRoot;
     private Node3D _borderRoot;
@@ -351,6 +353,9 @@ public partial class HexMapView : Node3D
         {
             _buildingViews[id].QueueFree();
             _buildingViews.Remove(id);
+            _buildingMaterials.Remove(id);
+            _buildingTops.Remove(id);
+            _buildingHeights.Remove(id);
         }
 
         var seenUnits = new HashSet<int>();
@@ -706,12 +711,14 @@ public partial class HexMapView : Node3D
         string path = string.IsNullOrEmpty(b.Def.Model) ? "" : b.Def.Model;
         // 1.70 = 六边形内切圆直径（0.866×2）留一点余量：不管建筑怎么转，底座都不会顶出格子
         Node3D model = ModelUtil.SpawnModel(path, root, 1.70f, level, out float height,
-            outlineColor: ToonMaterial.OutlineFor(b.Owner));
+            outlineColor: ToonMaterial.OutlineFor(b.Owner),
+            hiddenParts: b.Def?.HiddenParts);
         if (model != null)
         {
             model.Name = b.DefId;
             _buildingLevels[b.Id] = b.Level;
             _buildingHeights[b.Id] = height;
+            _buildingMaterials[b.Id] = (path, model.Scale.X, b.Owner);
 
             // 当前等级「实际可见」的高度（单位站屋顶、血条位置都用它；
             // height 是按全部网格量的，会用成三级的高度）
@@ -932,10 +939,14 @@ public partial class HexMapView : Node3D
         _buildingViews.Remove(b.Id);
         _buildingHeights.Remove(b.Id);
         _buildingTops.Remove(b.Id);
+        _buildingMaterials.Remove(b.Id);
 
         _previewBuildingId = b.Id;
         _previewSavedLevel = b.Level;
         _buildingViews[b.Id] = CreateBuildingView(b, level);
+
+        // 重建后会丢掉选中描边，补回来
+        ReapplySelection();
     }
 
     /// <summary>建造预览：在空地格子上临时摆一个目标建筑（鼠标移开按钮后移除）。</summary>
@@ -977,13 +988,17 @@ public partial class HexMapView : Node3D
                 _buildingViews.Remove(id);
                 _buildingHeights.Remove(id);
                 _buildingTops.Remove(id);
+                _buildingMaterials.Remove(id);
             }
 
             // 用**当前真实等级**重建（不能用心存的那个等级：
             // 预览期间如果建筑真的升级了，存的是升级前的等级，会造成「升完级又退回上一级」）
             BuildingInst inst = _state?.Buildings.FirstOrDefault(x => x.Id == id);
             if (inst != null)
+            {
                 _buildingViews[id] = CreateBuildingView(inst);
+                ReapplySelection();
+            }
         }
 
         if (_previewView != null)
@@ -992,6 +1007,25 @@ public partial class HexMapView : Node3D
             _previewView = null;
             _previewBuildDefId = null;
         }
+    }
+
+    /// <summary>调试：建筑当前描边色（十六进制）。</summary>
+    public string DebugBuildingOutline(int buildingId)
+    {
+        if (!_buildingViews.TryGetValue(buildingId, out Node3D view))
+            return "no-view";
+
+        foreach (MeshInstance3D mi in view.FindChildren("*", "MeshInstance3D", true, false)
+                     .Cast<MeshInstance3D>())
+        {
+            if (mi.MaterialOverride is not ShaderMaterial cel || cel.NextPass is not ShaderMaterial outline)
+                continue;
+
+            var c = (Vector3)outline.GetShaderParameter("outline_color");
+            return new Color(c.X, c.Y, c.Z).ToHtml(false);
+        }
+
+        return "no-material";
     }
 
     /// <summary>调试：建筑当前可见高度。</summary>
@@ -1017,6 +1051,45 @@ public partial class HexMapView : Node3D
         if (!_unitViews.TryGetValue(unitId, out Node3D view))
             return;
         if (!_unitMaterials.TryGetValue(unitId, out (string Path, float Scale, PlayerId Owner) info))
+            return;
+
+        Color? color = selected
+            ? ToonMaterial.SelectedOutline
+            : ToonMaterial.OutlineFor(info.Owner);
+
+        ToonMaterial.Apply(view, info.Path, info.Scale, color);
+    }
+
+    /// <summary>设置当前选中建筑（-1 = 取消）：选中的用黄色描边，其余恢复阵营色。</summary>
+    public void SetSelectedBuilding(int buildingId)
+    {
+        if (_selectedBuildingId == buildingId)
+            return;
+
+        if (_selectedBuildingId >= 0)
+            ApplyBuildingOutline(_selectedBuildingId, selected: false);
+
+        _selectedBuildingId = buildingId;
+
+        if (buildingId >= 0)
+            ApplyBuildingOutline(buildingId, selected: true);
+    }
+
+    /// <summary>升级后建筑视图被重建，重新套一次选中描边。</summary>
+    public void ReapplySelection()
+    {
+        if (_selectedUnitId >= 0)
+            ApplyUnitOutline(_selectedUnitId, selected: true);
+
+        if (_selectedBuildingId >= 0)
+            ApplyBuildingOutline(_selectedBuildingId, selected: true);
+    }
+
+    private void ApplyBuildingOutline(int buildingId, bool selected)
+    {
+        if (!_buildingViews.TryGetValue(buildingId, out Node3D view))
+            return;
+        if (!_buildingMaterials.TryGetValue(buildingId, out (string Path, float Scale, PlayerId Owner) info))
             return;
 
         Color? color = selected
