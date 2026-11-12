@@ -1,6 +1,9 @@
-[gd_scene format=3 uid="uid://dwiuka0kucdhg"]
+[gd_scene load_steps=2 format=3 uid="uid://dwiuka0kucdhg"]
 
-[node name="battleScene" type="Node3D" unique_id=202459582]
+[ext_resource type="Script" path="res://scripts/battle/BattleScene.cs" id="1_battle"]
 
-[node name="Camera3D" type="Camera3D" parent="." unique_id=1299037602]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5716174, 3.289715)
+[node name="battleScene" type="Node3D"]
+script = ExtResource("1_battle")
+MapId = "map_01"
+DifficultyIndex = 1
+PlayerMovesFirst = true

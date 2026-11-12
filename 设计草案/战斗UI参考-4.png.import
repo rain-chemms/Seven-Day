@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bdg2kyym66rmx"
-path="res://.godot/imported/IMG_20261110_144414.jpg-9f451d9e23d557874af169a730945b1b.ctex"
+uid="uid://dog4jfwexujt3"
+path="res://.godot/imported/战斗UI参考-4.png-6185c1c88b94493260a88865d9917fe2.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://设计草案/IMG_20261110_144414.jpg"
-dest_files=["res://.godot/imported/IMG_20261110_144414.jpg-9f451d9e23d557874af169a730945b1b.ctex"]
+source_file="res://设计草案/战斗UI参考-4.png"
+dest_files=["res://.godot/imported/战斗UI参考-4.png-6185c1c88b94493260a88865d9917fe2.ctex"]
 
 [params]
 

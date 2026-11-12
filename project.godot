@@ -11,9 +11,14 @@ config_version=5
 [application]
 
 config/name="Seven-Day"
-run/main_scene="uid://dwiuka0kucdhg"
+run/main_scene="res://scenes/mainMenu.tscn"
 config/features=PackedStringArray("4.7", "C#", "Mobile")
 config/icon="res://icon.svg"
+
+[autoload]
+
+AudioManager="*res://scripts/core/AudioManager.cs"
+ScreenshotAgent="*res://scripts/tools/ScreenshotAgent.cs"
 
 [display]
 

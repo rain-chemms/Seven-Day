@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://ckfhoexr6gwvo"
-path="res://.godot/imported/IMG_20261110_144511.jpg-bf3a90f329b50d26c8f08dd76da4de85.ctex"
+uid="uid://cwurc7nh2eili"
+path="res://.godot/imported/草案-5.jpg-29920d9a19117cfe6b465be30fd5022f.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://设计草案/IMG_20261110_144511.jpg"
-dest_files=["res://.godot/imported/IMG_20261110_144511.jpg-bf3a90f329b50d26c8f08dd76da4de85.ctex"]
+source_file="res://设计草案/草案/草案-5.jpg"
+dest_files=["res://.godot/imported/草案-5.jpg-29920d9a19117cfe6b465be30fd5022f.ctex"]
 
 [params]
 

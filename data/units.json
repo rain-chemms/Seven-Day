@@ -1,0 +1,67 @@
+[
+  {
+    "id": "infantry",
+    "nameZh": "步兵",
+    "nameEn": "Infantry",
+    "hp": 150,
+    "damage": 100,
+    "move": 2,
+    "range": 1,
+    "canHitAir": false,
+    "canHitGround": true,
+    "isAir": false,
+    "model": "res://gameAsset/models/militaries/infantry/infantry.glb"
+  },
+  {
+    "id": "tank",
+    "nameZh": "坦克",
+    "nameEn": "Tank",
+    "hp": 450,
+    "damage": 200,
+    "move": 2,
+    "range": 2,
+    "canHitAir": false,
+    "canHitGround": true,
+    "isAir": false,
+    "model": "res://gameAsset/models/militaries/tank/tank.glb"
+  },
+  {
+    "id": "missileLauncher",
+    "nameZh": "导弹车",
+    "nameEn": "Missile Launcher",
+    "hp": 250,
+    "damage": 400,
+    "move": 1,
+    "range": 3,
+    "canHitAir": true,
+    "canHitGround": true,
+    "isAir": false,
+    "model": "res://gameAsset/models/militaries/missileLauncher/missile_launcher.glb"
+  },
+  {
+    "id": "helicopter",
+    "nameZh": "武装直升机",
+    "nameEn": "Attack Helicopter",
+    "hp": 250,
+    "damage": 150,
+    "move": 3,
+    "range": 2,
+    "canHitAir": false,
+    "canHitGround": true,
+    "isAir": true,
+    "model": "res://gameAsset/models/militaries/helicopter/helicopter.glb"
+  },
+  {
+    "id": "fighter",
+    "nameZh": "战斗机",
+    "nameEn": "Fighter",
+    "hp": 400,
+    "damage": 300,
+    "move": 4,
+    "range": 2,
+    "canHitAir": true,
+    "canHitGround": true,
+    "isAir": true,
+    "model": "res://gameAsset/models/militaries/fighter/fighter.glb"
+  }
+]

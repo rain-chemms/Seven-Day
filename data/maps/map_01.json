@@ -1,0 +1,47 @@
+{
+  "id": "map_01",
+  "nameZh": "沙海隘口",
+  "nameEn": "Sand Pass",
+  "width": 11,
+  "height": 9,
+  "startGold": 300,
+  "terrainRows": [
+    "rrgggggggss",
+    "rgggggggggs",
+    "gggsswggggg",
+    "ggggwwwgggg",
+    "gggggwwgggg",
+    "ggggggggggg",
+    "gsggggddggg",
+    "ssggggddddg",
+    "sggggggddds"
+  ],
+  "playerHq": [-1, 4],
+  "enemyHq": [7, 4],
+  "playerDeck": [
+    "unit_infantry",
+    "unit_infantry",
+    "unit_infantry",
+    "unit_tank",
+    "unit_tank",
+    "unit_missile_launcher",
+    "unit_helicopter",
+    "unit_fighter",
+    "magic_airstrike",
+    "magic_repair",
+    "magic_boost"
+  ],
+  "enemyDeck": [
+    "unit_infantry",
+    "unit_infantry",
+    "unit_infantry",
+    "unit_tank",
+    "unit_tank",
+    "unit_missile_launcher",
+    "unit_helicopter",
+    "unit_fighter",
+    "magic_missile",
+    "magic_repair",
+    "magic_boost"
+  ]
+}

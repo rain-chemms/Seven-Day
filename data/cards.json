@@ -1,0 +1,96 @@
+[
+  {
+    "id": "unit_infantry",
+    "nameZh": "步兵",
+    "nameEn": "Infantry",
+    "descriptionZh": "廉价的地面单位，用来占点与推进。",
+    "descriptionEn": "Cheap ground unit.",
+    "kind": "unit",
+    "unit": "infantry",
+    "cost": 100
+  },
+  {
+    "id": "unit_tank",
+    "nameZh": "坦克",
+    "nameEn": "Tank",
+    "descriptionZh": "高血量地面单位，无法攻击空中。",
+    "descriptionEn": "Tanky ground unit. Cannot hit air.",
+    "kind": "unit",
+    "unit": "tank",
+    "cost": 250
+  },
+  {
+    "id": "unit_missile_launcher",
+    "nameZh": "导弹车",
+    "nameEn": "Missile Launcher",
+    "descriptionZh": "射程 3，可对地对空。",
+    "descriptionEn": "Range 3. Hits air and ground.",
+    "kind": "unit",
+    "unit": "missileLauncher",
+    "cost": 300
+  },
+  {
+    "id": "unit_helicopter",
+    "nameZh": "武装直升机",
+    "nameEn": "Attack Helicopter",
+    "descriptionZh": "空中单位，可越过地形。",
+    "descriptionEn": "Air unit. Ignores terrain.",
+    "kind": "unit",
+    "unit": "helicopter",
+    "cost": 350
+  },
+  {
+    "id": "unit_fighter",
+    "nameZh": "战斗机",
+    "nameEn": "Fighter",
+    "descriptionZh": "移动 4，可对空，火力最猛。",
+    "descriptionEn": "Move 4. Hits air.",
+    "kind": "unit",
+    "unit": "fighter",
+    "cost": 450
+  },
+  {
+    "id": "magic_airstrike",
+    "nameZh": "空袭",
+    "nameEn": "Air Strike",
+    "descriptionZh": "对一格内敌军造成 250 伤害。防空炮范围内无效。",
+    "descriptionEn": "250 damage in one tile. Blocked by AA guns.",
+    "kind": "strike",
+    "cost": 200,
+    "effect": "airstrike",
+    "power": 250
+  },
+  {
+    "id": "magic_missile",
+    "nameZh": "导弹袭击",
+    "nameEn": "Missile Strike",
+    "descriptionZh": "对一格内敌军造成 350 伤害。",
+    "descriptionEn": "350 damage in one tile.",
+    "kind": "strike",
+    "cost": 300,
+    "effect": "missile",
+    "power": 350
+  },
+  {
+    "id": "magic_repair",
+    "nameZh": "维修",
+    "nameEn": "Repair",
+    "descriptionZh": "所有己方建筑恢复 200 点生命。",
+    "descriptionEn": "Heal friendly buildings for 200.",
+    "kind": "global",
+    "cost": 150,
+    "effect": "repair",
+    "power": 200
+  },
+  {
+    "id": "magic_boost",
+    "nameZh": "强行军",
+    "nameEn": "Forced March",
+    "descriptionZh": "本回合地面单位移动 +1。",
+    "descriptionEn": "Ground units get +1 move this turn.",
+    "kind": "global",
+    "cost": 100,
+    "effect": "boost",
+    "power": 1
+  }
+]
