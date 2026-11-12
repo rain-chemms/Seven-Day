@@ -23,6 +23,12 @@ public partial class BattleHud : CanvasLayer
     public event Action<string> BuildClicked;
     public event Action UpgradeClicked;
     public event Action DemolishClicked;
+    public event Action ExtraFireClicked;
+
+    /// <summary>鼠标悬停建造项 / 升级按钮时触发，用于预览下一级外观。</summary>
+    public event Action<string> BuildHovered;
+    public event Action PreviewUnhovered;
+    public event Action UpgradeHovered;
     public event Action CancelClicked;
 
     private Label _turnLabel;
@@ -31,12 +37,16 @@ public partial class BattleHud : CanvasLayer
     private Label _toastLabel;
     private PanelContainer _toastPanel;
     private Label _infoTitle;
-    private Label _infoBody;
+    private RichTextLabel _infoBody;
     private TextureRect _infoImage;
     private CardHandView _hand;
     private TargetArrow _arrow;
+    private HealthBars _bars;
     private Button _endTurnButton;
     private PanelContainer _infoPanel;
+    private Button _extraFireBtn;
+    private Button _demolishBtn;
+    private Button _upgradeBtn;
     private PanelContainer _buildMenu;
     private VBoxContainer _buildList;
     private Label _buildTitle;
@@ -66,6 +76,10 @@ public partial class BattleHud : CanvasLayer
         // 出牌指示箭头：放在最底层，被手牌和面板盖住
         _arrow = new TargetArrow { Name = "TargetArrow" };
         _root.AddChild(_arrow);
+
+        // 血条：在地图之上、手牌之下
+        _bars = new HealthBars { Name = "HealthBars" };
+        _root.AddChild(_bars);
 
         // ── 顶部信息条 ──
         var top = new PanelContainer
@@ -105,12 +119,12 @@ public partial class BattleHud : CanvasLayer
         {
             Name = "InfoPanel",
             Visible = false,
-            CustomMinimumSize = new Vector2(292, 0),
+            CustomMinimumSize = new Vector2(330, 0),
         };
         _infoPanel.SetAnchorsPreset(Control.LayoutPreset.TopRight);
-        _infoPanel.Position = new Vector2(-308, 72);
+        _infoPanel.Position = new Vector2(-346, 72);
         _infoPanel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.TopRight);
-        _infoPanel.OffsetLeft = -308;
+        _infoPanel.OffsetLeft = -346;
         _infoPanel.OffsetTop = 72;
         _infoPanel.OffsetRight = -16;
         _root.AddChild(_infoPanel);
@@ -131,22 +145,39 @@ public partial class BattleHud : CanvasLayer
         };
         infoBox.AddChild(_infoImage);
 
-        _infoBody = NewLabel("", 16);
-        _infoBody.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _infoBody.CustomMinimumSize = new Vector2(256, 0);
+        _infoBody = new RichTextLabel
+        {
+            BbcodeEnabled = true,
+            FitContent = true,
+            ScrollActive = false,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(256, 0),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _infoBody.AddThemeFontSizeOverride("normal_font_size", 16);
+        _infoBody.AddThemeColorOverride("default_color", UiTheme.Ink);
         infoBox.AddChild(_infoBody);
 
         var infoButtons = new HBoxContainer();
         infoButtons.AddThemeConstantOverride("separation", 8);
         infoBox.AddChild(infoButtons);
 
-        var upgradeBtn = NewButton("升级");
-        upgradeBtn.Pressed += () => UpgradeClicked?.Invoke();
-        infoButtons.AddChild(upgradeBtn);
+        _upgradeBtn = NewButton("升级");
+        _upgradeBtn.Pressed += () => UpgradeClicked?.Invoke();
+        _upgradeBtn.MouseEntered += () => UpgradeHovered?.Invoke();
+        _upgradeBtn.MouseExited += () => PreviewUnhovered?.Invoke();
+        infoButtons.AddChild(_upgradeBtn);
 
-        var demolishBtn = NewButton("拆除");
-        demolishBtn.Pressed += () => DemolishClicked?.Invoke();
-        infoButtons.AddChild(demolishBtn);
+        _demolishBtn = NewButton("拆除");
+        _demolishBtn.Pressed += () => DemolishClicked?.Invoke();
+        infoButtons.AddChild(_demolishBtn);
+
+        // 炮台等建筑可以花钱多打一炮
+        _extraFireBtn = NewButton("额外开炮");
+        _extraFireBtn.AddThemeColorOverride("font_disabled_color", new Color(0.23f, 0.18f, 0.09f, 0.55f));
+        _extraFireBtn.Pressed += () => ExtraFireClicked?.Invoke();
+        _extraFireBtn.Visible = false;
+        infoButtons.AddChild(_extraFireBtn);
 
     // ── 底部手牌（扇形） ──
     _hand = new CardHandView { Name = "Hand" };
@@ -205,7 +236,7 @@ public partial class BattleHud : CanvasLayer
         };
         _buildMenu.SetAnchorsPreset(Control.LayoutPreset.Center);
         _buildMenu.OffsetLeft = -160;
-        _buildMenu.OffsetTop = -140;
+        _buildMenu.OffsetTop = -250;
         _buildMenu.OffsetRight = 160;
         _root.AddChild(_buildMenu);
 
@@ -243,6 +274,8 @@ public partial class BattleHud : CanvasLayer
     {
         var b = new Button { Text = text };
         b.AddThemeFontSizeOverride("font_size", 18);
+        // 禁用态也要能看清文字（默认禁用色在沙色底上几乎隐形）
+        b.AddThemeColorOverride("font_disabled_color", new Color(0.23f, 0.18f, 0.09f, 0.55f));
         return b;
     }
 
@@ -322,7 +355,17 @@ public partial class BattleHud : CanvasLayer
 
     public void HideArrow() => _arrow?.HideArrow();
 
-    public void ShowInfo(string title, string body, string imagePath = null, bool showButtons = false)
+    /// <summary>血条层：设置相机与每帧的数据。</summary>
+    public void SetHealthCamera(Camera3D camera) => _bars?.SetCamera(camera);
+
+    public void SetHealthBars(List<HealthBars.Bar> bars) => _bars?.SetBars(bars);
+
+    /// <summary>调试：血条当前显示值 / 残影值。</summary>
+    public string DebugHealth(bool building, int id) => _bars?.DebugShown(building, id) ?? "n/a";
+
+    public void ShowInfo(string title, string body, string imagePath = null, bool showButtons = false,
+        int extraFireCost = 0, bool extraFireReady = false, bool showDemolish = true,
+        bool canUpgrade = true)
     {
         _infoPanel.Visible = true;
         _infoTitle.Text = title;
@@ -348,9 +391,42 @@ public partial class BattleHud : CanvasLayer
                 }
             }
         }
+
+        if (_extraFireBtn != null)
+        {
+            _extraFireBtn.Visible = showButtons && extraFireCost > 0;
+            if (extraFireCost > 0)
+            {
+                _extraFireBtn.Text = extraFireReady
+                    ? $"{Loc.T("info.extra_fire")} {extraFireCost}$"
+                    : Loc.T("info.extra_fire_used");
+                _extraFireBtn.Disabled = !extraFireReady;
+            }
+        }
+
+        if (_demolishBtn != null)
+            _demolishBtn.Visible = showButtons && showDemolish;
+
+        if (_upgradeBtn != null)
+        {
+            _upgradeBtn.Visible = showButtons;
+            _upgradeBtn.Disabled = !canUpgrade;
+        }
     }
 
     public void HideInfo() => _infoPanel.Visible = false;
+
+    private readonly Dictionary<string, Button> _buildButtons = new();
+
+    /// <summary>调试：模拟悬停某个建造选项。</summary>
+    public void DebugHoverBuild(string defId)
+    {
+        if (_buildButtons.TryGetValue(defId, out Button b))
+            b.EmitSignal(Control.SignalName.MouseEntered);
+    }
+
+    /// <summary>调试：模拟悬停升级按钮。</summary>
+    public void DebugHoverUpgrade() => _upgradeBtn?.EmitSignal(Control.SignalName.MouseEntered);
 
     public void ShowBuildMenu(IReadOnlyList<BuildingDef> defs, int gold)
     {
@@ -366,7 +442,10 @@ public partial class BattleHud : CanvasLayer
             b.Disabled = gold < cost;
             string id = def.Id;
             b.Pressed += () => BuildClicked?.Invoke(id);
+            b.MouseEntered += () => BuildHovered?.Invoke(id);
+            b.MouseExited += () => PreviewUnhovered?.Invoke();
             _buildList.AddChild(b);
+            _buildButtons[id] = b;
             ButtonJuice.Attach(b);
         }
 

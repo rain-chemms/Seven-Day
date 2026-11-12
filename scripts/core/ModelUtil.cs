@@ -21,22 +21,14 @@ public static class ModelUtil
     /// <summary>顶点抽样的上限，避免大模型卡顿。</summary>
     private const int MaxSamples = 4000;
 
-    /// <summary>调试开关：打印模型包围盒/本体尺寸。</summary>
+    /// <summary>调试开关：打印模型包围盒尺寸。</summary>
     public static bool Verbose;
-
-    /// <summary>调试开关：低等级也显示「主体」网格，用来确认各级网格是否互补。</summary>
-    public static bool ShowMainMeshAlways;
 
     private struct FitInfo
     {
         public Aabb Full;          // 模型空间整体包围盒
         public Vector2 GroundCenter; // 模型空间底面中心（XZ）
         public bool HasGround;
-
-        // 「建筑本体」：抬离地面那部分的 XZ 中心与尺寸（排除贴地围栏/地基）
-        public Vector2 BodyCenter;
-        public Vector2 BodySize;
-        public bool HasBody;
 
         /// <summary>模型空间的「屋顶高度」：顶点 Y 的 90 分位，忽略旗杆/天线这种细高零件。</summary>
         public float RoofY;
@@ -61,7 +53,7 @@ public static class ModelUtil
         return total;
     }
 
-    private static FitInfo Analyze(Node3D model)
+    private static FitInfo Analyze(Node3D model, bool includeHidden = false)
     {
         var info = new FitInfo();
         Aabb? total = null;
@@ -70,7 +62,7 @@ public static class ModelUtil
 
         foreach (MeshInstance3D mi in model.FindChildren("*", "MeshInstance3D", true, false).Cast<MeshInstance3D>())
         {
-            if (mi.Mesh == null || !mi.Visible)
+            if (mi.Mesh == null || (!includeHidden && !mi.Visible))
                 continue;
 
             Transform3D rel = mi.Transform;
@@ -208,24 +200,19 @@ public static class ModelUtil
     /// 返回缩放系数，height 返回缩放后的模型高度。
     /// </summary>
     public static float FitAndGround(Node3D model, float target, out float height, bool fitDiagonal = false,
-        bool fitBody = false)
+        bool includeHidden = false)
     {
         height = 0f;
-        FitInfo info = Analyze(model);
+        // 建筑的各级是「加法」，按**所有**网格（含当前等级隐藏的）来量尺寸，
+        // 这样升级时整栋楼的缩放保持一致，不会每升一级就变一下大小。
+        FitInfo info = Analyze(model, includeHidden);
         Aabb b = info.Full;
 
         Vector2 center = info.GroundCenter;
         Vector2 size = new(b.Size.X, b.Size.Z);
 
-        if (fitBody && info.HasBody)
-        {
-            center = info.BodyCenter;
-            size = info.BodySize;
-        }
-
         if (Verbose)
-            Godot.GD.Print($"[Model] full=({b.Size.X:F1},{b.Size.Z:F1}) body=({info.BodySize.X:F1}," +
-                           $"{info.BodySize.Y:F1}) hasBody={info.HasBody} fitBody={fitBody}");
+            Godot.GD.Print($"[Model] full=({b.Size.X:F1},{b.Size.Z:F1})");
 
         float extent = fitDiagonal
             ? Mathf.Sqrt(size.X * size.X + size.Y * size.Y)
@@ -252,9 +239,8 @@ public static class ModelUtil
     /// 按等级只显示对应那一个，其余隐藏，升级时就等于换了模型。
     /// 炮口闪光、炮塔、导弹这类小部件（Flash/Flame/Missile/Barrel/Turret）始终显示。
     /// </summary>
-    public static void SetBuildingLevel(Node3D model, int level, bool showMain = false)
-    {
-        if (model == null)
+    public static void SetBuildingLevel(Node3D model, int level)
+    {        if (model == null)
             return;
 
         List<MeshInstance3D> meshes = model.FindChildren("*", "MeshInstance3D", true, false)
@@ -264,6 +250,21 @@ public static class ModelUtil
 
         // 节点名和资源名都可能是 Lv1_Mesh / Lv2_Mesh，两个都看
         static string Key(MeshInstance3D mi) => mi.Name + "|" + (mi.Mesh?.ResourceName ?? "");
+
+        // 先记下原来的父级链：炮管/炮塔这类「部件」常常挂在某一级的网格节点下面，
+        // reparent 之后就看不出来了，必须提前记下来，否则会出现「炮管跟着高等级显示、底座没有」的穿帮。
+        foreach (MeshInstance3D mi in meshes)
+        {
+            var chain = new List<string>();
+            Node p = mi.GetParent();
+            while (p != null && p != model)
+            {
+                chain.Add(p.Name);
+                p = p.GetParent();
+            }
+
+            mi.SetMeta("origChain", string.Join("/", chain));
+        }
 
         // 导出的层级里，Lv1/Lv2 常常是「Lv3 网格」的子节点；
         // 直接隐藏父网格会连子网格一起消失，所以先把所有网格提到同一层（保留世界变换）。
@@ -283,122 +284,17 @@ public static class ModelUtil
 
         foreach (MeshInstance3D mi in meshes)
         {
-            string k = Key(mi);
+            string chain = mi.GetMeta("origChain", "").AsString();
+            string k = Key(mi) + "|" + chain;
 
-            if (k.Contains("Lv1"))
-                mi.Visible = level <= 1;
-            else if (k.Contains("Lv2"))
-                mi.Visible = level == 2;
-            else if (k.Contains("Flash") || k.Contains("Flame") || k.Contains("Missile") ||
-                     k.Contains("Barrel") || k.Contains("Turret"))
-                mi.Visible = true;
+            // 按《建筑的指南》：Lv0 是基础模型，Lv1/Lv2 是「在上一级基础上追加」的装饰，
+            // 所以游戏等级 1/2/3 = 模型 Lv0/Lv1/Lv2，子物体按「达到即显示」累积。
+            if (k.Contains("Lv2"))
+                mi.Visible = level >= 3;
+            else if (k.Contains("Lv1"))
+                mi.Visible = level >= 2;
             else
-                mi.Visible = level >= 3 || showMain || ShowMainMeshAlways;
-        }
-    }
-
-    /// <summary>
-    /// 有些建筑的 Lv1/Lv2 网格是「底座 + 上层楼体」两段，中间整层是空的，
-    /// 结果楼体悬在半空（指挥部 Lv1 在 2.0~4.5 米之间没有任何顶点）。
-    /// 这里找出最大的高度缺口，把缺口以上的顶点整体下移，让楼体落回底座上。
-    /// </summary>
-    public static void DropFloatingParts(Node3D model)
-    {
-        foreach (MeshInstance3D mi in model.FindChildren("*", "MeshInstance3D", true, false)
-                     .Cast<MeshInstance3D>())
-        {
-            if (mi.Mesh == null || !mi.Visible || mi.Mesh.GetSurfaceCount() == 0)
-                continue;
-
-            Mesh mesh = mi.Mesh;
-
-            // 1) 统计顶点高度分布
-            var ys = new List<float>();
-            for (int s = 0; s < mesh.GetSurfaceCount(); s++)
-            {
-                Godot.Collections.Array arrays = mesh.SurfaceGetArrays(s);
-                if (arrays.Count <= (int)Mesh.ArrayType.Vertex)
-                    continue;
-                Variant v = arrays[(int)Mesh.ArrayType.Vertex];
-                if (v.VariantType != Variant.Type.PackedVector3Array)
-                    continue;
-                foreach (Vector3 p in v.AsVector3Array())
-                    ys.Add(p.Y);
-            }
-
-            if (ys.Count < 32)
-                continue;
-
-            float minY = ys.Min();
-            float maxY = ys.Max();
-            float height = maxY - minY;
-            if (height < 0.5f)
-                continue;
-
-            const int Bins = 40;
-            var count = new int[Bins];
-            foreach (float y in ys)
-                count[Mathf.Clamp((int)((y - minY) / height * (Bins - 1)), 0, Bins - 1)]++;
-
-            // 2) 找最大的连续空档（两端都要有实体）
-            int bestStart = -1, bestLen = 0;
-            for (int i = 0; i < Bins;)
-            {
-                if (count[i] > 0)
-                {
-                    i++;
-                    continue;
-                }
-
-                int j = i;
-                while (j < Bins && count[j] == 0)
-                    j++;
-
-                bool hasBelow = i > 0;
-                bool hasAbove = j < Bins;
-                if (hasBelow && hasAbove && j - i > bestLen)
-                {
-                    bestLen = j - i;
-                    bestStart = i;
-                }
-
-                i = j;
-            }
-
-            if (bestStart < 0 || bestLen < Bins * 0.12f)
-                continue;
-
-            float gapStart = minY + height * bestStart / (Bins - 1);
-            float gapEnd = minY + height * (bestStart + bestLen) / (Bins - 1);
-            float drop = gapEnd - gapStart;
-            if (drop < height * 0.12f)
-                continue;
-
-            // 3) 把缺口以上的顶点整体下移 drop
-            var rebuilt = new ArrayMesh();
-            for (int s = 0; s < mesh.GetSurfaceCount(); s++)
-            {
-                Godot.Collections.Array arrays = mesh.SurfaceGetArrays(s);
-                if (arrays.Count <= (int)Mesh.ArrayType.Vertex)
-                    continue;
-                Variant v = arrays[(int)Mesh.ArrayType.Vertex];
-                if (v.VariantType != Variant.Type.PackedVector3Array)
-                    continue;
-
-                Vector3[] verts = v.AsVector3Array();
-                for (int i = 0; i < verts.Length; i++)
-                {
-                    if (verts[i].Y > gapStart)
-                        verts[i] = new Vector3(verts[i].X, verts[i].Y - drop, verts[i].Z);
-                }
-
-                arrays[(int)Mesh.ArrayType.Vertex] = verts;
-                rebuilt.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-                rebuilt.SurfaceSetMaterial(rebuilt.GetSurfaceCount() - 1, mesh.SurfaceGetMaterial(s));
-            }
-
-            if (rebuilt.GetSurfaceCount() > 0)
-                mi.Mesh = rebuilt;
+                mi.Visible = true;   // 基础模型（以及挂在它下面的炮塔/炮管等部件）始终显示
         }
     }
 
@@ -407,7 +303,7 @@ public static class ModelUtil
     /// height 返回缩放后的模型高度（用来把站在建筑上的单位抬起来）。
     /// </summary>
     public static Node3D SpawnModel(string path, Node3D parent, float targetWidth, int buildingLevel,
-        out float height, bool fitBody = false, bool showMain = false, Color? outlineColor = null)
+        out float height, Color? outlineColor = null)
     {
         height = 0f;
         if (string.IsNullOrEmpty(path) || !ResourceLoader.Exists(path))
@@ -426,18 +322,13 @@ public static class ModelUtil
 
         parent.AddChild(n3);
 
-        // 先按等级筛掉多余网格，再按「当前等级」的包围盒缩放
+        // 按《建筑的指南》设置等级可见性（Lv0/Lv1/Lv2 逐级叠加），
+        // 尺寸则按「所有网格」统一量，升级时不会忽大忽小。
         if (buildingLevel > 0)
-        {
-            SetBuildingLevel(n3, Mathf.Clamp(buildingLevel, 1, 3), showMain);
-
-            // Lv1/Lv2 的网格常常缺中间一层，楼体悬空 —— 把上层落回底座
-            if (buildingLevel < 3)
-                DropFloatingParts(n3);
-        }
+            SetBuildingLevel(n3, Mathf.Clamp(buildingLevel, 1, 3));
 
         float scale = FitAndGround(n3, targetWidth, out height,
-            fitDiagonal: buildingLevel > 0, fitBody: fitBody);
+            fitDiagonal: buildingLevel > 0, includeHidden: buildingLevel > 0);
         ToonMaterial.Apply(n3, path, scale, outlineColor);
         return n3;
     }

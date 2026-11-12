@@ -190,7 +190,7 @@ public partial class CardHandView : Control
         float width = Size.X > 1f ? Size.X : 1280f;
         float cx = width * 0.5f;
         // 留出底部边距，避免旋转后卡角被屏幕裁掉
-        float baseY = Size.Y - 46f;
+        float baseY = Size.Y - 22f;
 
         return new Vector2(
             cx + t * Spacing - CardView.CardWidth * 0.5f,

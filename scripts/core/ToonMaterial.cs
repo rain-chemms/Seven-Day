@@ -19,6 +19,9 @@ public static class ToonMaterial
     /// <summary>敌方描边色（红）</summary>
     public static readonly Color EnemyOutline = new("C43B31");
 
+    /// <summary>选中单位的高亮描边（黄）</summary>
+    public static readonly Color SelectedOutline = new("F2C230");
+
     /// <summary>按阵营取描边色；中立/未指定时用默认深棕。</summary>
     public static Color? OutlineFor(PlayerId owner) => owner switch
     {

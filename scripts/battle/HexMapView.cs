@@ -26,6 +26,9 @@ public partial class HexMapView : Node3D
     private Mesh _ringMesh;
     private Mesh _borderMesh;
     private Mesh _markerRingMesh;
+    private Mesh _attackFillMesh;
+    private Mesh _attackRingMesh;
+    private readonly Dictionary<HexCoord, Node3D> _attackMarks = new();
     private Mesh _fillMesh;
 
     private readonly Dictionary<TerrainType, Material> _terrainMats = new();
@@ -36,6 +39,20 @@ public partial class HexMapView : Node3D
     private readonly Dictionary<int, int> _buildingLevels = new();
     private readonly Dictionary<int, float> _buildingHeights = new();
     private readonly Dictionary<int, Node3D> _unitViews = new();
+    private readonly Dictionary<int, UnitAnimator> _unitAnimators = new();
+    private readonly Dictionary<int, Tween> _unitMoveTweens = new();
+    private readonly Dictionary<int, (string Path, float Scale, PlayerId Owner)> _unitMaterials = new();
+    private readonly Dictionary<int, float> _buildingTops = new();
+
+    // 建造 / 升级预览
+    private Node3D _previewView;
+    private string _previewBuildDefId;
+    private HexCoord _previewBuildCoord;
+    private int _previewBuildingId = -1;
+    private int _previewSavedLevel;
+
+    /// <summary>当前被选中（黄色描边）的单位 id，-1 表示没有。</summary>
+    private int _selectedUnitId = -1;
 
     private Node3D _ringRoot;
     private Node3D _borderRoot;
@@ -98,6 +115,9 @@ public partial class HexMapView : Node3D
         _borderMesh = BuildRingMesh(0.92f, 1.0f);
         // 建造目标格用的粗金圈
         _markerRingMesh = BuildRingMesh(0.72f, 0.92f);
+        // 攻击范围标记：比格子小一圈的六边形
+        _attackFillMesh = BuildFillMesh(0.62f);
+        _attackRingMesh = BuildRingMesh(0.50f, 0.64f);
     }
 
     private void BuildMaterials()
@@ -229,6 +249,44 @@ public partial class HexMapView : Node3D
         foreach (MeshInstance3D m in _hints.Values)
             m.QueueFree();
         _hints.Clear();
+
+        foreach (Node3D n in _attackMarks.Values)
+            n.QueueFree();
+        _attackMarks.Clear();
+    }
+
+    /// <summary>
+    /// 标记「可攻击的格子」：比格子小一圈的红色六边形（内环 + 半透明填充）。
+    /// 有敌人的格子用更实的红色，单纯在射程内的格子淡一点。
+    /// </summary>
+    public void ShowAttackMarks(IEnumerable<HexCoord> cells, ICollection<HexCoord> targets)
+    {
+        foreach (HexCoord c in cells)
+        {
+            if (_attackMarks.ContainsKey(c))
+                continue;
+
+            bool hasTarget = targets != null && targets.Contains(c);
+
+            var root = new Node3D { Name = "AttackMark", Position = HexLayout.ToWorld(c, TileTop + 0.014f) };
+            _hintRoot.AddChild(root);
+
+            root.AddChild(new MeshInstance3D
+            {
+                Mesh = _attackFillMesh,
+                MaterialOverride = MakeUnshaded(new Color("E8563F", hasTarget ? 0.46f : 0.20f), noDepth: false),
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            });
+
+            root.AddChild(new MeshInstance3D
+            {
+                Mesh = _attackRingMesh,
+                MaterialOverride = MakeUnshaded(new Color("FF6A4D", hasTarget ? 1f : 0.55f), noDepth: true),
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            });
+
+            _attackMarks[c] = root;
+        }
     }
 
     public void ShowHints(IEnumerable<HexCoord> coords, Color color)
@@ -312,10 +370,39 @@ public partial class HexMapView : Node3D
                 {
                     float dist = view.Position.DistanceTo(target);
                     float dur = Mathf.Clamp(dist * 0.22f, 0.28f, 0.6f);
-                    view.GetTree()?.CreateTween()
-                        .TweenProperty(view, "position", target, dur)
-                        .SetTrans(Tween.TransitionType.Sine)
-                        .SetEase(Tween.EaseType.InOut);
+                    Node3D movingView = view;
+                    // 移动时面朝前进方向
+                    FaceViewToward(movingView, target);
+
+                    // 上一次的位移动画先杀掉，避免两条补间叠加、Finished 乱序
+                    if (_unitMoveTweens.TryGetValue(u.Id, out Tween previous) && previous != null &&
+                        previous.IsValid())
+                    {
+                        previous.Kill();
+                    }
+
+                    Tween tween = view.GetTree()?.CreateTween();
+                    if (tween != null)
+                    {
+                        _unitMoveTweens[u.Id] = tween;
+                        tween.TweenProperty(movingView, "position", target, dur)
+                            .SetTrans(Tween.TransitionType.Sine)
+                            .SetEase(Tween.EaseType.InOut);
+
+                        if (_unitAnimators.TryGetValue(u.Id, out UnitAnimator mover))
+                        {
+                            // 走动时播放 Move，落地换回 Idle；炮塔回正
+                            mover.PlayMove();
+                            mover.ResetTurret();
+                            tween.Finished += () =>
+                            {
+                                // 只有真的到地方了才回 Idle（防止中途又有新目标）
+                                if (movingView.Position.IsEqualApprox(target))
+                                    mover.PlayIdle();
+                                _unitMoveTweens.Remove(u.Id);
+                            };
+                        }
+                    }
                 }
             }
         }
@@ -324,6 +411,9 @@ public partial class HexMapView : Node3D
         {
             _unitViews[id].QueueFree();
             _unitViews.Remove(id);
+            _unitAnimators.Remove(id);
+            _unitMoveTweens.Remove(id);
+            _unitMaterials.Remove(id);
         }
     }
 
@@ -452,7 +542,7 @@ public partial class HexMapView : Node3D
             {
                 GD.Print($"[Mesh] b{kv.Key} {kv.Value.Name} node={mi.Name} " +
                          $"res={mi.Mesh?.ResourceName} vis={mi.Visible} inTree={mi.IsVisibleInTree()} " +
-                         $"aabb={mi.GetAabb()}");
+                         $"chain={mi.GetMeta("origChain", "").AsString()} aabb={mi.GetAabb()}");
             }
         }
     }
@@ -551,8 +641,8 @@ public partial class HexMapView : Node3D
         float y = TileTop;
 
         Cell cell = _state?.Cell(u.Coord);
-        if (cell?.Building != null && _buildingHeights.TryGetValue(cell.Building.Id, out float h) && h > 0f)
-            y = TileTop + h * 0.94f;
+        if (cell?.Building != null && _buildingTops.TryGetValue(cell.Building.Id, out float top) && top > 0f)
+            y = TileTop + top * 0.96f;
 
         if (cell != null)
         {
@@ -607,21 +697,36 @@ public partial class HexMapView : Node3D
         return new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
     }
 
-    private Node3D CreateBuildingView(BuildingInst b)
+    private Node3D CreateBuildingView(BuildingInst b, int? levelOverride = null)
     {
+        int level = levelOverride ?? b.Level;
         var root = new Node3D { Name = "B_" + b.DefId + "_" + b.Id, Position = HexLayout.ToWorld(b.Coord, TileTop) };
         _buildingRoot.AddChild(root);
 
         string path = string.IsNullOrEmpty(b.Def.Model) ? "" : b.Def.Model;
         // 1.70 = 六边形内切圆直径（0.866×2）留一点余量：不管建筑怎么转，底座都不会顶出格子
-        Node3D model = ModelUtil.SpawnModel(path, root, 1.70f, b.Level, out float height,
-            fitBody: b.Def?.FitBody ?? false, showMain: b.Def?.ShowMainMesh ?? false,
+        Node3D model = ModelUtil.SpawnModel(path, root, 1.70f, level, out float height,
             outlineColor: ToonMaterial.OutlineFor(b.Owner));
         if (model != null)
         {
             model.Name = b.DefId;
             _buildingLevels[b.Id] = b.Level;
             _buildingHeights[b.Id] = height;
+
+            // 当前等级「实际可见」的高度（单位站屋顶、血条位置都用它；
+            // height 是按全部网格量的，会用成三级的高度）
+            float top = 0f;
+            Transform3D invRoot = root.GlobalTransform.AffineInverse();
+            foreach (MeshInstance3D mi in root.FindChildren("*", "MeshInstance3D", true, false)
+                         .Cast<MeshInstance3D>())
+            {
+                if (mi.Mesh == null || !mi.Visible)
+                    continue;
+                Aabb a = invRoot * mi.GlobalTransform * mi.GetAabb();
+                top = Mathf.Max(top, a.Position.Y + a.Size.Y);
+            }
+
+            _buildingTops[b.Id] = top > 0.01f ? top : height;
         }
         else
         {
@@ -665,6 +770,18 @@ public partial class HexMapView : Node3D
         if (model != null)
         {
             model.Name = u.DefId;
+            _unitMaterials[u.Id] = (path, model.Scale.X, u.Owner);
+
+            UnitAnimator animator = UnitAnimator.Build(model);
+            if (animator.HasAnimations)
+            {
+                _unitAnimators[u.Id] = animator;
+                animator.PlayIdle();
+            }
+            else
+            {
+                animator.QueueFree();
+            }
         }
         else
         {
@@ -687,6 +804,237 @@ public partial class HexMapView : Node3D
     private static void RotateToward(Node3D node, PlayerId owner)
     {
         node.RotationDegrees = new Vector3(0, owner == PlayerId.Player ? 90 : -90, 0);
+    }
+
+    /// <summary>让单位转向某个世界坐标（模型的正面是本地 +Z）。</summary>
+    public void FaceUnitToward(UnitInst u, Vector3 worldTarget)
+    {
+        if (u == null || !_unitViews.TryGetValue(u.Id, out Node3D view))
+            return;
+
+        FaceViewToward(view, worldTarget);
+    }
+
+    /// <summary>把视图的朝向补间到「面向 target」。</summary>
+    private void FaceViewToward(Node3D view, Vector3 worldTarget)
+    {
+        Vector3 dir = worldTarget - view.Position;
+        dir.Y = 0f;
+        if (dir.LengthSquared() < 0.0001f)
+            return;
+
+        float yaw = Mathf.RadToDeg(Mathf.Atan2(dir.X, dir.Z));
+        CreateTween()
+            .TweenProperty(view, "rotation_degrees:y", yaw, 0.22f)
+            .SetTrans(Tween.TransitionType.Cubic)
+            .SetEase(Tween.EaseType.Out);
+    }
+
+    /// <summary>调试：单位当前朝向（度）。</summary>
+    public float DebugUnitYaw(int unitId) =>
+        _unitViews.TryGetValue(unitId, out Node3D v) ? v.RotationDegrees.Y : 0f;
+
+    /// <summary>
+    /// 有炮塔的单位（坦克）只转炮塔、车身保持原朝向；没有炮塔的返回 false，由调用方整体转身。
+    /// </summary>
+    public bool FaceUnitTurretToward(UnitInst u, Vector3 worldTarget)
+    {
+        if (u == null || !_unitViews.TryGetValue(u.Id, out Node3D view))
+            return false;
+        if (!_unitAnimators.TryGetValue(u.Id, out UnitAnimator animator) || !animator.HasTurret)
+            return false;
+
+        Vector3 dir = worldTarget - view.Position;
+        dir.Y = 0f;
+        if (dir.LengthSquared() < 0.0001f)
+            return true;
+
+        float worldYaw = Mathf.RadToDeg(Mathf.Atan2(dir.X, dir.Z));
+        animator.SetTurretYaw(worldYaw - view.RotationDegrees.Y);
+        return true;
+    }
+
+    /// <summary>炮塔回到车头方向（移动时用）。</summary>
+    public void ResetUnitTurret(int unitId)
+    {
+        if (_unitAnimators.TryGetValue(unitId, out UnitAnimator animator))
+            animator.ResetTurret();
+    }
+
+    /// <summary>调试：单位当前描边色（十六进制）。</summary>
+    public string DebugUnitOutline(int unitId)
+    {
+        if (!_unitViews.TryGetValue(unitId, out Node3D view))
+            return "no-view";
+
+        foreach (MeshInstance3D mi in view.FindChildren("*", "MeshInstance3D", true, false)
+                     .Cast<MeshInstance3D>())
+        {
+            if (mi.MaterialOverride is not ShaderMaterial cel || cel.NextPass is not ShaderMaterial outline)
+                continue;
+
+            var c = (Vector3)outline.GetShaderParameter("outline_color");
+            return new Color(c.X, c.Y, c.Z).ToHtml(false);
+        }
+
+        return "no-material";
+    }
+
+    /// <summary>调试：单位旋翼播放器状态。</summary>
+    public string DebugUnitRotor(int unitId) =>
+        _unitAnimators.TryGetValue(unitId, out UnitAnimator a) ? a.DebugRotor() : "none";
+
+    /// <summary>调试：单位当前实际播放的动画组。</summary>
+    public string DebugUnitAnimState(int unitId) =>
+        _unitAnimators.TryGetValue(unitId, out UnitAnimator a) ? a.DebugPlaying() : "none";
+
+    /// <summary>调试：单位炮塔的相对角度（没有炮塔返回 NaN）。</summary>
+    public float DebugTurretYaw(int unitId)
+    {
+        if (!_unitAnimators.TryGetValue(unitId, out UnitAnimator a) || !a.HasTurret)
+            return float.NaN;
+        return a.TurretYaw;
+    }
+
+    /// <summary>单位血条的世界锚点（模型头顶）。</summary>
+    public Vector3 UnitBarAnchor(UnitInst u)
+    {
+        if (u == null || !_unitViews.TryGetValue(u.Id, out Node3D view))
+            return HexLayout.ToWorld(u?.Coord ?? default, TileTop + 1.6f);
+
+        return view.Position + Vector3.Up * (u.IsAir ? 1.35f : 1.75f);
+    }
+
+    /// <summary>建筑血条的世界锚点（屋顶上方）。</summary>
+    public Vector3 BuildingBarAnchor(BuildingInst b)
+    {
+        float top = 1.2f;
+        if (b != null && _buildingTops.TryGetValue(b.Id, out float t) && t > 0.01f)
+            top = t;
+
+        Vector3 cell = HexLayout.ToWorld(b?.Coord ?? default, TileTop);
+        return new Vector3(cell.X, TileTop + top + 0.32f, cell.Z);
+    }
+
+    /// <summary>
+    /// 升级预览：把已有建筑临时换成目标等级的模型（鼠标移开按钮后恢复）。
+    /// </summary>
+    public void PreviewBuildingLevel(BuildingInst b, int level)
+    {
+        if (b == null)
+            return;
+
+        ClearBuildingPreview();
+        if (!_buildingViews.TryGetValue(b.Id, out Node3D view))
+            return;
+
+        view.QueueFree();
+        _buildingViews.Remove(b.Id);
+        _buildingHeights.Remove(b.Id);
+        _buildingTops.Remove(b.Id);
+
+        _previewBuildingId = b.Id;
+        _previewSavedLevel = b.Level;
+        _buildingViews[b.Id] = CreateBuildingView(b, level);
+    }
+
+    /// <summary>建造预览：在空地格子上临时摆一个目标建筑（鼠标移开按钮后移除）。</summary>
+    public void PreviewBuildingAt(string defId, HexCoord coord, PlayerId owner, int level = 1)
+    {
+        ClearBuildingPreview();
+
+        BuildingDef def = GameDatabase.Building(defId);
+        if (def == null)
+            return;
+
+        var fake = new BuildingInst
+        {
+            Id = -9999,
+            DefId = defId,
+            Def = def,
+            Owner = owner,
+            Coord = coord,
+            Level = level,
+            Hp = def.HpAt(level),
+        };
+
+        _previewBuildDefId = defId;
+        _previewBuildCoord = coord;
+        _previewView = CreateBuildingView(fake, level);
+    }
+
+    /// <summary>清除所有预览。</summary>
+    public void ClearBuildingPreview()
+    {
+        if (_previewBuildingId >= 0)
+        {
+            int id = _previewBuildingId;
+            _previewBuildingId = -1;
+
+            if (_buildingViews.TryGetValue(id, out Node3D view))
+            {
+                view.QueueFree();
+                _buildingViews.Remove(id);
+                _buildingHeights.Remove(id);
+                _buildingTops.Remove(id);
+            }
+
+            // 用**当前真实等级**重建（不能用心存的那个等级：
+            // 预览期间如果建筑真的升级了，存的是升级前的等级，会造成「升完级又退回上一级」）
+            BuildingInst inst = _state?.Buildings.FirstOrDefault(x => x.Id == id);
+            if (inst != null)
+                _buildingViews[id] = CreateBuildingView(inst);
+        }
+
+        if (_previewView != null)
+        {
+            _previewView.QueueFree();
+            _previewView = null;
+            _previewBuildDefId = null;
+        }
+    }
+
+    /// <summary>调试：建筑当前可见高度。</summary>
+    public float DebugBuildingTop(int id) => _buildingTops.GetValueOrDefault(id, -1f);
+
+    /// <summary>设置当前选中单位（-1 = 取消）：选中的那个用黄色描边，其余恢复阵营色。</summary>
+    public void SetSelectedUnit(int unitId)
+    {
+        if (_selectedUnitId == unitId)
+            return;
+
+        if (_selectedUnitId >= 0)
+            ApplyUnitOutline(_selectedUnitId, selected: false);
+
+        _selectedUnitId = unitId;
+
+        if (unitId >= 0)
+            ApplyUnitOutline(unitId, selected: true);
+    }
+
+    private void ApplyUnitOutline(int unitId, bool selected)
+    {
+        if (!_unitViews.TryGetValue(unitId, out Node3D view))
+            return;
+        if (!_unitMaterials.TryGetValue(unitId, out (string Path, float Scale, PlayerId Owner) info))
+            return;
+
+        Color? color = selected
+            ? ToonMaterial.SelectedOutline
+            : ToonMaterial.OutlineFor(info.Owner);
+
+        ToonMaterial.Apply(view, info.Path, info.Scale, color);
+    }
+
+    /// <summary>调试：单位是否正在播放攻击动作。</summary>
+    public bool DebugUnitAttacking(int unitId) =>
+        _unitAnimators.TryGetValue(unitId, out UnitAnimator a) && a.IsAttacking;
+
+    /// <summary>播放一次攻击动作。</summary>
+    public void PlayUnitAttack(int unitId)
+    {
+        if (_unitAnimators.TryGetValue(unitId, out UnitAnimator animator))
+            animator.PlayAttack();
     }
 
     // ─────────────────────────── 网格构造 ───────────────────────────

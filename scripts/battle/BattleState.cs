@@ -34,6 +34,9 @@ public sealed class BuildingInst
     public int Level = 1;
     public int Hp;
 
+    /// <summary>本回合是否已经花过钱多开一炮（每回合重置）。</summary>
+    public bool ExtraFired;
+
     public int MaxHp => Def.HpAt(Level);
     public int ControlRadius => Def.ControlAt(Level);
     public bool IsHq => DefId == "hq";
@@ -364,6 +367,59 @@ public sealed class BattleState
         return true;
     }
 
+    /// <summary>该建筑攻击能覆盖的格子（不含自身所在格）。ControlRadius 同时就是它的射程。</summary>
+    public IEnumerable<HexCoord> BuildingRangeCells(BuildingInst b)
+    {
+        if (b == null || b.IsDead || b.Def == null || b.Def.AttackRange <= 0)
+            yield break;
+
+        foreach (HexCoord h in HexCoord.Spiral(b.Coord, b.ControlRadius))
+        {
+            if (h != b.Coord && Cell(h) != null)
+                yield return h;
+        }
+    }
+
+    /// <summary>该建筑射程内、确实能打的敌方单位/建筑所在格。</summary>
+    public HashSet<HexCoord> BuildingTargetCells(BuildingInst b)
+    {
+        var result = new HashSet<HexCoord>();
+        if (b == null || b.IsDead || b.Def == null || b.Def.AttackRange <= 0)
+            return result;
+
+        foreach (HexCoord h in BuildingRangeCells(b))
+        {
+            Cell cell = Cell(h);
+            if (cell == null)
+                continue;
+
+            if (cell.Units.Any(u => u.Alive && u.Owner != b.Owner &&
+                                    (u.IsAir ? b.Def.CanHitAir : b.Def.CanHitGround)))
+            {
+                result.Add(h);
+                continue;
+            }
+
+            if (cell.Building != null && !cell.Building.IsDead && cell.Building.Owner != b.Owner)
+                result.Add(h);
+        }
+
+        return result;
+    }
+
+    /// <summary>该单位射程覆盖的所有格子（不含自身所在格），用来画「可攻击」标记。</summary>
+    public IEnumerable<HexCoord> AttackRangeCells(UnitInst u)
+    {
+        if (u == null || !u.Alive)
+            yield break;
+
+        foreach (HexCoord h in HexCoord.Spiral(u.Coord, u.Def.Range))
+        {
+            if (h != u.Coord && Cell(h) != null)
+                yield return h;
+        }
+    }
+
     public IEnumerable<(UnitInst unit, BuildingInst building)> AttackTargets(UnitInst u)
     {
         if (u == null || !u.Alive || u.Attacked)
@@ -657,6 +713,9 @@ public sealed class BattleState
             u.Attacked = false;
         }
 
+        foreach (BuildingInst b in Buildings.Where(b => b.Owner == who))
+            b.ExtraFired = false;
+
         // 建筑开火：炮台/防空炮打最近的敌人，指挥部打控制区内目标
         LastBuildingLog = string.Join("；", ResolveBuildingAttacks(who));
 
@@ -736,6 +795,96 @@ public sealed class BattleState
 
         CheckVictory();
         return log;
+    }
+
+    /// <summary>
+    /// 付费额外开炮：花 ExtraFireCost 金币，让这座防御建筑在当回合再打一次。
+    /// 目标选择与自动开火一致（射程内最近的敌方单位，够不到时改打敌方建筑）。
+    /// </summary>
+    public bool TryExtraFire(BuildingInst b, out string message)
+    {
+        message = "";
+
+        if (b == null || b.IsDead)
+        {
+            message = "建筑不存在";
+            return false;
+        }
+
+        if (b.Def == null || b.Def.ExtraFireCost <= 0 || b.Def.AttackRange <= 0)
+        {
+            message = "这座建筑不能额外开炮";
+            return false;
+        }
+
+        if (b.ExtraFired)
+        {
+            message = "本回合已经额外开过炮了";
+            return false;
+        }
+
+        PlayerState st = StateOf(b.Owner);
+        int cost = b.Def.ExtraFireCost;
+        if (st.Gold < cost)
+        {
+            message = $"金币不足（需要 {cost}$）";
+            return false;
+        }
+
+        int radius = b.ControlRadius;
+        int dmg = b.Def.DamageAt(b.Level);
+        if (dmg <= 0)
+        {
+            message = "这座建筑没有攻击力";
+            return false;
+        }
+
+        UnitInst target = Units
+            .Where(u => u.Alive && u.Owner != b.Owner &&
+                        HexCoord.Distance(u.Coord, b.Coord) <= radius)
+            .Where(u => u.IsAir ? b.Def.CanHitAir : b.Def.CanHitGround)
+            .OrderBy(u => u.IsAir ? 1 : 0)
+            .ThenBy(u => HexCoord.Distance(u.Coord, b.Coord))
+            .FirstOrDefault();
+
+        if (target != null)
+        {
+            target.Hp -= dmg;
+            message = $"{b.Def.NameZh} 额外开炮命中 {target.Def.NameZh} -{dmg}";
+            if (target.Hp <= 0)
+            {
+                Cell(target.Coord)?.Units.Remove(target);
+                Units.Remove(target);
+                message += $"，{target.Def.NameZh} 被消灭";
+            }
+        }
+        else
+        {
+            BuildingInst enemyBuilding = Buildings
+                .Where(x => x.Owner != b.Owner && !x.IsDead && x != b &&
+                            HexCoord.Distance(x.Coord, b.Coord) <= radius)
+                .OrderBy(x => HexCoord.Distance(x.Coord, b.Coord))
+                .FirstOrDefault();
+
+            if (enemyBuilding == null)
+            {
+                message = "射程内没有目标";
+                return false;
+            }
+
+            enemyBuilding.Hp -= dmg;
+            message = $"{b.Def.NameZh} 额外开炮轰击 {enemyBuilding.Def.NameZh} -{dmg}";
+            if (enemyBuilding.Hp <= 0)
+            {
+                Demolish(enemyBuilding);
+                message += $"，{enemyBuilding.Def.NameZh} 被摧毁";
+            }
+        }
+
+        st.Gold -= cost;
+        b.ExtraFired = true;
+        CheckVictory();
+        return true;
     }
 
     private void GrantBuildingCards(BuildingInst b, PlayerState st)

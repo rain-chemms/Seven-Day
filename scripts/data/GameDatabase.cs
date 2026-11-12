@@ -39,18 +39,8 @@ public sealed class BuildingDef
     public string Model { get; set; } = "";
     public string Preview { get; set; } = "";
 
-    /// <summary>
-    /// true = 按「建筑本体」缩放（排除贴地的围栏、地基、旗杆底座）。
-    /// 指挥中心这种模型贴地一圈围栏会把包围盒撑大一倍，本体被缩得很小。
-    /// </summary>
-    public bool FitBody { get; set; }
-
-    /// <summary>
-    /// true = 低等级也显示「主体」网格。
-    /// 兵营这类模型 Lv1/Lv2 只导出了营地道具（蓄水塔、岗亭、长椅），
-    /// 真正的营房在主体网格里，不一起显示就会像「本体没渲染」。
-    /// </summary>
-    public bool ShowMainMesh { get; set; }
+    /// <summary>花多少钱可以让这座防御建筑在当回合多开一次炮；0 = 不支持。</summary>
+    public int ExtraFireCost { get; set; }
 
     public int MaxLevel => Hp.Length;
 

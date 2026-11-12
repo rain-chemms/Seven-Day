@@ -76,6 +76,7 @@ public partial class BattleScene : Node3D
 
         _hud = new BattleHud { Name = "Hud" };
         AddChild(_hud);
+        _hud.SetHealthCamera(_rig.Camera);
         WireHud();
 
         _state.BeginTurn(PlayerId.Player);
@@ -213,12 +214,97 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-factions"))
             DemoFactionsFlow();
 
-        // 开发调试：--show-main 低等级也显示主体网格（检查各级网格是否互补）
-        ModelUtil.ShowMainMeshAlways = OS.GetCmdlineUserArgs().Contains("--show-main");
+        // 开发调试：--demo-attack 选一个我方单位，看可攻击格子的红色标记
+        if (OS.GetCmdlineUserArgs().Contains("--demo-attack"))
+            DemoAttackFlow();
+
+        // 开发调试：--demo-extrafire 建一座炮台+旁边放敌人，测额外开炮
+        if (OS.GetCmdlineUserArgs().Contains("--demo-extrafire"))
+            DemoExtraFireFlow();
+
+        // 开发调试：--demo-hqupgrade 选中指挥部并升级，检查按钮与等级变化
+        if (OS.GetCmdlineUserArgs().Contains("--demo-hqupgrade"))
+            DemoHqUpgradeFlow();
+
+        // 开发调试：--demo-anims 打印每个兵种模型里自带的动画
+        if (OS.GetCmdlineUserArgs().Contains("--demo-anims"))
+            DemoAnimsFlow();
+
+        // 开发调试：--demo-unitanim 检查移动朝向与攻击动作
+        if (OS.GetCmdlineUserArgs().Contains("--demo-unitanim"))
+            DemoUnitAnimFlow();
 
         // 开发调试：--demo-barracks3 兵营三级并排
         if (OS.GetCmdlineUserArgs().Contains("--demo-barracks3"))
             DemoLevelsFlow("barracks");
+
+        // 开发调试：--demo-turret3 炮台三级并排（检查炮管/炮塔是否穿帮）
+        if (OS.GetCmdlineUserArgs().Contains("--demo-turret3"))
+        {
+            DemoLevelsFlow("gunTurret");
+            _map.DumpMeshNames();
+        }
+
+        // 开发调试：--demo-aa3 防空炮三级并排
+        if (OS.GetCmdlineUserArgs().Contains("--demo-aa3"))
+        {
+            DemoLevelsFlow("aaGun");
+            _map.DumpMeshNames();
+        }
+
+        // 开发调试：--demo-aa1 单个 Lv1 防空炮近距离看
+        if (OS.GetCmdlineUserArgs().Contains("--demo-aa1"))
+            DemoBuildingFlow("aaGun", 1);
+
+        // 开发调试：--demo-tankturret 坦克车身不动、炮塔转向目标
+        if (OS.GetCmdlineUserArgs().Contains("--demo-tankturret"))
+            DemoTankTurretFlow();
+
+        // 开发调试：--demo-tanktree 打印坦克模型的节点树（找炮塔节点）
+        if (OS.GetCmdlineUserArgs().Contains("--demo-tanktree"))
+            DemoTankTreeFlow();
+
+        // 开发调试：--demo-levels=<defId> 把某个建筑的三级并排
+        foreach (string arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith("--demo-levels="))
+                DemoLevelsFlow(arg["--demo-levels=".Length..]);
+        }
+
+        // 开发调试：--demo-health 放几个残血单位/建筑，检查血条样式
+        if (OS.GetCmdlineUserArgs().Contains("--demo-health"))
+            DemoHealthFlow();
+
+        // 开发调试：--demo-select-cycle 同格多单位反复点击轮换选中
+        if (OS.GetCmdlineUserArgs().Contains("--demo-select-cycle"))
+            DemoSelectCycleFlow();
+
+        // 开发调试：--demo-rotor 放一架直升机，检查旋翼是否常驻旋转
+        if (OS.GetCmdlineUserArgs().Contains("--demo-rotor"))
+            DemoRotorFlow();
+
+        // 开发调试：--demo-rotortree 打印直升机旋翼相关动画轨道
+        if (OS.GetCmdlineUserArgs().Contains("--demo-rotortree"))
+            DemoRotorTreeFlow();
+
+        // 开发调试：--demo-preview-build 悬停建造项，预览建造后的样子
+        if (OS.GetCmdlineUserArgs().Contains("--demo-preview-build"))
+            DemoPreviewBuildFlow();
+
+        // 开发调试：--demo-upgrade-hover 悬停升级→点升级→移开，检查外观不会退回
+        if (OS.GetCmdlineUserArgs().Contains("--demo-upgrade-hover"))
+            DemoUpgradeHoverFlow();
+
+        // 开发调试：--demo-preview-upgrade 悬停升级按钮，预览下一级
+        if (OS.GetCmdlineUserArgs().Contains("--demo-preview-upgrade"))
+            DemoPreviewUpgradeFlow();
+
+        // 开发调试：--demo-buildtree=<defId> 打印建筑模型的节点树
+        foreach (string arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith("--demo-buildtree="))
+                DemoBuildTreeFlow(arg["--demo-buildtree=".Length..]);
+        }
 
         // 开发调试：--demo-fit 把所有建筑摆成一排，俯视检查大小与居中
         if (OS.GetCmdlineUserArgs().Contains("--demo-fit"))
@@ -467,6 +553,225 @@ public partial class BattleScene : Node3D
         GD.Print($"[Pan] after  {_rig.DebugState()}");
     }
 
+    /// <summary>放一个敌方单位在附近，选我方单位，检查可攻击格子的红色六边形标记。</summary>
+    private async void DemoAttackFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (hq == null)
+            return;
+
+        HexCoord? spot = null;
+        foreach (HexCoord c in HexCoord.Spiral(hq.Coord, 1))
+        {
+            if (_state.CanDeployCard("unit_infantry", PlayerId.Player, c, out _))
+            {
+                spot = c;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst mine = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value.Neighbor(0));
+
+        _map.SyncEntities();
+        SelectUnit(mine);
+        RefreshAll();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.0f));
+        _rig.FrameMap(3.0f);
+        _rig.SetPitch(38f);
+        _rig.SetVerticalOffset(0f);
+
+        GD.Print($"[Attack] unit={mine.Coord} foe={foe.Coord} range={mine.Def.Range} " +
+                 $"cells={_state.AttackRangeCells(mine).Count()}");
+    }
+
+    /// <summary>移动朝向 + 攻击动作的回归检查。</summary>
+    private async void DemoUnitAnimFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (hq == null)
+            return;
+
+        HexCoord? spot = null;
+        foreach (HexCoord c in HexCoord.Spiral(hq.Coord, 1))
+        {
+            if (_state.CanDeployCard("unit_infantry", PlayerId.Player, c, out _))
+            {
+                spot = c;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst u = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        HexCoord goal = spot.Value.Neighbor(3);          // 往某个方向走一格
+        HexCoord foeCoord = goal.Neighbor(3);
+
+        _map.SyncEntities();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UAnim] 初始 yaw={_map.DebugUnitYaw(u.Id):F1}（默认按阵营 ±90）");
+
+        _state.TryMove(u, goal, out _);
+        _map.SyncEntities();
+        _rig.FocusOn(HexLayout.ToWorld(goal, 1.0f));
+        _rig.FrameMap(4.0f);
+        _rig.SetPitch(32f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UAnim] 移动中状态={_map.DebugUnitAnimState(u.Id)}（应为 Move）");
+
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+        float movedYaw = _map.DebugUnitYaw(u.Id);
+        Vector3 from = HexLayout.ToWorld(spot.Value, 0);
+        Vector3 to = HexLayout.ToWorld(goal, 0);
+        float expect = Mathf.RadToDeg(Mathf.Atan2(to.X - from.X, to.Z - from.Z));
+        GD.Print($"[UAnim] 移动后 yaw={movedYaw:F1} 期望={expect:F1} " +
+                 $"状态={_map.DebugUnitAnimState(u.Id)}（应为 Idle）");
+
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, foeCoord);
+        _map.FaceUnitToward(u, HexLayout.ToWorld(foeCoord, HexMapView.TileTop));
+        _map.PlayUnitAttack(u.Id);
+
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UAnim] 攻击中={_map.DebugUnitAttacking(u.Id)} yaw={_map.DebugUnitYaw(u.Id):F1}");
+
+        await ToSignal(GetTree().CreateTimer(1.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UAnim] 1.55s 后攻击中={_map.DebugUnitAttacking(u.Id)}（应回到 false）");
+    }
+
+    /// <summary>打印每个兵种 glb 里的动画片段。</summary>
+    private void DemoAnimsFlow()
+    {
+        foreach (UnitDef def in GameDatabase.Units.Values)
+        {
+            if (string.IsNullOrEmpty(def.Model) || !ResourceLoader.Exists(def.Model))
+            {
+                GD.Print($"[Anim] {def.Id}: 没有模型");
+                continue;
+            }
+
+            var scene = GD.Load<PackedScene>(def.Model);
+            Node inst = scene.Instantiate();
+            var names = new List<string>();
+
+            foreach (Node n in inst.FindChildren("*", "AnimationPlayer", true, false))
+            {
+                if (n is not AnimationPlayer ap)
+                    continue;
+                var list = ap.GetAnimationList();
+                foreach (string a in list)
+                {
+                    Godot.Animation anim = ap.GetAnimation(a);
+                    names.Add($"{a}({anim?.Length ?? 0f:F2}s)");
+                }
+            }
+
+            GD.Print($"[Anim] {def.Id}: {(names.Count == 0 ? "无动画" : string.Join(", ", names))}");
+            inst.QueueFree();
+        }
+    }
+
+    /// <summary>选中指挥部并连续升级，验证指挥部可以升级。</summary>
+    private async void DemoHqUpgradeFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (hq == null)
+            return;
+
+        _state.Player.Gold = 5000;
+        SelectBuilding(hq);
+        RefreshAll();
+
+        _rig.FocusOn(HexLayout.ToWorld(hq.Coord, 1.0f));
+        _rig.FrameMap(3.2f);
+        _rig.SetPitch(38f);
+        _rig.SetVerticalOffset(0f);
+
+        GD.Print($"[HqUpgrade] start level={hq.Level} gold={_state.Player.Gold} " +
+                 $"cost={hq.Def.UpgradeCostAt(hq.Level)}");
+
+        if (!OS.GetCmdlineUserArgs().Contains("--apply"))
+            return;
+
+        OnUpgradeClicked();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[HqUpgrade] after1 level={hq.Level} gold={_state.Player.Gold} hp={hq.Hp}/{hq.MaxHp}");
+
+        OnUpgradeClicked();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[HqUpgrade] after2 level={hq.Level} gold={_state.Player.Gold}");
+
+        OnUpgradeClicked();
+        GD.Print($"[HqUpgrade] after3 level={hq.Level} gold={_state.Player.Gold}");
+
+        _map.SyncEntities();
+        RefreshAll();
+        ShowBuildingInfo(hq);
+    }
+
+    /// <summary>炮台额外开炮：建炮台、放敌人、选建筑，然后直接调用一次。</summary>
+    private async void DemoExtraFireFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 5);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null &&
+                _state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+        {
+            GD.Print("[ExtraFire] 找不到可建造的格子");
+            return;
+        }
+
+        BuildingInst turret = _state.SpawnBuilding("gunTurret", PlayerId.Player, spot.Value);
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value.Neighbor(2));
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        SelectBuilding(turret);
+        RefreshAll();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.0f));
+        _rig.FrameMap(2.6f);
+        _rig.SetPitch(36f);
+        _rig.SetVerticalOffset(0f);
+
+        GD.Print($"[ExtraFire] before gold={_state.Player.Gold} turret=({spot.Value}) " +
+                 $"foe=({foe.Coord}) foeHp={foe.Hp} cost={turret.Def.ExtraFireCost}");
+
+        if (!OS.GetCmdlineUserArgs().Contains("--apply"))
+            return;
+
+        OnExtraFireClicked();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[ExtraFire] after gold={_state.Player.Gold} foeHp={foe.Hp} " +
+                 $"alive={foe.Alive} extraFired={turret.ExtraFired}");
+
+        // 再点一次应该被拒绝
+        OnExtraFireClicked();
+        GD.Print($"[ExtraFire] secondTry gold={_state.Player.Gold} extraFired={turret.ExtraFired}");
+    }
+
     /// <summary>敌我双方单位与建筑并排，检查阵营描边色。</summary>
     private void DemoFactionsFlow()
     {
@@ -508,6 +813,471 @@ public partial class BattleScene : Node3D
         _rig.FrameMap(4.5f);
         _rig.SetPitch(38f);
         _rig.SetVerticalOffset(0f);
+    }
+
+    /// <summary>坦克炮塔独立转向：车身朝向不变，只转炮塔。</summary>
+    private async void DemoTankTurretFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (hq == null)
+            return;
+
+        HexCoord? spot = null;
+        foreach (HexCoord c in HexCoord.Spiral(hq.Coord, 2))
+        {
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null &&
+                _state.Cell(c).Units.Count == 0)
+            {
+                spot = c;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst tank = _state.SpawnUnit("tank", PlayerId.Player, spot.Value);
+        HexCoord foe = spot.Value.Neighbor(2);       // 目标方向（和车头朝向不同）
+        _state.SpawnUnit("infantry", PlayerId.Enemy, foe);
+
+        _map.SyncEntities();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        Vector3 targetWorld = HexLayout.ToWorld(foe, HexMapView.TileTop);
+        bool turretOnly = _map.FaceUnitTurretToward(tank, targetWorld);
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.2f));
+        _rig.FrameMap(2.6f);
+        _rig.SetPitch(28f);
+        _rig.SetVerticalOffset(0f);
+
+        GD.Print($"[Turret] 车身yaw={_map.DebugUnitYaw(tank.Id):F1} " +
+                 $"炮塔相对yaw={_map.DebugTurretYaw(tank.Id):F1} turretOnly={turretOnly}");
+
+        for (int i = 0; i < 4; i++)
+        {
+            await ToSignal(GetTree().CreateTimer(0.12), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[Turret] +{(i + 1) * 0.12:F2}s 炮塔yaw={_map.DebugTurretYaw(tank.Id):F1}");
+        }
+
+        if (OS.GetCmdlineUserArgs().Contains("--apply"))
+        {
+            _map.PlayUnitAttack(tank.Id);
+            await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[Turret] 开火后 车身yaw={_map.DebugUnitYaw(tank.Id):F1} " +
+                     $"炮塔yaw={_map.DebugTurretYaw(tank.Id):F1}");
+        }
+    }
+
+    /// <summary>造几个残血单位/建筑，检查血条。</summary>
+    private async void DemoHealthFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        var spots = new List<HexCoord>();
+        for (int r = 4; r <= 5 && spots.Count < 3; r++)
+        {
+            for (int q = -2; q < 6 && spots.Count < 3; q++)
+            {
+                var c = new HexCoord(q, r);
+                Cell cell = _state.Cell(c);
+                if (cell != null && cell.Building == null && cell.Units.Count == 0)
+                    spots.Add(c);
+            }
+        }
+
+        if (spots.Count < 3)
+            return;
+
+        UnitInst mine = _state.SpawnUnit("infantry", PlayerId.Player, spots[0]);
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spots[1]);
+        BuildingInst city = _state.SpawnBuilding("city", PlayerId.Player, spots[2]);
+
+        mine.Hp = Mathf.RoundToInt(mine.MaxHp * 0.62f);
+        foe.Hp = Mathf.RoundToInt(foe.MaxHp * 0.22f);
+        city.Hp = Mathf.RoundToInt(city.MaxHp * 0.45f);
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        SelectUnit(mine);
+
+        float ax = 0, az = 0;
+        foreach (HexCoord c in spots)
+        {
+            Vector3 w = HexLayout.ToWorld(c);
+            ax += w.X;
+            az += w.Z;
+        }
+
+        _rig.FocusOn(new Vector3(ax / spots.Count, 1.2f, az / spots.Count));
+        _rig.FrameMap(5.0f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        GD.Print($"[Health] 我方={mine.Hp}/{mine.MaxHp} 敌方={foe.Hp}/{foe.MaxHp} " +
+                 $"城市={city.Hp}/{city.MaxHp}");
+
+        if (!OS.GetCmdlineUserArgs().Contains("--apply"))
+            return;
+
+        // 等血条稳定，然后打掉一大截，观察渐变
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+        foe.Hp = Mathf.RoundToInt(foe.MaxHp * 0.05f);
+        city.Hp = Mathf.RoundToInt(city.MaxHp * 0.12f);
+
+        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Health] 0.10s 敌军 {_hud.DebugHealth(false, foe.Id)} | " +
+                 $"城市 {_hud.DebugHealth(true, city.Id)}");
+
+        await ToSignal(GetTree().CreateTimer(0.9), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Health] 1.00s 敌军 {_hud.DebugHealth(false, foe.Id)} | " +
+                 $"城市 {_hud.DebugHealth(true, city.Id)}");
+    }
+
+    /// <summary>同格叠三个单位，反复点击同一格，检查选中轮换与黄色描边。</summary>
+    private async void DemoSelectCycleFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 5);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null &&
+                _state.Cell(c).Units.Count == 0)
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst a = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        UnitInst b = _state.SpawnUnit("tank", PlayerId.Player, spot.Value);
+        UnitInst c2 = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+
+        _map.SyncEntities();
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.0f));
+        _rig.FrameMap(2.4f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        Vector2 p = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(spot.Value, HexMapView.TileTop));
+        GD.Print($"[Cycle] 三个单位 a={a.Id} b={b.Id} c={c2.Id} 位置={spot.Value}");
+
+        for (int i = 1; i <= 3; i++)
+        {
+            SendMotion(p, p);
+            UpdateHover(p);
+            await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+            OnLeftClick(p);
+            await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+
+            UnitInst sel = _selUnit;
+            GD.Print($"[Cycle] 第{i}次点击 选中={sel?.Id} " +
+                     $"描边={_map.DebugUnitOutline(sel?.Id ?? -1)}");
+        }
+    }
+
+    /// <summary>放一架直升机，检查旋翼是否一直在转。</summary>
+    private async void DemoRotorFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 5);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null &&
+                _state.Cell(c).Units.Count == 0)
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst heli = _state.SpawnUnit("helicopter", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.6f));
+        _rig.FrameMap(2.4f);
+        _rig.SetPitch(24f);
+        _rig.SetVerticalOffset(0f);
+
+        for (int i = 0; i < 4; i++)
+        {
+            await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[Rotor] +{(i + 1) * 0.35:F2}s {_map.DebugUnitRotor(heli.Id)} " +
+                     $"anim={_map.DebugUnitAnimState(heli.Id)}");
+        }
+    }
+
+    /// <summary>打开建造菜单并模拟悬停「兵营」，检查建造预览。</summary>
+    private async void DemoPreviewBuildFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 5);
+            if (_state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        _buildTarget = spot.Value;
+        _map.SetBuildMarker(spot.Value);
+
+        var defs = GameDatabase.Buildings.Values
+            .Where(d => d.Id != "hq")
+            .OrderBy(d => d.UpgradeCostAt(0))
+            .ToList();
+        _hud.ShowBuildMenu(defs, _state.Player.Gold);
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+
+        string hover = "barracks";
+        foreach (string arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith("--hover="))
+                hover = arg["--hover=".Length..];
+        }
+
+        _hud.DebugHoverBuild(hover);
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.0f));
+        _rig.FrameMap(3.6f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        GD.Print($"[Preview] 建造预览 {hover} @ {spot.Value}");
+    }
+
+    /// <summary>悬停升级 → 点升级 → 移开鼠标，验证外观停在新等级。</summary>
+    private async void DemoUpgradeHoverFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 5);
+            if (_state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        BuildingInst city = _state.SpawnBuilding("city", PlayerId.Player, spot.Value);
+        _state.Player.Gold = 5000;
+        _map.SyncEntities();
+        SelectBuilding(city);
+        RefreshAll();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.0f));
+        _rig.FrameMap(2.8f);
+        _rig.SetPitch(32f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UpgHover] Lv{city.Level} 高度={_map.DebugBuildingTop(city.Id):F2}");
+
+        _hud.DebugHoverUpgrade();       // 预览 Lv2
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UpgHover] 预览中 Lv{city.Level} 高度={_map.DebugBuildingTop(city.Id):F2}");
+
+        OnUpgradeClicked();             // 真升级
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UpgHover] 升级后 Lv{city.Level} 高度={_map.DebugBuildingTop(city.Id):F2}");
+
+        OnPreviewUnhovered();           // 移开鼠标
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UpgHover] 移开后 Lv{city.Level} 高度={_map.DebugBuildingTop(city.Id):F2}（应仍是升级后的高度）");
+    }
+
+    /// <summary>选一座一级城市并模拟悬停「升级」，检查升级预览。</summary>
+    private async void DemoPreviewUpgradeFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 5);
+            if (_state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        BuildingInst city = _state.SpawnBuilding("city", PlayerId.Player, spot.Value);
+        _state.Player.Gold = 5000;
+        _map.SyncEntities();
+        SelectBuilding(city);
+        RefreshAll();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.0f));
+        _rig.FrameMap(2.8f);
+        _rig.SetPitch(32f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        _hud.DebugHoverUpgrade();
+        GD.Print($"[Preview] 升级预览 city Lv1 → Lv{_selBuilding.Level + 1}");
+
+        if (!OS.GetCmdlineUserArgs().Contains("--apply"))
+            return;
+
+        // 移开鼠标 → 应该恢复成真实等级的外观
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        _map.ClearBuildingPreview();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Preview] 移开后恢复 Lv{_selBuilding.Level}");
+    }
+
+    /// <summary>打印直升机模型节点树与旋翼动画轨道。</summary>
+    private void DemoRotorTreeFlow()
+    {
+        UnitDef def = GameDatabase.Unit("helicopter");
+        if (def == null || string.IsNullOrEmpty(def.Model) || !ResourceLoader.Exists(def.Model))
+            return;
+
+        Node inst = GD.Load<PackedScene>(def.Model).Instantiate();
+        GD.Print("[Rotor] ==== 直升机 ====");
+        Walk(inst, 0);
+
+        foreach (Node n in inst.FindChildren("*", "AnimationPlayer", true, false))
+        {
+            if (n is not AnimationPlayer ap)
+                continue;
+
+            foreach (string clip in ap.GetAnimationList())
+            {
+                if (!clip.Contains("Rotor"))
+                    continue;
+
+                Godot.Animation anim = ap.GetAnimation(clip);
+                if (anim == null)
+                    continue;
+
+                GD.Print($"[Rotor] {clip} len={anim.Length:F2}s tracks={anim.GetTrackCount()}");
+                for (int i = 0; i < anim.GetTrackCount(); i++)
+                {
+                    GD.Print($"[Rotor]   path={anim.TrackGetPath(i)} type={anim.TrackGetType(i)} " +
+                             $"keys={anim.TrackGetKeyCount(i)}");
+                }
+            }
+        }
+
+        inst.QueueFree();
+
+        static void Walk(Node node, int depth)
+        {
+            string indent = new(' ', depth * 2);
+            string extra = node switch
+            {
+                MeshInstance3D mi => $" (mesh={mi.Mesh?.ResourceName})",
+                _ => "",
+            };
+            GD.Print($"[Rotor] {indent}{node.Name} <{node.GetClass()}>{extra}");
+            if (depth > 3)
+                return;
+            foreach (Node child in node.GetChildren())
+                Walk(child, depth + 1);
+        }
+    }
+
+    /// <summary>打印某个建筑模型的节点树。</summary>
+    private void DemoBuildTreeFlow(string defId)
+    {
+        BuildingDef def = GameDatabase.Building(defId);
+        if (def == null || string.IsNullOrEmpty(def.Model) || !ResourceLoader.Exists(def.Model))
+        {
+            GD.Print($"[Tree] {defId}: 找不到模型");
+            return;
+        }
+
+        Node inst = GD.Load<PackedScene>(def.Model).Instantiate();
+        GD.Print($"[Tree] ==== {defId} ====");
+        Walk(inst, 0);
+        inst.QueueFree();
+
+        static void Walk(Node node, int depth)
+        {
+            string indent = new(' ', depth * 2);
+            string extra = node switch
+            {
+                MeshInstance3D mi => $" (mesh={mi.Mesh?.ResourceName})",
+                AnimationPlayer ap => $" (anims={ap.GetAnimationList().Length})",
+                _ => "",
+            };
+            GD.Print($"[Tree] {indent}{node.Name} <{node.GetClass()}>{extra}");
+
+            if (depth > 3)
+                return;
+
+            foreach (Node child in node.GetChildren())
+                Walk(child, depth + 1);
+        }
+    }
+
+    /// <summary>打印坦克模型节点树，找出炮塔节点。</summary>
+    private void DemoTankTreeFlow()
+    {
+        UnitDef def = GameDatabase.Unit("tank");
+        if (def == null || string.IsNullOrEmpty(def.Model) || !ResourceLoader.Exists(def.Model))
+            return;
+
+        Node inst = GD.Load<PackedScene>(def.Model).Instantiate();
+        GD.Print("[Tree] 坦克模型节点树：");
+        Walk(inst, 0);
+
+        // 打印几个片段的轨道路径，看谁在动炮塔
+        foreach (Node n in inst.FindChildren("*", "AnimationPlayer", true, false))
+        {
+            if (n is not AnimationPlayer ap)
+                continue;
+            foreach (string clip in ap.GetAnimationList())
+            {
+                Godot.Animation anim = ap.GetAnimation(clip);
+                if (anim == null)
+                    continue;
+                if (!clip.Contains("Hull") && !clip.Contains("Turret"))
+                    continue;
+                for (int i = 0; i < anim.GetTrackCount(); i++)
+                {
+                    GD.Print($"[Track] {clip} -> {anim.TrackGetPath(i)}");
+                }
+            }
+        }
+
+        inst.QueueFree();
+
+        static void Walk(Node node, int depth)
+        {
+            string indent = new(' ', depth * 2);
+            string extra = node switch
+            {
+                MeshInstance3D mi => $" (mesh={mi.Mesh?.ResourceName})",
+                AnimationPlayer ap => $" (anims={ap.GetAnimationList().Length})",
+                _ => "",
+            };
+            string rot = node is Node3D n3 && !n3.Rotation.IsZeroApprox()
+                ? $" rot={n3.RotationDegrees}"
+                : "";
+            GD.Print($"[Tree] {indent}{node.Name} <{node.GetClass()}>{extra}{rot}");
+
+            if (depth > 4)
+                return;
+
+            foreach (Node child in node.GetChildren())
+                Walk(child, depth + 1);
+        }
     }
 
     /// <summary>把某个建筑的三级并排摆出来对比。</summary>
@@ -910,21 +1680,44 @@ public partial class BattleScene : Node3D
         var sun = new DirectionalLight3D
         {
             Name = "Sun",
-            LightEnergy = 1.0f,
-            LightColor = new Color(1f, 0.96f, 0.88f),
+            LightEnergy = 1.05f,
+            // 黄昏的暖光：比正午更橙一点
+            LightColor = new Color(1f, 0.84f, 0.64f),
             ShadowEnabled = true,
-            RotationDegrees = new Vector3(-52, -38, 0),
+            RotationDegrees = new Vector3(-46, -34, 0),
         };
         AddChild(sun);
 
+        // 火烧云天空盒
+        var skyMaterial = new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>("res://gameAsset/shaders/sunset_sky.gdshader"),
+        };
+        var sky = new Sky
+        {
+            SkyMaterial = skyMaterial,
+            RadianceSize = Sky.RadianceSizeEnum.Size128,
+            ProcessMode = Sky.ProcessModeEnum.Realtime,
+        };
+
         var env = new Godot.Environment
         {
-            BackgroundMode = Godot.Environment.BGMode.Color,
-            BackgroundColor = new Color("BFD8E8"),
+            BackgroundMode = Godot.Environment.BGMode.Sky,
+            Sky = sky,
             AmbientLightSource = Godot.Environment.AmbientSource.Color,
-            AmbientLightColor = new Color("8FA6B8"),
+            // 环境光带一点晚霞的暖色，模型暗部不会是死灰
+            AmbientLightColor = new Color(0.62f, 0.45f, 0.38f),
             AmbientLightEnergy = 0.85f,
-            TonemapMode = Godot.Environment.ToneMapper.Linear,
+            TonemapMode = Godot.Environment.ToneMapper.Filmic,
+            TonemapExposure = 0.92f,
+            TonemapWhite = 1.0f,
+            // 轻雾增加纵深，颜色贴近地平线；但不要影响天空，否则整片橙
+            FogEnabled = false,
+            FogLightColor = new Color(0.95f, 0.62f, 0.42f),
+            FogLightEnergy = 0.5f,
+            FogDensity = 0.0025f,
+            FogAerialPerspective = 0.1f,
+            FogSkyAffect = 0f,
         };
         var we = new WorldEnvironment { Name = "WorldEnvironment", Environment = env };
         AddChild(we);
@@ -943,6 +1736,10 @@ public partial class BattleScene : Node3D
         _hud.BuildClicked += OnBuildClicked;
         _hud.UpgradeClicked += OnUpgradeClicked;
         _hud.DemolishClicked += OnDemolishClicked;
+        _hud.ExtraFireClicked += OnExtraFireClicked;
+        _hud.BuildHovered += OnBuildHovered;
+        _hud.UpgradeHovered += OnUpgradeHovered;
+        _hud.PreviewUnhovered += OnPreviewUnhovered;
         _hud.CancelClicked += () => { ClearSelection(); RefreshAll(); };
     }
 
@@ -1129,7 +1926,81 @@ public partial class BattleScene : Node3D
     public override void _Process(double delta)
     {
         UpdateTargetingArrow();
+        UpdateHealthBars();
     }
+
+    private readonly List<HealthBars.Bar> _barBuffer = new();
+
+    /// <summary>血条：满血的普通单位不显示，受伤/选中/建筑才显示。</summary>
+    private void UpdateHealthBars()
+    {
+        if (_state == null || _hud == null)
+            return;
+
+        _barBuffer.Clear();
+
+        foreach (UnitInst u in _state.Units)
+        {
+            if (!u.Alive)
+                continue;
+
+            float ratio = u.MaxHp > 0 ? u.Hp / (float)u.MaxHp : 0f;
+            bool selected = _selUnit == u;
+            if (ratio >= 0.999f && !selected)
+                continue;
+
+            _barBuffer.Add(new HealthBars.Bar
+            {
+                Id = u.Id,
+                World = _map.UnitBarAnchor(u),
+                Ratio = ratio,
+                Building = false,
+                Accent = ToonMaterial.OutlineFor(u.Owner) ?? new Color("3B2E16"),
+                Selected = selected,
+            });
+        }
+
+        foreach (BuildingInst b in _state.Buildings)
+        {
+            if (b.IsDead)
+                continue;
+
+            float ratio = b.MaxHp > 0 ? b.Hp / (float)b.MaxHp : 0f;
+            bool selected = _selBuilding == b;
+            if (ratio >= 0.999f && !selected)
+                continue;
+
+            _barBuffer.Add(new HealthBars.Bar
+            {
+                Id = b.Id,
+                World = _map.BuildingBarAnchor(b),
+                Ratio = ratio,
+                Building = true,
+                Accent = ToonMaterial.OutlineFor(b.Owner) ?? new Color("3B2E16"),
+                Selected = selected,
+            });
+        }
+
+        _hud.SetHealthBars(_barBuffer);
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-health") &&
+            Time.GetTicksMsec() - _healthDiagMs > 900)
+        {
+            _healthDiagMs = Time.GetTicksMsec();
+            var parts = new List<string>();
+            foreach (HealthBars.Bar bar in _barBuffer)
+            {
+                Vector2 sp = _rig.Camera.UnprojectPosition(bar.World);
+                parts.Add($"{(bar.Building ? "B" : "U")}:{(int)(bar.Ratio * 100)}%" +
+                          $"w({bar.World.X:F1},{bar.World.Y:F1},{bar.World.Z:F1})" +
+                          $"@({sp.X:F0},{sp.Y:F0})");
+            }
+
+            GD.Print($"[Health] 条数={_barBuffer.Count} {string.Join(" ", parts)}");
+        }
+    }
+
+    private ulong _healthDiagMs;
 
     private void OnCardReordered(int from, int to)
     {        _state.MoveCardInHand(_state.Player, from, to);
@@ -1287,18 +2158,27 @@ public partial class BattleScene : Node3D
         _hud.Toast("建造完成");
     }
 
-    /// <summary>关闭建造菜单，同时清掉目标格指示。</summary>
+    /// <summary>关闭建造菜单，同时清掉目标格指示与预览面板。</summary>
     private void CloseBuildMenu()
     {
         _hud.HideBuildMenu();
         _buildTarget = null;
         _map?.SetBuildMarker(null);
+        _map?.ClearBuildingPreview();
+
+        // 建造预览的信息面板也一起收起来（选中建筑时会随即重新显示）
+        if (_selBuilding == null)
+            _hud.HideInfo();
     }
 
     private void OnUpgradeClicked()
     {
         if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player)
             return;
+
+        // 先结束悬停预览，避免「升级后模型退回上一级」
+        _map.ClearBuildingPreview();
+
         if (!_state.TryUpgrade(_selBuilding, out string error))
         {
             _hud.Toast(error);
@@ -1488,6 +2368,11 @@ public partial class BattleScene : Node3D
                 _hud.Toast(string.IsNullOrEmpty(log) ? "没有可攻击的目标" : log);
 
                 AudioManager.PlayAttack(attacker.DefId);
+                // 攻击时转向目标：有炮塔的只转炮塔，其余整体转身；然后播放一次攻击动作
+                Vector3 targetWorld = HexLayout.ToWorld(coord, HexMapView.TileTop);
+                if (!_map.FaceUnitTurretToward(attacker, targetWorld))
+                    _map.FaceUnitToward(attacker, targetWorld);
+                _map.PlayUnitAttack(attacker.Id);
                 _map.FlashCell(coord, new Color("E8563F"));
                 foreach (UnitInst t in _state.UnitsAt(coord))
                     _map.PunchUnit(t.Id);
@@ -1513,27 +2398,28 @@ public partial class BattleScene : Node3D
             }
         }
 
-        // 3) 点己方单位 → 选中
-        UnitInst own = cell.Units.FirstOrDefault(u => u.Alive && u.Owner == PlayerId.Player);
-        if (own != null)
+        // 3) 点己方单位 → 选中；同一格有多单位时反复点击轮换选中目标
+        List<UnitInst> ownUnits = cell.Units
+            .Where(u => u.Alive && u.Owner == PlayerId.Player)
+            .ToList();
+        if (ownUnits.Count > 0)
         {
-            AudioManager.PlaySelect(own.DefId);
-            SelectUnit(own);
+            UnitInst pick = ownUnits[0];
+            if (ownUnits.Count > 1 && _selUnit != null && _selUnit.Coord == coord)
+            {
+                int index = ownUnits.IndexOf(_selUnit);
+                pick = ownUnits[(index + 1) % ownUnits.Count];
+            }
+
+            AudioManager.PlaySelect(pick.DefId);
+            SelectUnit(pick);
             return;
         }
 
         // 4) 点建筑
         if (cell.Building != null)
         {
-            _selUnit = null;
-            _selBuilding = cell.Building;
-            AudioManager.PlaySelect(cell.Building.DefId);
-            _map.ClearHints();
-            CloseBuildMenu();
-            ShowBuildingInfo(cell.Building);
-            if (cell.Building.Owner == PlayerId.Player)
-                _map.ShowHints(HexCoord.Spiral(cell.Building.Coord, cell.Building.ControlRadius),
-                    cell.Building.Owner == PlayerId.Player ? new Color("3D7BD6") : new Color("D24A3A"));
+            SelectBuilding(cell.Building);
             return;
         }
 
@@ -1576,14 +2462,20 @@ public partial class BattleScene : Node3D
         _selBuilding = null;
         CloseBuildMenu();
         _map.ClearHints();
+        _map.SetSelectedUnit(u?.Id ?? -1);
 
         if (u.Owner == PlayerId.Player)
         {
             _map.ShowHints(_state.MoveRange(u), new Color("5BC0EB"));
-            var attacks = _state.AttackTargets(u)
-                .Select(t => t.building != null ? t.building.Coord : t.unit.Coord)
-                .Distinct();
-            _map.ShowHints(attacks, new Color("E8563F"));
+
+            // 已经攻击过的单位不再标「可攻击」
+            if (!u.Attacked)
+            {
+                var targets = _state.AttackTargets(u)
+                    .Select(t => t.building != null ? t.building.Coord : t.unit.Coord)
+                    .ToHashSet();
+                _map.ShowAttackMarks(_state.AttackRangeCells(u).ToList(), targets);
+            }
         }
 
         _hud.ShowInfo(
@@ -1594,17 +2486,173 @@ public partial class BattleScene : Node3D
             $"{(u.Moved ? "已移动" : "可移动")}　{(u.Attacked ? "已攻击" : "可攻击")}");
     }
 
-    private void ShowBuildingInfo(BuildingInst b)
+    /// <summary>选中一座建筑：信息面板 + 控制区高亮 + （有攻击力时）红色可攻击范围。</summary>
+    private void SelectBuilding(BuildingInst b)
     {
-        string title = $"{b.Def.NameZh}  Lv.{b.Level}  {b.Hp}/{b.MaxHp}";
-        string income = b.Def.IncomeAt(b.Level) > 0 ? $"每回合金币 +{b.Def.IncomeAt(b.Level)}\n" : "";
-        string attack = b.Def.AttackRange > 0 ? $"攻击 {b.Def.DamageAt(b.Level)}　射程 {b.Def.AttackRange}\n" : "";
-        string upgrade = b.Level >= b.Def.MaxLevel
-            ? "已满级"
-            : $"升级到 Lv.{b.Level + 1} 需要 {b.Def.UpgradeCostAt(b.Level)}$";
+        if (b == null)
+            return;
 
-        _hud.ShowInfo(title, $"{income}{attack}控制半径 {b.ControlRadius}\n{upgrade}",
-            b.Def.Preview, showButtons: b.Owner == PlayerId.Player && !b.IsHq);
+        _selUnit = null;
+        _selBuilding = b;
+        AudioManager.PlaySelect(b.DefId);
+        _map.ClearHints();
+        CloseBuildMenu();
+        ShowBuildingInfo(b);
+
+        if (b.Owner != PlayerId.Player)
+            return;
+
+        RefreshBuildingHighlights(b);
+    }
+
+    /// <summary>建筑的控制区蓝色高亮 + 有攻击力时的红色可攻击范围。</summary>
+    private void RefreshBuildingHighlights(BuildingInst b)
+    {
+        if (b == null || b.Owner != PlayerId.Player)
+            return;
+
+        _map.ClearHints();
+        _map.ShowHints(HexCoord.Spiral(b.Coord, b.ControlRadius), new Color("3D7BD6"));
+
+        if (b.Def.AttackRange > 0)
+        {
+            _map.ShowAttackMarks(
+                _state.BuildingRangeCells(b).ToList(),
+                _state.BuildingTargetCells(b));
+        }
+    }
+
+    private void ShowBuildingInfo(BuildingInst b, bool showDelta = false)
+    {
+        int level = b.Level;
+        int next = Mathf.Min(level + 1, b.Def.MaxLevel);
+        bool canUp = level < b.Def.MaxLevel;
+
+        // 只有悬停「升级」按钮时才显示「=> 新值」，平时只显示当前数值
+        var lines = new List<string>(BuildStatLines(b.Def, level, next, canUp && showDelta));
+
+        string upgrade = canUp
+            ? $"升级到 Lv.{next} 需要 {b.Def.UpgradeCostAt(level)}$"
+            : "已满级";
+
+        // 炮台之类可以花钱多打一炮
+        bool canExtra = b.Owner == PlayerId.Player && b.Def.ExtraFireCost > 0 &&
+                        b.Def.AttackRange > 0;
+        bool extraReady = canExtra && !b.ExtraFired && _state.Player.Gold >= b.Def.ExtraFireCost;
+        if (canExtra && !b.ExtraFired)
+            upgrade += $"\n额外开炮 {b.Def.ExtraFireCost}$（每回合一次）";
+
+        lines.Add(upgrade);
+
+        string title = $"{b.Def.NameZh}  Lv.{level}  {b.Hp}/{b.MaxHp}";
+        _hud.ShowInfo(title, string.Join("\n", lines),
+            b.Def.Preview, showButtons: b.Owner == PlayerId.Player,
+            extraFireCost: canExtra ? b.Def.ExtraFireCost : 0, extraFireReady: extraReady,
+            showDemolish: !b.IsHq, canUpgrade: canUp);
+    }
+
+    /// <summary>建造前的信息预览：右侧面板显示一级的数值（没有按钮）。</summary>
+    private void ShowBuildPreviewInfo(string defId)
+    {
+        BuildingDef def = GameDatabase.Building(defId);
+        if (def == null)
+            return;
+
+        var lines = new List<string> { $"建造花费 {def.UpgradeCostAt(0)}$" };
+        // 建造预览不显示「=> 新值」，保持和平时一致
+        lines.AddRange(BuildStatLines(def, 1, Mathf.Min(2, def.MaxLevel), false));
+
+        if (def.MaxLevel > 1)
+            lines.Add($"升级到 Lv.2 需要 {def.UpgradeCostAt(1)}$");
+
+        _hud.ShowInfo($"{def.NameZh}  Lv.1", string.Join("\n", lines),
+            def.Preview, showButtons: false);
+    }
+
+    /// <summary>生成「每回合金币 / 攻击 / 控制半径」这几行，有下一级时带绿色新值。</summary>
+    private static IEnumerable<string> BuildStatLines(BuildingDef def, int level, int next, bool canUp)
+    {
+        const string Green = "5FBF5A";
+
+        string Stat(string label, int current, int upcoming, string prefix = "", string suffix = "")
+        {
+            string cur = $"{prefix}{current}{suffix}";
+            if (!canUp || current == upcoming)
+                return $"{label} {cur}";
+
+            return $"{label} {cur} => [color=#{Green}]{prefix}{upcoming}{suffix}[/color]";
+        }
+
+        int income = def.IncomeAt(level);
+        int incomeNext = canUp ? def.IncomeAt(next) : income;
+        if (income > 0 || incomeNext > 0)
+            yield return Stat("每回合金币", income, incomeNext, "+");
+
+        if (def.AttackRange > 0)
+        {
+            int dmg = def.DamageAt(level);
+            int dmgNext = canUp ? def.DamageAt(next) : dmg;
+            yield return $"{Stat("攻击", dmg, dmgNext)}　射程 {def.AttackRange}";
+        }
+
+        int radius = def.ControlAt(level);
+        int radiusNext = canUp ? def.ControlAt(next) : radius;
+        yield return Stat("控制半径", radius, radiusNext);
+    }
+
+    /// <summary>悬停建造项：在目标格上临时摆出该建筑，右侧面板同步显示它的数值。</summary>
+    private void OnBuildHovered(string defId)
+    {
+        if (_buildTarget == null)
+            return;
+
+        _map.PreviewBuildingAt(defId, _buildTarget.Value, PlayerId.Player);
+        ShowBuildPreviewInfo(defId);
+    }
+
+    /// <summary>鼠标离开按钮：清掉模型预览，面板恢复到选中建筑（或隐藏）。</summary>
+    private void OnPreviewUnhovered()
+    {
+        _map.ClearBuildingPreview();
+
+        if (_selBuilding != null)
+            ShowBuildingInfo(_selBuilding);
+        else
+            _hud.HideInfo();
+    }
+
+    /// <summary>悬停「升级」：把选中建筑临时换成下一级的模型，并把数值切成「=> 新值」。</summary>
+    private void OnUpgradeHovered()
+    {
+        if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player)
+            return;
+        if (_selBuilding.Level >= _selBuilding.Def.MaxLevel)
+            return;
+
+        _map.PreviewBuildingLevel(_selBuilding, _selBuilding.Level + 1);
+        ShowBuildingInfo(_selBuilding, showDelta: true);
+    }
+
+    private void OnExtraFireClicked()    {
+        if (_selBuilding == null)
+            return;
+
+        BuildingInst b = _selBuilding;
+        if (!_state.TryExtraFire(b, out string message))
+        {
+            _hud.Toast(message);
+            return;
+        }
+
+        _hud.Toast(message);
+        AudioManager.PlayAttack(b.DefId);
+        _map.FlashCell(b.Coord, new Color("FF6A4D"));
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        ShowBuildingInfo(b);
+        RefreshBuildingHighlights(b);
+        CheckGameOver();
     }
 
     private void ClearSelection()
@@ -1612,6 +2660,7 @@ public partial class BattleScene : Node3D
         _selUnit = null;
         _selBuilding = null;
         _map.ClearHints();
+        _map.SetSelectedUnit(-1);
         _hud.HideInfo();
     }
 
