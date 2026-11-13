@@ -9,6 +9,11 @@ namespace SevenDay.UI;
 public static class UiTheme
 {
     public const string Btn = "res://gameAsset/textures/ui/button/";
+
+    /// <summary>
+    /// 按下/选中时的文字色：偏灰的暖黄（不是刺眼的白），在暗色底图上够亮又不扎眼。
+    /// </summary>
+    public static readonly Color OnPressedText = new("D8CDA6");
     public const string PanelDir = "res://gameAsset/textures/ui/panel/";
     public const string BarDir = "res://gameAsset/textures/ui/progressBar/";
     public const string IconDir = "res://gameAsset/textures/ui/icon/";
@@ -73,7 +78,7 @@ public static class UiTheme
         theme.SetStylebox("focus", "Button", new StyleBoxEmpty());
         theme.SetColor("font_color", "Button", Ink);
         theme.SetColor("font_hover_color", "Button", Ink);
-        theme.SetColor("font_pressed_color", "Button", SandDark);
+        theme.SetColor("font_pressed_color", "Button", OnPressedText);
         theme.SetColor("font_disabled_color", "Button", Grey);
 
         theme.SetStylebox("panel", "PanelContainer", Box(PanelDir + "panel.png", 18, 16, 16, 16, 16));
@@ -91,9 +96,15 @@ public static class UiTheme
 
         theme.SetStylebox("tab_selected", "TabContainer", Box("res://gameAsset/textures/ui/tab/tab_selected.png", 12, 14, 14, 8, 6));
         theme.SetStylebox("tab_unselected", "TabContainer", Box("res://gameAsset/textures/ui/tab/tab_normal.png", 12, 14, 14, 8, 6));
+        theme.SetStylebox("tab_hovered", "TabContainer", HoveredTabBox());
+        theme.SetStylebox("tab_disabled", "TabContainer", Box("res://gameAsset/textures/ui/tab/tab_normal.png", 12, 14, 14, 8, 6));
+        theme.SetStylebox("tab_focus", "TabContainer", new StyleBoxEmpty());
+        theme.SetStylebox("tabbar_background", "TabContainer", new StyleBoxEmpty());
         theme.SetStylebox("panel", "TabContainer", Box(PanelDir + "panel.png", 18, 16, 16, 16, 16));
         theme.SetColor("font_selected_color", "TabContainer", Ink);
         theme.SetColor("font_unselected_color", "TabContainer", new Color("6B5836"));
+        theme.SetColor("font_hovered_color", "TabContainer", Ink);
+        theme.SetColor("font_disabled_color", "TabContainer", Grey);
 
         theme.SetStylebox("scroll", "VScrollBar", Box("res://gameAsset/textures/ui/scrollBar/scroll_track.png", 10));
         theme.SetStylebox("grabber", "VScrollBar", Box("res://gameAsset/textures/ui/scrollBar/scroll_grabber.png", 10));
@@ -106,12 +117,34 @@ public static class UiTheme
         theme.SetIcon("checked", "CheckButton", GD.Load<Texture2D>("res://gameAsset/textures/ui/checkBox/check_on.png"));
         theme.SetIcon("unchecked", "CheckButton", GD.Load<Texture2D>("res://gameAsset/textures/ui/checkBox/check_off.png"));
 
+        // 开关不要外围包裹框：只留方框图标本身
+        foreach (string type in new[] { "CheckBox", "CheckButton" })
+        {
+            theme.SetStylebox("normal", type, new StyleBoxEmpty());
+            theme.SetStylebox("hover", type, new StyleBoxEmpty());
+            theme.SetStylebox("pressed", type, new StyleBoxEmpty());
+            theme.SetStylebox("hover_pressed", type, new StyleBoxEmpty());
+            theme.SetStylebox("disabled", type, new StyleBoxEmpty());
+            theme.SetStylebox("focus", type, new StyleBoxEmpty());
+        }
+
         theme.SetStylebox("normal", "OptionButton", Box(Btn + "btn_normal.png", 14, 18, 18, 6, 10));
         theme.SetStylebox("hover", "OptionButton", Box(Btn + "btn_hover.png", 14, 18, 18, 6, 10));
         theme.SetStylebox("pressed", "OptionButton", Box(Btn + "btn_pressed.png", 14, 18, 18, 6, 10));
         theme.SetStylebox("disabled", "OptionButton", Box(Btn + "btn_disabled.png", 14, 18, 18, 6, 10));
+        theme.SetStylebox("focus", "OptionButton", new StyleBoxEmpty());
         theme.SetColor("font_color", "OptionButton", Ink);
+        theme.SetColor("font_hover_color", "OptionButton", Ink);
+        theme.SetColor("font_pressed_color", "OptionButton", OnPressedText);
 
         return theme;
+    }
+
+    /// <summary>标签页悬停：用未选中的贴图提亮一点，和默认灰色框区分开。</summary>
+    private static StyleBoxTexture HoveredTabBox()
+    {
+        StyleBoxTexture sb = Box("res://gameAsset/textures/ui/tab/tab_normal.png", 12, 14, 14, 8, 6);
+        sb.ModulateColor = new Color(1.16f, 1.12f, 1.02f);
+        return sb;
     }
 }

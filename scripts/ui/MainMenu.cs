@@ -17,7 +17,9 @@ public partial class MainMenu : Node3D
     private Label _toast;
     private PanelContainer _settingsPanel;
     private PanelContainer _galleryPanel;
-    private TabContainer _tabs;
+    private readonly List<Button> _tabButtons = new();
+    private readonly List<Control> _tabPages = new();
+    private int _currentTab;
     private float _toastTimer;
 
     private readonly List<(string Key, Action OnChanged)> _locBindings = new();
@@ -40,12 +42,576 @@ public partial class MainMenu : Node3D
         // 开发调试：--demo-settings 打开设置面板并切到摄像机页
         if (OS.GetCmdlineUserArgs().Contains("--demo-settings"))
             CallDeferred(nameof(DemoSettings));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-gallery"))
+            CallDeferred(nameof(DemoGallery));
+
+        // 开发调试：--demo-deck 打开出战卡组编辑器
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck"))
+            CallDeferred(nameof(DemoDeck));
+
+        // 开发调试：保存 / 清空卡组（验证对局是否用自定义卡组）
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-features"))
+            CallDeferred(nameof(DemoDeckFeatures));
+        else if (OS.GetCmdlineUserArgs().Contains("--demo-deck-save") ||
+                 OS.GetCmdlineUserArgs().Contains("--demo-deck-clear"))
+            CallDeferred(nameof(DemoDeckSaveClear));
+
+        // 开发调试：--demo-deck-individual 打开并切到逐张显示
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-individual"))
+            CallDeferred(nameof(DemoDeckIndividual));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-drag"))
+            CallDeferred(nameof(DemoDeckDrag));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-small"))
+            CallDeferred(nameof(DemoDeckSmall));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-remove"))
+            CallDeferred(nameof(DemoDeckRemove));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-fly"))
+            CallDeferred(nameof(DemoDeckFly));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-slide"))
+            CallDeferred(nameof(DemoDeckSlide));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-empty"))
+            CallDeferred(nameof(DemoDeckEmpty));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-preset-rename"))
+            CallDeferred(nameof(DemoPresetRename));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-btn-hold"))
+            CallDeferred(nameof(DemoButtonHold));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-close"))
+            CallDeferred(nameof(DemoDeckClose));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-rename-cancel"))
+            CallDeferred(nameof(DemoRenameCancel));
+
+        if (OS.GetCmdlineUserArgs().Contains("--clear-preset-names"))
+        {
+            for (int i = 1; i <= Session.PresetSlots; i++)
+                Settings.SetString("deck", "preset" + i + "_name", "");
+            Settings.Save();
+            GD.Print("[DeckTest] 已清除预设自定义名");
+            GetTree().Quit();
+        }
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-insert"))
+            CallDeferred(nameof(DemoDeckInsert));
+
+        // 开发调试：清空 5 个预设槽位
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-clear-presets"))
+        {
+            for (int i = 1; i <= Session.PresetSlots; i++)
+                Settings.SetString("deck", "preset" + i, "");
+            Settings.Save();
+            GD.Print("[DeckTest] 已清空所有预设");
+            GetTree().Quit();
+        }
+    }
+
+    private async void DemoDeckIndividual()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        _deckPanel.DebugToggleMode();
+    }
+
+    /// <summary>重命名小窗点取消时的淡出。</summary>
+    private async void DemoRenameCancel()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        _deckPanel.DebugOpenRename(0);
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        _deckPanel.DebugCloseRename();
+    }
+
+    /// <summary>打开后关闭，用来看关闭动画。</summary>
+    private async void DemoDeckClose()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+        _deckPanel.Close();
+    }
+
+    /// <summary>按住一个按钮，用来看「按下/选中」时的配色。</summary>
+    private async void DemoButtonHold()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.45), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 p = _deckPanel.DebugButtonCenter("重命名");
+        Input.WarpMouse(p);
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = p, GlobalPosition = p,
+        });
+    }
+
+    /// <summary>预设重命名：设置名字后应显示在预设按钮上。</summary>
+    private async void DemoPresetRename()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[PresetRename] 重命名前：{_deckPanel.DebugPresetLabel(0)}");
+        _deckPanel.DebugRenamePreset(0, "速攻流");
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[PresetRename] 重命名后：{_deckPanel.DebugPresetLabel(0)}");
+
+        if (OS.GetCmdlineUserArgs().Contains("--show-dialog"))
+            _deckPanel.DebugOpenRename(0);
+    }
+
+    /// <summary>空卡组提示。</summary>
+    private async void DemoDeckEmpty()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        _deckPanel.OnDebugClear();
+
+        // 清空后保存预设会弹「至少 7 张」提示，用来截提示样式
+        if (OS.GetCmdlineUserArgs().Contains("--toast"))
+            _deckPanel.DebugSavePreset();
+    }
+
+    /// <summary>逐张模式下把牌库的卡拖到中间某一位，验证按光标位置插入。</summary>
+    private async void DemoDeckInsert()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        _deckPanel.DebugToggleMode();                 // 逐张模式
+
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+
+        Control poolCell = _deckPanel.DebugPoolCell(4);   // 战斗机
+        Control deckCell = _deckPanel.DebugDeckCell(2);   // 第 3 张
+        if (poolCell == null || deckCell == null)
+            return;
+
+        Vector2 from = poolCell.GlobalPosition + poolCell.Size * 0.5f;
+        // 落在第 3 张的右半边 → 应该插到索引 3
+        Vector2 to = deckCell.GlobalPosition + new Vector2(deckCell.Size.X * 0.8f, deckCell.Size.Y * 0.5f);
+
+        GD.Print($"[Insert] 插入前 {_deckPanel.DebugTotal()} 张：{_deckPanel.DebugDeckIds()}");
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = from, GlobalPosition = from,
+        });
+        await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = to, GlobalPosition = to });
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Insert] 拖动中 空位索引={_deckPanel.DebugGapIndex()}");
+
+        if (OS.GetCmdlineUserArgs().Contains("--hold"))
+        {
+            _deckPanel.DebugPreviewGap(3);
+            await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+        }
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = to, GlobalPosition = to,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Insert] 插入后 {_deckPanel.DebugTotal()} 张：{_deckPanel.DebugDeckIds()}");
+    }
+
+    /// <summary>验证位置变化是滑动过去而不是瞬移。</summary>
+    private async void DemoDeckSlide()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        int last = _deckPanel.DebugDeckCount() - 1;
+        Vector2 before = _deckPanel.DebugDeckCellPos(last);
+        _deckPanel.DebugRemoveAt(5);      // 删掉整张「导弹车」，后面的类型整体左移一格
+
+        int last2 = _deckPanel.DebugDeckCount() - 1;
+        Vector2 atStart = _deckPanel.DebugDeckCellPos(last2);
+        await ToSignal(GetTree().CreateTimer(0.08), SceneTreeTimer.SignalName.Timeout);
+        Vector2 mid = _deckPanel.DebugDeckCellPos(last2);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        Vector2 end = _deckPanel.DebugDeckCellPos(last2);
+
+        GD.Print($"[Slide] 原第2张位置={before} 删除后 起点={atStart} 80ms={mid} 结束={end}");
+        GD.Print($"[Slide] 起点→中间变化={atStart.DistanceTo(mid):F1}px 中间→结束={mid.DistanceTo(end):F1}px（应都 > 0）");
+    }
+
+    /// <summary>验证飞行动画的目标点（两种显示模式各加一张）。</summary>
+    private async void DemoDeckFly()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        _deckPanel.DebugAdd("unit_fighter");                    // 合并模式
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+
+        _deckPanel.DebugToggleMode();                            // 逐张模式
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        _deckPanel.DebugAdd("unit_helicopter");
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+    }
+
+    /// <summary>把右侧一张卡拖到左边（区域外）应移除。</summary>
+    private async void DemoDeckRemove()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+
+        Control cell = _deckPanel.DebugDeckCell(0);
+        Rect2 deck = _deckPanel.DebugDeckRect();
+        if (cell == null)
+            return;
+
+        Vector2 from = cell.GlobalPosition + cell.Size * 0.5f;
+        Vector2 outside = new(deck.Position.X - 220f, deck.Position.Y + 180f);
+        int before = _deckPanel.DebugTotal();
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = from, GlobalPosition = from,
+        });
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = outside, GlobalPosition = outside });
+        Input.WarpMouse(outside);
+
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Remove] 拖动中 跟手卡可见={_deckPanel.DebugGhostVisible()}");
+
+        if (OS.GetCmdlineUserArgs().Contains("--hold"))
+            await ToSignal(GetTree().CreateTimer(1.0), SceneTreeTimer.SignalName.Timeout);
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = outside, GlobalPosition = outside,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Remove] 拖出左侧松开：{before} → {_deckPanel.DebugTotal()} 张（应 -1）");
+
+        // 拖出去再拖回来：应该放回去，总数不变
+        Control cell3 = _deckPanel.DebugDeckCell(0);
+        int before3 = _deckPanel.DebugTotal();
+        Vector2 p3 = cell3.GlobalPosition + cell3.Size * 0.5f;
+        Vector2 outPos = new(deck.Position.X - 200f, deck.Position.Y + 150f);
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = p3, GlobalPosition = p3,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = outPos, GlobalPosition = outPos });
+        await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+        int during = _deckPanel.DebugTotal();
+        Vector2 back = deck.Position + deck.Size * 0.5f;
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = back, GlobalPosition = back });
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = back, GlobalPosition = back,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Remove] 拖出再拖回：{before3} → 拖动中{during} → 松手后{_deckPanel.DebugTotal()}（应回到 {before3}）");
+        GD.Print($"[Remove] 卡组内容={_deckPanel.DebugDeckIds()}");
+
+        // 原地点击也应移除
+        Control cell2 = _deckPanel.DebugDeckCell(0);
+        if (cell2 == null)
+            return;
+
+        Vector2 p2 = cell2.GlobalPosition + cell2.Size * 0.5f;
+        int before2 = _deckPanel.DebugTotal();
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = p2, GlobalPosition = p2,
+        });
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = p2, GlobalPosition = p2,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Remove] 原地点击：{before2} → {_deckPanel.DebugTotal()} 张（应 -1）");
+    }
+
+    /// <summary>只有两张牌时，验证纵向居中。</summary>
+    private async void DemoDeckSmall()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+        _deckPanel.OnDebugClear();
+        _deckPanel.DebugAdd("unit_infantry");
+        _deckPanel.DebugAdd("magic_airstrike");
+    }
+
+    /// <summary>验证拖拽：跟手卡应贴着光标，松开只在右侧区域才加牌。</summary>
+    private async void DemoDeckDrag()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+
+        Control cell = _deckPanel.DebugPoolCell(0);
+        if (cell == null)
+            return;
+
+        Vector2 from = cell.GlobalPosition + cell.Size * 0.5f;
+        Rect2 deck = _deckPanel.DebugDeckRect();
+        Vector2 to = deck.Position + deck.Size * 0.5f;
+        Vector2 mid = from.Lerp(to, 0.5f);
+        int before = _deckPanel.DebugTotal();
+
+        Input.WarpMouse(from);
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = from, GlobalPosition = from,
+        });
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = mid, GlobalPosition = mid });
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Drag] 半途 拖动中={_deckPanel.DebugDragging()} 跟手卡可见={_deckPanel.DebugGhostVisible()} " +
+                 $"卡位={_deckPanel.DebugGhostPos()} 鼠标={mid}");
+
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = to, GlobalPosition = to });
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Drag] 到右侧 卡位={_deckPanel.DebugGhostPos()} 鼠标={to}");
+
+        // 停一下，方便截图看跟手卡是否贴着光标（把真实光标也挪过去，避免引擎回报旧位置）
+        Input.WarpMouse(to);
+        if (OS.GetCmdlineUserArgs().Contains("--hold"))
+        {
+            await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+            Vector2 mouse = DisplayServer.MouseGetPosition();
+            Vector2 ghostCenter = _deckPanel.DebugGhostPos() + new Vector2(46f, 70f);
+            GD.Print($"[Drag] 系统鼠标={mouse} 跟手卡中心={ghostCenter} 偏差={mouse.DistanceTo(ghostCenter):F1}");
+            await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+        }
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = to, GlobalPosition = to,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Drag] 放置后 {before} → {_deckPanel.DebugTotal()} 张，跟手卡可见={_deckPanel.DebugGhostVisible()} " +
+                 $"飞行中卡数={_deckPanel.DebugFlyingCount()}（拖拽加入应为 0）");
+
+        // 再验一次：拖到左侧空白处松手，不应加牌
+        int afterFirst = _deckPanel.DebugTotal();
+        Vector2 nowhere = new(deck.Position.X - 120f, deck.Position.Y - 60f);
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = from, GlobalPosition = from,
+        });
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = nowhere, GlobalPosition = nowhere });
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = nowhere, GlobalPosition = nowhere,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Drag] 拖到空白处松手：{afterFirst} → {_deckPanel.DebugTotal()} 张（应不变）");
+    }
+
+    /// <summary>验证筛选 / 显示模式切换 / 预设保存与载入。</summary>
+    private async void DemoDeckFeatures()
+    {
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[DeckFx] 初始 {_deckPanel.DebugTotal()} 张，牌库 {_deckPanel.DebugPoolCount()} 张");
+
+        _deckPanel.DebugAdd("unit_fighter");
+        _deckPanel.DebugAdd("unit_fighter");
+        GD.Print($"[DeckFx] 加 2 张战斗机后 {_deckPanel.DebugTotal()} 张");
+
+        _deckPanel.DebugSetFilter("unit");
+        GD.Print($"[DeckFx] 筛选「单位」后牌库 {_deckPanel.DebugPoolCount()} 张");
+
+        _deckPanel.DebugSetFilter("strike");
+        GD.Print($"[DeckFx] 筛选「打击」后牌库 {_deckPanel.DebugPoolCount()} 张");
+
+        _deckPanel.DebugSetFilter("all");
+        _deckPanel.DebugToggleMode();
+        GD.Print("[DeckFx] 已切到逐张显示");
+        _deckPanel.DebugToggleMode();
+        GD.Print("[DeckFx] 已切回合并显示");
+
+        GD.Print($"[DeckFx] 卡组内容={_deckPanel.DebugDeckIds()}");
+
+        // 预设：存到 1、清空、再读回来
+        _deckPanel.DebugSavePreset();
+        _deckPanel.OnDebugClear();
+        GD.Print($"[DeckFx] 清空后 {_deckPanel.DebugTotal()} 张");
+        _deckPanel.DebugLoadPreset();
+        GD.Print($"[DeckFx] 载入预设后 {_deckPanel.DebugTotal()} 张");
+
+        // 拖拽：从牌库第一张拖到右侧出战区
+        Control cell = _deckPanel.DebugPoolCell(0);
+        Rect2 deckRect = _deckPanel.DebugDeckRect();
+        if (cell != null && deckRect.Size.X > 0)
+        {
+            Vector2 from = cell.GlobalPosition + cell.Size * 0.5f;
+            Vector2 to = deckRect.Position + deckRect.Size * 0.5f;
+            int before = _deckPanel.DebugTotal();
+
+            Input.WarpMouse(from);
+            Input.ParseInputEvent(new InputEventMouseButton
+            {
+                ButtonIndex = MouseButton.Left, Pressed = true,
+                Position = from, GlobalPosition = from,
+            });
+            Input.ParseInputEvent(new InputEventMouseMotion { Position = to, GlobalPosition = to });
+            Input.ParseInputEvent(new InputEventMouseButton
+            {
+                ButtonIndex = MouseButton.Left, Pressed = false,
+                Position = to, GlobalPosition = to,
+            });
+
+            await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[DeckFx] 拖拽加入：{before} → {_deckPanel.DebugTotal()} 张");
+        }
+    }
+
+    /// <summary>写入 / 清空自定义卡组，验证对局是否使用它。</summary>
+    private void DemoDeckSaveClear()
+    {
+        if (OS.GetCmdlineUserArgs().Contains("--demo-deck-save"))
+        {
+            Session.SaveDeck(new[]
+            {
+                "unit_infantry", "unit_infantry", "unit_tank", "unit_tank",
+                "unit_missile_launcher", "magic_airstrike", "magic_repair", "unit_helicopter",
+            });
+            GD.Print($"[DeckTest] 已保存 {Session.PlayerDeck.Count} 张自定义卡组");
+            GetTree().Quit();
+        }
+        else if (OS.GetCmdlineUserArgs().Contains("--demo-deck-clear"))
+        {
+            Session.ClearDeck();
+            GD.Print("[DeckTest] 已清空自定义卡组");
+            GetTree().Quit();
+        }
+    }
+
+    private void DemoDeck()
+    {
+        _deckPanel.Open();
+        GD.Print($"[Deck] 打开编辑器，当前 {Session.PlayerDeck.Count} 张（默认 {Session.DefaultDeck().Count} 张）");
+        CallDeferred(nameof(DemoDeckClick));
+        CallDeferred(nameof(DemoDeckLayout));
+    }
+
+    /// <summary>打印首次打开时的排版信息（列数 / 宽度）。</summary>
+    private async void DemoDeckLayout()
+    {
+        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[DeckLayout] 首次打开 宽度={_deckPanel.DebugScrollWidth():F0} 列数={_deckPanel.DebugDeckColumns()} 行偏移={_deckPanel.DebugRowOffset():F0}");
+    }
+
+    /// <summary>真的往第一张可选卡上点一下，确认「加入卡组」生效。</summary>
+    private async void DemoDeckClick()
+    {
+        Control cell = _deckPanel.DebugPoolCell(0);
+        if (cell == null)
+            return;
+
+        int before = _deckPanel.DebugTotal();
+        Vector2 pos = cell.GlobalPosition + cell.Size * 0.5f;
+        Input.WarpMouse(pos);
+
+        var press = new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left,
+            Pressed = true,
+            Position = pos,
+            GlobalPosition = pos,
+        };
+        Input.ParseInputEvent(press);
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        var release = new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left,
+            Pressed = false,
+            Position = pos,
+            GlobalPosition = pos,
+        };
+        Input.ParseInputEvent(release);
+
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Deck] 点击池中卡牌：{before} → {_deckPanel.DebugTotal()} 张");
+    }
+
+    private void DemoGallery()
+    {
+        RefreshHistory();
+        OpenGallery();
+
+        if (!OS.GetCmdlineUserArgs().Contains("--anim-log"))
+            return;
+
+        CallDeferred(nameof(LogGalleryAnim));
+    }
+
+    private async void LogGalleryAnim()
+    {
+        GD.Print($"[Anim] gallery t=0 alpha={_galleryPanel.Modulate.A:F2} scale={_galleryPanel.Scale.X:F3} dim={_galleryDim.Color.A:F2}");
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Anim] gallery t=0.3 alpha={_galleryPanel.Modulate.A:F2} scale={_galleryPanel.Scale.X:F3} dim={_galleryDim.Color.A:F2}");
+
+        if (!OS.GetCmdlineUserArgs().Contains("--also-close"))
+            return;
+
+        CloseGallery();
+        await ToSignal(GetTree().CreateTimer(0.07), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Anim] gallery close t=0.07 alpha={_galleryPanel.Modulate.A:F2} dim={_galleryDim.Color.A:F2} vis={_galleryPanel.Visible}");
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Anim] gallery close t=0.22 vis={_galleryPanel.Visible}");
     }
 
     private void DemoSettings()
     {
-        _settingsPanel.Visible = true;
-        _tabs.CurrentTab = 2;
+        OpenSettings();
+        SelectSettingsTab(OS.GetCmdlineUserArgs().Contains("--video-tab") ? 0 : 2);
+
+        if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
+            CallDeferred(nameof(LogSettingsAnim));
+
+        if (OS.GetCmdlineUserArgs().Contains("--wheel-test"))
+            CallDeferred(nameof(TestSettingsWheel));
+
+        // 把鼠标停在某个页签上，用来看悬停样式
+        if (OS.GetCmdlineUserArgs().Contains("--hover-tab"))
+        {
+            Vector2 p = new(470f, 192f);   // 「音频设置」页签中心
+            Input.WarpMouse(p);
+            Input.ParseInputEvent(new InputEventMouseMotion { Position = p, GlobalPosition = p });
+
+
+
+            // 再按下去，用来看「按下缩小」；--release-tab 时松开并检查切页
+            if (OS.GetCmdlineUserArgs().Contains("--press-tab"))
+            {
+
+                Input.ParseInputEvent(new InputEventMouseButton
+                {
+                    ButtonIndex = MouseButton.Left, Pressed = true, Position = p, GlobalPosition = p,
+                });
+            }
+        }
     }
 
     private async void DemoButtonFlow()
@@ -101,6 +667,7 @@ public partial class MainMenu : Node3D
         BuildToast();
         BuildSettingsPanel();
         BuildGalleryPanel();
+        BuildDeckPanel();
         ButtonJuice.AttachAll(_root);
         RebuildTexts();
     }
@@ -162,11 +729,12 @@ public partial class MainMenu : Node3D
 
         AddMenuButton(col, "menu.vs_ai", OnVsAi);
         AddMenuButton(col, "menu.lan", () => ShowToast(Loc.T("common.locked")), accent: false);
-        AddMenuButton(col, "menu.settings", () => _settingsPanel.Visible = true);
+        AddMenuButton(col, "menu.deck", OnDeck);
+        AddMenuButton(col, "menu.settings", OpenSettings);
         AddMenuButton(col, "menu.gallery", () =>
         {
             RefreshHistory();
-            _galleryPanel.Visible = true;
+            OpenGallery();
         });
         AddMenuButton(col, "menu.quit", () => GetTree().Quit());
     }
@@ -214,39 +782,333 @@ public partial class MainMenu : Node3D
 
     // ─────────────────────────── 设置面板 ───────────────────────────
 
+    private Tween _settingsTween;
+    private ColorRect _settingsDim;
+
+    /// <summary>设置面板：淡入 + 轻微放大。</summary>
+    private void OpenSettings()
+    {
+        if (_settingsPanel == null)
+            return;
+
+        _settingsPanel.Visible = true;
+        _settingsPanel.PivotOffset = _settingsPanel.Size * 0.5f;
+        _settingsPanel.Modulate = new Color(1f, 1f, 1f, 0f);
+        _settingsPanel.Scale = Vector2.One * 0.955f;
+
+        KillSettingsTween();
+        _settingsTween = CreateTween().SetParallel(true);
+        _settingsTween.TweenProperty(_settingsPanel, "modulate:a", 1f, 0.16f);
+        _settingsTween.TweenProperty(_settingsPanel, "scale", Vector2.One, 0.22f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+        if (_settingsDim != null)
+        {
+            _settingsDim.Visible = true;
+            _settingsTween.TweenProperty(_settingsDim, "color:a", 0.45f, 0.16f);
+        }
+    }
+
+    /// <summary>设置面板：缩小 + 淡出后再隐藏。</summary>
+    private void CloseSettings()
+    {
+        if (_settingsPanel == null || !_settingsPanel.Visible)
+            return;
+
+        _settingsPanel.PivotOffset = _settingsPanel.Size * 0.5f;
+
+        KillSettingsTween();
+        _settingsTween = CreateTween().SetParallel(true);
+        _settingsTween.TweenProperty(_settingsPanel, "modulate:a", 0f, 0.13f);
+        _settingsTween.TweenProperty(_settingsPanel, "scale", Vector2.One * 0.965f, 0.13f)
+            .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+
+        if (_settingsDim != null)
+            _settingsTween.TweenProperty(_settingsDim, "color:a", 0f, 0.13f);
+
+        _settingsTween.Chain().TweenCallback(Callable.From(() =>
+        {
+            _settingsPanel.Visible = false;
+            _settingsPanel.Scale = Vector2.One;
+            _settingsPanel.Modulate = Colors.White;
+
+            if (_settingsDim != null)
+                _settingsDim.Visible = false;
+        }));
+    }
+
+    private void KillSettingsTween()
+    {
+        if (_settingsTween != null && _settingsTween.IsValid())
+            _settingsTween.Kill();
+    }
+    /// <summary>测试：滚轮是否让设置面板左右滚动。</summary>
+    private async void TestSettingsWheel()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 p = _settingsPanel.GlobalPosition + _settingsPanel.Size * 0.5f;
+        Input.WarpMouse(p);
+        GD.Print($"[Wheel] 滚动前 x={_settingsScroll.ScrollHorizontal} " +
+                 $"max={_settingsScroll.GetHScrollBar().MaxValue} page={_settingsScroll.GetHScrollBar().Page} panel={_settingsPanel.Size}");
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.WheelDown, Pressed = true, Position = p, GlobalPosition = p, Factor = 1f,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Wheel] 滚轮后 x={_settingsScroll.ScrollHorizontal}");
+
+        // 页签栏：把鼠标移到页签上再滚一次
+        Vector2 tp = _tabScroll.GlobalPosition + _tabScroll.Size * 0.5f;
+        Input.WarpMouse(tp);
+        GD.Print($"[Wheel] 页签栏 滚动前 x={_tabScroll.ScrollHorizontal} " +
+                 $"max={_tabScroll.GetHScrollBar().MaxValue} page={_tabScroll.GetHScrollBar().Page}");
+
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.WheelDown, Pressed = true, Position = tp, GlobalPosition = tp, Factor = 1f,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Wheel] 页签栏 滚轮后 x={_tabScroll.ScrollHorizontal}");
+    }
+    private async void LogSettingsAnim()
+    {
+        if (_settingsScroll != null)
+            GD.Print($"[Size] panel={_settingsPanel.Size} scroll={_settingsScroll.Size} " +
+                     $"hmax={_settingsScroll.GetHScrollBar().MaxValue} hpage={_settingsScroll.GetHScrollBar().Page}");
+        GD.Print($"[Anim] t=0 alpha={_settingsPanel.Modulate.A:F2} scale={_settingsPanel.Scale.X:F3}");
+        await ToSignal(GetTree().CreateTimer(0.06), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Anim] t=0.06 alpha={_settingsPanel.Modulate.A:F2} scale={_settingsPanel.Scale.X:F3}");
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Anim] t=0.26 alpha={_settingsPanel.Modulate.A:F2} scale={_settingsPanel.Scale.X:F3}");
+
+        if (!OS.GetCmdlineUserArgs().Contains("--also-close"))
+            return;
+
+        CloseSettings();
+        GD.Print($"[Anim] close t=0 alpha={_settingsPanel.Modulate.A:F2} scale={_settingsPanel.Scale.X:F3} vis={_settingsPanel.Visible}");
+        await ToSignal(GetTree().CreateTimer(0.07), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Anim] close t=0.07 alpha={_settingsPanel.Modulate.A:F2} vis={_settingsPanel.Visible}");
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Anim] close t=0.22 alpha={_settingsPanel.Modulate.A:F2} vis={_settingsPanel.Visible}");
+    }
+
+    private ScrollContainer _settingsScroll;
+    private ScrollContainer _tabScroll;
+
+    /// <summary>面板定宽（窗口太窄时才收窄），内容宽度固定，超出就靠横向滚动看。</summary>
+    private const float SettingsContentWidth = 690f;
+
+    private void ApplySettingsSize()
+    {
+        if (_settingsPanel == null)
+            return;
+
+        Vector2 viewport = GetViewport().GetVisibleRect().Size;
+        float w = Mathf.Min(760f, Mathf.Max(320f, viewport.X - 80f));
+
+        // 调试：强制收窄面板，用来看横向滚动
+        if (OS.GetCmdlineUserArgs().Contains("--narrow-panel"))
+            w = 520f;
+
+        if (OS.GetCmdlineUserArgs().Contains("--narrow-tabs"))
+            w = 400f;
+        float h = Mathf.Min(560f, Mathf.Max(240f, viewport.Y - 80f));
+
+        _settingsPanel.OffsetLeft = -w * 0.5f;
+        _settingsPanel.OffsetRight = w * 0.5f;
+        _settingsPanel.OffsetTop = -h * 0.5f;
+        _settingsPanel.OffsetBottom = h * 0.5f;
+    }
+
+    /// <summary>页签栏的滚轮：放不下时左右滚。</summary>
+    private void OnTabScrollInput(InputEvent @event)
+    {
+        if (_tabScroll == null)
+            return;
+
+        if (@event is not InputEventMouseButton { Pressed: true } mb)
+            return;
+
+        if (mb.ButtonIndex != MouseButton.WheelUp && mb.ButtonIndex != MouseButton.WheelDown)
+            return;
+
+        float overflow = (float)_tabScroll.GetHScrollBar().MaxValue - _tabScroll.Size.X;
+        if (overflow <= 0f)
+            return;
+
+        int step = mb.ButtonIndex == MouseButton.WheelDown ? 80 : -80;
+        _tabScroll.ScrollHorizontal = Mathf.Clamp(
+            _tabScroll.ScrollHorizontal + step, 0, Mathf.RoundToInt(overflow));
+
+        _tabScroll.AcceptEvent();
+    }
+    /// <summary>滚轮：内容放不下时左右滚动（放得下就交回默认行为）。</summary>
+    private void OnSettingsScrollInput(InputEvent @event)
+    {
+        if (_settingsScroll == null)
+            return;
+
+        if (@event is not InputEventMouseButton { Pressed: true } mb)
+            return;
+
+        if (mb.ButtonIndex != MouseButton.WheelUp && mb.ButtonIndex != MouseButton.WheelDown)
+            return;
+
+        float overflow = (float)_settingsScroll.GetHScrollBar().MaxValue - _settingsScroll.Size.X;
+        if (overflow <= 0f)
+            return;
+
+        int step = mb.ButtonIndex == MouseButton.WheelDown ? 60 : -60;
+        _settingsScroll.ScrollHorizontal = Mathf.Clamp(
+            _settingsScroll.ScrollHorizontal + step, 0, Mathf.RoundToInt(overflow));
+
+        _settingsScroll.AcceptEvent();
+    }
+    /// <summary>选中的分类页：按钮保持按下态，对应页面显示。</summary>
+    private void SelectSettingsTab(int index)
+    {
+        _currentTab = Mathf.Clamp(index, 0, _tabButtons.Count - 1);
+
+        for (int i = 0; i < _tabButtons.Count; i++)
+            _tabButtons[i].ButtonPressed = i == _currentTab;
+
+        for (int i = 0; i < _tabPages.Count; i++)
+            _tabPages[i].Visible = i == _currentTab;
+    }
+
+    /// <summary>单个控件的缩放反馈（轴心在中心）。</summary>
+    private void TweenControlScale(Control control, float scale, float duration,
+                                   Tween.TransitionType trans, Tween.EaseType ease)
+    {
+        if (control == null || !IsInstanceValid(control))
+            return;
+
+        control.PivotOffset = control.Size * 0.5f;
+
+        Tween tween = CreateTween();
+        tween.TweenProperty(control, "scale", Vector2.One * scale, duration)
+            .SetTrans(trans).SetEase(ease);
+    }
     private void BuildSettingsPanel()
     {
-        _settingsPanel = new PanelContainer { Name = "Settings", Visible = false };
-        _settingsPanel.SetAnchorsPreset(Control.LayoutPreset.Center);
-        _settingsPanel.OffsetLeft = -360;
-        _settingsPanel.OffsetRight = 360;
-        _settingsPanel.OffsetTop = -250;
-        _settingsPanel.OffsetBottom = 250;
-        _root.AddChild(_settingsPanel);
+        _settingsDim = new ColorRect
+        {
+            Name = "SettingsDim",
+            Visible = false,
+            Color = new Color(0f, 0f, 0f, 0f),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            ZIndex = 6,
+        };
+        _settingsDim.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_settingsDim);
 
-        var outer = new VBoxContainer();
+        _settingsPanel = new PanelContainer { Name = "Settings", Visible = false, ZIndex = 12, ClipContents = true };
+        _settingsPanel.SetAnchorsPreset(Control.LayoutPreset.Center);
+        _root.AddChild(_settingsPanel);
+        ApplySettingsSize();
+        GetViewport().SizeChanged += ApplySettingsSize;
+
+        // 内容定宽 + 靠左；窗口比面板窄时用滚轮左右滚动
+        _settingsScroll = new ScrollContainer
+        {
+            HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever,
+            VerticalScrollMode = ScrollContainer.ScrollMode.ShowNever,
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+        };
+        _settingsScroll.GuiInput += OnSettingsScrollInput;
+        _settingsPanel.AddChild(_settingsScroll);
+
+        var pad = new MarginContainer();
+        pad.AddThemeConstantOverride("margin_left", 16);
+        pad.AddThemeConstantOverride("margin_right", 16);
+        pad.AddThemeConstantOverride("margin_top", 16);
+        pad.AddThemeConstantOverride("margin_bottom", 16);
+        _settingsScroll.AddChild(pad);
+
+        var outer = new VBoxContainer
+        {
+            CustomMinimumSize = new Vector2(SettingsContentWidth, 0),
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
+        };
         outer.AddThemeConstantOverride("separation", 10);
-        _settingsPanel.AddChild(outer);
+        pad.AddChild(outer);
 
         var title = new Label { Text = Loc.T("settings.title") };
         title.AddThemeFontSizeOverride("font_size", 26);
         outer.AddChild(title);
         _locBindings.Add(("settings.title", () => title.Text = Loc.T("settings.title")));
 
-        var tabs = new TabContainer
+        // 自绘页签：TabContainer 的页签是引擎内部绘制的，没法单独缩放某一个，
+        // 这里用三个 Button 代替，按下时每个按钮可以各自回缩。
+        // 按钮定宽 + 靠左；放不下时用滚轮在这条页签栏里左右滚。
+        _tabScroll = new ScrollContainer
+        {
+            CustomMinimumSize = new Vector2(0, 40),
+            HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever,
+            VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _tabScroll.GuiInput += OnTabScrollInput;
+        outer.AddChild(_tabScroll);
+
+        var tabRow = new HBoxContainer
+        {
+            Alignment = BoxContainer.AlignmentMode.Begin,
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
+        };
+        tabRow.AddThemeConstantOverride("separation", 4);
+        _tabScroll.AddChild(tabRow);
+
+        _tabButtons.Clear();
+
+        string[] tabKeys = { "settings.video", "settings.audio", "settings.camera" };
+        for (int i = 0; i < tabKeys.Length; i++)
+        {
+            int index = i;
+            var button = new Button
+            {
+                Text = Loc.T(tabKeys[i]),
+                ToggleMode = true,
+                CustomMinimumSize = new Vector2(
+                    OS.GetCmdlineUserArgs().Contains("--wide-tabs") ? 240f : 160f, 36),
+                SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
+            };
+            button.ButtonDown += () => TweenControlScale(button, 0.93f, 0.07f, Tween.TransitionType.Quad, Tween.EaseType.Out);
+            button.ButtonUp += () => TweenControlScale(button, 1f, 0.22f, Tween.TransitionType.Back, Tween.EaseType.Out);
+            button.Pressed += () => SelectSettingsTab(index);
+            tabRow.AddChild(button);
+            _tabButtons.Add(button);
+        }
+
+        // 页面容器：三页都放进去，只显示当前那页
+        var pages = new PanelContainer
         {
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(0, 300),
         };
-        outer.AddChild(tabs);
+        pages.AddThemeStyleboxOverride("panel",
+            UiTheme.Box("res://gameAsset/textures/ui/panel/panel_light.png", 18, 14, 14, 14, 14));
+        outer.AddChild(pages);
 
-        tabs.AddChild(BuildVideoTab());
-        tabs.AddChild(BuildAudioTab());
-        tabs.AddChild(BuildCameraTab());
-        _tabs = tabs;
+        _tabPages.Clear();
+        _tabPages.Add(BuildVideoTab());
+        _tabPages.Add(BuildAudioTab());
+        _tabPages.Add(BuildCameraTab());
+        foreach (Control page in _tabPages)
+        {
+            page.Visible = false;
+            pages.AddChild(page);
+        }
+
+        SelectSettingsTab(OS.GetCmdlineUserArgs().Contains("--video-tab") ? 0 : 2);
 
         var close = new Button { Text = Loc.T("settings.close"), CustomMinimumSize = new Vector2(0, 46) };
-        close.Pressed += () => _settingsPanel.Visible = false;
+        close.Pressed += CloseSettings;
         outer.AddChild(close);
         _locBindings.Add(("settings.close", () => close.Text = Loc.T("settings.close")));
     }
@@ -270,7 +1132,6 @@ public partial class MainMenu : Node3D
         };
         tab.AddChild(res);
 
-        tab.AddChild(NewRowLabel("settings.vsync"));
         var vsync = new CheckButton { ButtonPressed = Settings.GetBool("video", "vsync", true) };
         vsync.Toggled += on =>
         {
@@ -278,9 +1139,8 @@ public partial class MainMenu : Node3D
             Settings.Save();
             DisplayServer.WindowSetVsyncMode(on ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Disabled);
         };
-        tab.AddChild(vsync);
+        tab.AddChild(BoolRow("settings.vsync", vsync));
 
-        tab.AddChild(NewRowLabel("settings.fullscreen"));
         var full = new CheckButton { ButtonPressed = Settings.GetBool("video", "fullscreen", false) };
         full.Toggled += on =>
         {
@@ -288,7 +1148,7 @@ public partial class MainMenu : Node3D
             Settings.Save();
             DisplayServer.WindowSetMode(on ? DisplayServer.WindowMode.Fullscreen : DisplayServer.WindowMode.Windowed);
         };
-        tab.AddChild(full);
+        tab.AddChild(BoolRow("settings.fullscreen", full));
 
         tab.AddChild(NewRowLabel("settings.language"));
         var lang = new OptionButton();
@@ -377,6 +1237,24 @@ public partial class MainMenu : Node3D
         return slider;
     }
 
+    /// <summary>开关类选项：文字在左、开关在右，占同一行（不再各占一行）。</summary>
+    private Control BoolRow(string key, CheckButton toggle)
+    {
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 10);
+
+        Label label = NewRowLabel(key);
+        label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        label.VerticalAlignment = VerticalAlignment.Center;
+        row.AddChild(label);
+
+        toggle.SizeFlagsHorizontal = Control.SizeFlags.ShrinkEnd;
+        toggle.SizeFlagsVertical = Control.SizeFlags.ShrinkCenter;
+        row.AddChild(toggle);
+
+        return row;
+    }
+
     private Label NewRowLabel(string key)
     {
         var l = new Label { Text = Loc.T(key) };
@@ -407,9 +1285,80 @@ public partial class MainMenu : Node3D
 
     // ─────────────────────────── 总览 ───────────────────────────
 
+    private Tween _galleryTween;
+    private ColorRect _galleryDim;
+
+    /// <summary>总览面板：淡入 + 轻微放大，同时压暗背景。</summary>
+    private void OpenGallery()
+    {
+        if (_galleryPanel == null)
+            return;
+
+        _galleryPanel.Visible = true;
+        _galleryPanel.PivotOffset = _galleryPanel.Size * 0.5f;
+        _galleryPanel.Modulate = new Color(1f, 1f, 1f, 0f);
+        _galleryPanel.Scale = Vector2.One * 0.955f;
+
+        KillGalleryTween();
+        _galleryTween = CreateTween().SetParallel(true);
+        _galleryTween.TweenProperty(_galleryPanel, "modulate:a", 1f, 0.16f);
+        _galleryTween.TweenProperty(_galleryPanel, "scale", Vector2.One, 0.22f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+        if (_galleryDim != null)
+        {
+            _galleryDim.Visible = true;
+            _galleryTween.TweenProperty(_galleryDim, "color:a", 0.45f, 0.16f);
+        }
+    }
+
+    /// <summary>总览面板：缩小 + 淡出后再隐藏，遮罩同步。</summary>
+    private void CloseGallery()
+    {
+        if (_galleryPanel == null || !_galleryPanel.Visible)
+            return;
+
+        _galleryPanel.PivotOffset = _galleryPanel.Size * 0.5f;
+
+        KillGalleryTween();
+        _galleryTween = CreateTween().SetParallel(true);
+        _galleryTween.TweenProperty(_galleryPanel, "modulate:a", 0f, 0.13f);
+        _galleryTween.TweenProperty(_galleryPanel, "scale", Vector2.One * 0.965f, 0.13f)
+            .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+
+        if (_galleryDim != null)
+            _galleryTween.TweenProperty(_galleryDim, "color:a", 0f, 0.13f);
+
+        _galleryTween.Chain().TweenCallback(Callable.From(() =>
+        {
+            _galleryPanel.Visible = false;
+            _galleryPanel.Scale = Vector2.One;
+            _galleryPanel.Modulate = Colors.White;
+
+            if (_galleryDim != null)
+                _galleryDim.Visible = false;
+        }));
+    }
+
+    private void KillGalleryTween()
+    {
+        if (_galleryTween != null && _galleryTween.IsValid())
+            _galleryTween.Kill();
+    }
     private void BuildGalleryPanel()
     {
-        _galleryPanel = new PanelContainer { Name = "Gallery", Visible = false };
+        _galleryDim = new ColorRect
+        {
+            Name = "GalleryDim",
+            Visible = false,
+            Color = new Color(0f, 0f, 0f, 0f),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            ZIndex = 6,
+        };
+        _galleryDim.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_galleryDim);
+
+        _galleryPanel = new PanelContainer { Name = "Gallery", Visible = false, ZIndex = 12 };
         _galleryPanel.SetAnchorsPreset(Control.LayoutPreset.Center);
         _galleryPanel.OffsetLeft = -520;
         _galleryPanel.OffsetRight = 520;
@@ -470,8 +1419,11 @@ public partial class MainMenu : Node3D
         _historyBox.AddThemeConstantOverride("separation", 3);
         outer.AddChild(_historyBox);
 
+        // 撑开中间，把「返回」压到面板最底部
+        outer.AddChild(new Control { SizeFlagsVertical = Control.SizeFlags.ExpandFill });
+
         var back = new Button { Text = Loc.T("common.back"), CustomMinimumSize = new Vector2(0, 46) };
-        back.Pressed += () => _galleryPanel.Visible = false;
+        back.Pressed += CloseGallery;
         outer.AddChild(back);
         _locBindings.Add(("common.back", () => back.Text = Loc.T("common.back")));
     }
@@ -512,19 +1464,32 @@ public partial class MainMenu : Node3D
         GetTree().ChangeSceneToFile("res://scenes/mapSelect.tscn");
     }
 
+    private DeckBuilderPanel _deckPanel;
+
+    private void BuildDeckPanel()
+    {
+        _deckPanel = new DeckBuilderPanel();
+        _root.AddChild(_deckPanel);
+        _deckPanel.Saved += deck =>
+        {
+            ShowToast(Loc.T("deck.saved"));
+            GD.Print($"[Deck] 保存卡组 {deck.Count} 张：{string.Join(",", deck)}");
+        };
+    }
+
+    private void OnDeck()
+    {
+        _deckPanel.Open();
+    }
+
     private void RebuildTexts()
     {
         foreach ((string _, Action onChanged) in _locBindings)
             onChanged();
 
-        if (_tabs != null && _tabs.GetTabCount() >= 3)
-        {
-            _tabs.SetTabTitle(0, Loc.T("settings.video"));
-            _tabs.SetTabTitle(1, Loc.T("settings.audio"));
-            _tabs.SetTabTitle(2, Loc.T("settings.camera"));
-            if (OS.GetCmdlineUserArgs().Contains("--demo-settings"))
-                GD.Print($"[Tabs] 0='{_tabs.GetTabTitle(0)}' 1='{_tabs.GetTabTitle(1)}' 2='{_tabs.GetTabTitle(2)}'");
-        }
+        string[] tabKeys = { "settings.video", "settings.audio", "settings.camera" };
+        for (int i = 0; i < _tabButtons.Count && i < tabKeys.Length; i++)
+            _tabButtons[i].Text = Loc.T(tabKeys[i]);
     }
 
     public override void _Process(double delta)
@@ -542,10 +1507,12 @@ public partial class MainMenu : Node3D
     {
         if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape })
         {
-            if (_settingsPanel.Visible)
-                _settingsPanel.Visible = false;
+            if (_deckPanel != null && _deckPanel.Visible)
+                _deckPanel.Close();
+            else if (_settingsPanel.Visible)
+                CloseSettings();
             else if (_galleryPanel.Visible)
-                _galleryPanel.Visible = false;
+                CloseGallery();
         }
     }
 }

@@ -145,8 +145,12 @@ public sealed class BattleState
 
         s.Player = new PlayerState { Id = PlayerId.Player, Gold = map.StartGold };
         s.Enemy = new PlayerState { Id = PlayerId.Enemy, Gold = map.StartGold };
-        s.Player.Deck.AddRange(map.PlayerDeck);
+        List<string> playerDeck = Session.EffectiveDeck(map);
+        s.Player.Deck.AddRange(playerDeck);
         s.Enemy.Deck.AddRange(map.EnemyDeck);
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--deck-log") >= 0)
+            GD.Print($"[Deck] 本局使用 {playerDeck.Count} 张：{string.Join(",", playerDeck)}");
 
         HexCoord playerHq = new(map.PlayerHq[0], map.PlayerHq[1]);
         HexCoord enemyHq = new(map.EnemyHq[0], map.EnemyHq[1]);
