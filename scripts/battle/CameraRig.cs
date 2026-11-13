@@ -166,6 +166,33 @@ public partial class CameraRig : Node3D
         Apply();
     }
 
+    private float _shakeAmount;
+    private float _shakeLeft;
+    private float _shakeDuration = 1f;
+
+    /// <summary>屏幕震动（爆炸用）：amount 是世界单位的抖动幅度。</summary>
+    public void Shake(float amount, float duration)
+    {
+        _shakeAmount = Mathf.Max(_shakeAmount, amount);
+        _shakeDuration = Mathf.Max(duration, 0.05f);
+        _shakeLeft = _shakeDuration;
+        SetProcess(true);
+    }
+
+    public override void _Process(double delta)
+    {
+        if (_shakeLeft <= 0f)
+        {
+            _shakeAmount = 0f;
+            Apply();
+            SetProcess(false);
+            return;
+        }
+
+        _shakeLeft -= (float)delta;
+        Apply();
+    }
+
     private void Apply()
     {
         if (Camera == null)
@@ -179,7 +206,15 @@ public partial class CameraRig : Node3D
             _distance * Mathf.Sin(pitch),
             _distance * Mathf.Cos(pitch) * Mathf.Cos(yaw));
 
-        Camera.GlobalPosition = _focus + offset;
+        // 爆炸震动：幅度随时间线性衰减
+        Vector3 shake = Vector3.Zero;
+        if (_shakeLeft > 0f)
+        {
+            float k = _shakeAmount * Mathf.Clamp(_shakeLeft / _shakeDuration, 0f, 1f);
+            shake = new Vector3((float)GD.RandRange(-k, k), (float)GD.RandRange(-k, k) * 0.6f, 0f);
+        }
+
+        Camera.GlobalPosition = _focus + offset + shake;
         Camera.LookAt(_focus, Vector3.Up);
     }
 

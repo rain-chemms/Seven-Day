@@ -75,59 +75,160 @@ public partial class CardHandView : Control
         _cards[index].Visible = visible;
     }
 
-    /// <summary>重建整手牌（张数或内容变化时调用）。</summary>
+    /// <summary>找手牌里第一张指定卡牌的索引（跳过 exclude 里的槽位，找不到返回 -1）。</summary>
+    public int IndexOfCard(string cardId, ICollection<int> exclude = null)
+    {
+        for (int i = 0; i < _cards.Count; i++)
+        {
+            if (exclude != null && exclude.Contains(i))
+                continue;
+            if (_cards[i].Def != null && _cards[i].Def.Id == cardId)
+                return i;
+        }
+
+        return -1;
+    }
+
+    /// <summary>取卡牌的屏幕矩形与扇形旋转角（烧卡特效要对齐）。</summary>
+    public bool TryGetCardTransform(int index, out Rect2 rect, out float rotationDeg)
+    {
+        rect = default;
+        rotationDeg = 0f;
+        if (index < 0 || index >= _cards.Count)
+            return false;
+
+        rect = _cards[index].GetGlobalRect();
+        rotationDeg = _cards[index].RotationDegrees;
+        return true;
+    }
+
+    /// <summary>重建整手牌（张数或内容变化时调用）：尽量复用已有卡牌节点，位置平滑过渡。</summary>
     public void Refresh()
     {
-        foreach (CardView c in _cards)
-            c.QueueFree();
-        _cards.Clear();
-
         if (_state == null)
-            return;
-
-        for (int i = 0; i < _state.Player.Hand.Count; i++)
         {
-            CardDef def = GameDatabase.Card(_state.Player.Hand[i]);
+            foreach (CardView c in _cards)
+                c.QueueFree();
+            _cards.Clear();
+            return;
+        }
+
+        List<string> hand = _state.Player.Hand;
+
+        // 按「卡牌 id + 第几次出现」把旧卡牌配对，能对上的直接复用（保留当前位置）
+        var spare = new Dictionary<string, List<CardView>>();
+        foreach (CardView c in _cards)
+        {
+            string key = c.Def?.Id ?? "";
+            if (!spare.TryGetValue(key, out List<CardView> list))
+            {
+                list = new List<CardView>();
+                spare[key] = list;
+            }
+            list.Add(c);
+        }
+
+        var next = new List<CardView>();
+
+        for (int i = 0; i < hand.Count; i++)
+        {
+            CardDef def = GameDatabase.Card(hand[i]);
             if (def == null)
                 continue;
 
-            var card = new CardView();
-            AddChild(card);
-            card.Setup(def, i, _state.Player.Gold >= def.Cost);
+            CardView card = null;
+            if (spare.TryGetValue(def.Id, out List<CardView> pool) && pool.Count > 0)
+            {
+                card = pool[0];
+                pool.RemoveAt(0);
+            }
 
-            int index = i;
-            card.Clicked += idx => Selected?.Invoke(idx);
-            card.DoubleClicked += idx => DoubleClicked?.Invoke(idx);
-            card.DragStarted += (idx, pos) =>
+            if (card == null)
             {
-                _dragging = idx;
-                FocusCard(idx);
-            };
-            card.Dragging += (idx, delta) =>
+                // 新牌：出现在最右侧的位置，随后由 Relayout 平滑挪过去
+                card = new CardView();
+                AddChild(card);
+                card.Setup(def, i, _state.Player.Gold >= def.Cost);
+                card.Position = BasePosition(Mathf.Max(0, next.Count - 1));
+                WireCard(card);
+            }
+            else
             {
-                _dragDelta = delta;
-                if (_dragging < 0 || _dragging >= _cards.Count)
-                    return;
-                CardView dragged = _cards[_dragging];
-                dragged.Position = BasePosition(_dragging) + delta;
-                dragged.ZIndex = 400;
-            };
-            card.DragEnded += (idx, release, start) => OnDragEnded(idx, release, start);
-            card.MouseEntered += () => SetHover(index);
-            card.MouseExited += () =>
-            {
-                if (_hovered == index)
-                    SetHover(-1);
-            };
+                // 复用：只更新数据与下标（Build 内部会直接返回，不会重复建节点）
+                // 注意要恢复可见性：打出的那张可能被 SetCardVisible(false) 藏起来了，
+                // 复用它当下一张卡的话会“凭空少一张”。
+                card.Visible = true;
+                card.Setup(def, i, _state.Player.Gold >= def.Cost);
+            }
 
-            _cards.Add(card);
-            _ = index;
+            next.Add(card);
+            card.SetEthereal(_state.IsEtherealAt(i));
         }
+
+        // 没被复用的旧卡（确实离开了手牌）销毁
+        foreach (List<CardView> leftovers in spare.Values)
+        {
+            foreach (CardView c in leftovers)
+            {
+                _tweens.Remove(_cards.IndexOf(c));
+                c.QueueFree();
+            }
+        }
+
+        _cards.Clear();
+        _cards.AddRange(next);
+        _tweens.Clear();
 
         if (_selected >= _cards.Count)
             _selected = -1;
 
-        Relayout(false);
+        Relayout(true);
+    }
+
+    /// <summary>给一张卡挂事件：索引在触发时按当前列表查，避免复用后闭包拿到旧下标。</summary>
+    private void WireCard(CardView card)
+    {
+        card.Clicked += _ => Selected?.Invoke(_cards.IndexOf(card));
+        card.DoubleClicked += _ => DoubleClicked?.Invoke(_cards.IndexOf(card));
+
+        card.DragStarted += (_, pos) =>
+        {
+            int idx = _cards.IndexOf(card);
+            if (idx < 0)
+                return;
+            _dragging = idx;
+            FocusCard(idx);
+        };
+
+        card.Dragging += (_, delta) =>
+        {
+            int idx = _cards.IndexOf(card);
+            if (idx < 0)
+                return;
+            _dragDelta = delta;
+            card.Position = BasePosition(idx) + delta;
+            card.ZIndex = 400;
+        };
+
+        card.DragEnded += (_, release, start) =>
+        {
+            int idx = _cards.IndexOf(card);
+            if (idx >= 0)
+                OnDragEnded(idx, release, start);
+        };
+
+        card.MouseEntered += () =>
+        {
+            int idx = _cards.IndexOf(card);
+            if (idx >= 0)
+                SetHover(idx);
+        };
+
+        card.MouseExited += () =>
+        {
+            if (_hovered >= 0 && _hovered < _cards.Count && _cards[_hovered] == card)
+                SetHover(-1);
+        };
     }
 
     private void OnDragEnded(int index, Vector2 release, Vector2 start)

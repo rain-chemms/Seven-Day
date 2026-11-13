@@ -22,6 +22,7 @@ public partial class BattleHud : CanvasLayer
     public event Action EndTurnClicked;
     public event Action<string> BuildClicked;
     public event Action UpgradeClicked;
+    public event Action RepairClicked;
     public event Action DemolishClicked;
     public event Action ExtraFireClicked;
 
@@ -30,6 +31,15 @@ public partial class BattleHud : CanvasLayer
     public event Action PreviewUnhovered;
     public event Action UpgradeHovered;
     public event Action CancelClicked;
+
+    /// <summary>点了底部某个牌堆（0=抽牌堆 1=弃牌堆 2=消耗堆）。</summary>
+    public event Action<int> PileClicked;
+
+    private PileView _deckPile;
+    private PileView _discardPile;
+    private PileView _exhaustPile;
+    private PileViewer _pileViewer;
+    private Control _effects;
 
     private Label _turnLabel;
     private Label _goldLabel;
@@ -47,7 +57,11 @@ public partial class BattleHud : CanvasLayer
     private Button _extraFireBtn;
     private Button _demolishBtn;
     private Button _upgradeBtn;
+    private Button _repairBtn;
     private PanelContainer _buildMenu;
+
+    /// <summary>调试：建造菜单是否可见。</summary>
+    public bool DebugBuildMenuVisible => _buildMenu is { Visible: true };
     private VBoxContainer _buildList;
     private Label _buildTitle;
     private Control _root;
@@ -158,8 +172,11 @@ public partial class BattleHud : CanvasLayer
         _infoBody.AddThemeColorOverride("default_color", UiTheme.Ink);
         infoBox.AddChild(_infoBody);
 
-        var infoButtons = new HBoxContainer();
-        infoButtons.AddThemeConstantOverride("separation", 8);
+        // 用流式容器：按钮多了会自动换行，不会顶出面板
+        var infoButtons = new HFlowContainer();
+        infoButtons.AddThemeConstantOverride("h_separation", 8);
+        infoButtons.AddThemeConstantOverride("v_separation", 6);
+        infoButtons.CustomMinimumSize = new Vector2(256, 0);
         infoBox.AddChild(infoButtons);
 
         _upgradeBtn = NewButton("升级");
@@ -167,6 +184,13 @@ public partial class BattleHud : CanvasLayer
         _upgradeBtn.MouseEntered += () => UpgradeHovered?.Invoke();
         _upgradeBtn.MouseExited += () => PreviewUnhovered?.Invoke();
         infoButtons.AddChild(_upgradeBtn);
+
+        // 受伤后可以花钱修理（按损失血量计价）
+        _repairBtn = NewButton("维修");
+        _repairBtn.AddThemeColorOverride("font_disabled_color", new Color(0.23f, 0.18f, 0.09f, 0.55f));
+        _repairBtn.Pressed += () => RepairClicked?.Invoke();
+        _repairBtn.Visible = false;
+        infoButtons.AddChild(_repairBtn);
 
         _demolishBtn = NewButton("拆除");
         _demolishBtn.Pressed += () => DemolishClicked?.Invoke();
@@ -194,15 +218,55 @@ public partial class BattleHud : CanvasLayer
     _hand.DroppedOnMap += (i, pos) => CardDropped?.Invoke(i, pos);
     _hand.Reordered += (a, b) => CardReordered?.Invoke(a, b);
 
+    // ── 底部牌堆（左：抽牌堆；右：弃牌堆 + 消耗堆） ──
+    _deckPile = new PileView();
+    _deckPile.Setup(PileView.PileKind.Deck, "抽牌堆");
+    _deckPile.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomLeft);
+    _deckPile.OffsetLeft = 14;
+    _deckPile.OffsetTop = -218;
+    _deckPile.OffsetRight = 98;
+    _deckPile.OffsetBottom = -132;
+    _deckPile.PileClicked += kind => PileClicked?.Invoke((int)kind);
+    _root.AddChild(_deckPile);
+
+    _exhaustPile = new PileView();
+    _exhaustPile.Setup(PileView.PileKind.Exhaust, "消耗堆");
+    _exhaustPile.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomRight);
+    _exhaustPile.OffsetLeft = -94;
+    _exhaustPile.OffsetTop = -218;
+    _exhaustPile.OffsetRight = -10;
+    _exhaustPile.OffsetBottom = -132;
+    _exhaustPile.PileClicked += kind => PileClicked?.Invoke((int)kind);
+    _root.AddChild(_exhaustPile);
+
+    _discardPile = new PileView();
+    _discardPile.Setup(PileView.PileKind.Discard, "弃牌堆");
+    _discardPile.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomRight);
+    _discardPile.OffsetLeft = -186;
+    _discardPile.OffsetTop = -218;
+    _discardPile.OffsetRight = -102;
+    _discardPile.OffsetBottom = -132;
+    _discardPile.PileClicked += kind => PileClicked?.Invoke((int)kind);
+    _root.AddChild(_discardPile);
+
+    // 飞牌动画层
+    _effects = new Control { Name = "Effects", MouseFilter = Control.MouseFilterEnum.Ignore };
+    _effects.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+    _root.AddChild(_effects);
+
+    // 牌堆查看器（盖在最上层，连提示条也压住）
+    _pileViewer = new PileViewer { ZIndex = 120 };
+    _root.AddChild(_pileViewer);
+
         // ── 回合结束 ──
         _endTurnButton = NewButton("回合结束");
         _endTurnButton.Name = "EndTurn";
-        _endTurnButton.CustomMinimumSize = new Vector2(196, 56);
+        _endTurnButton.CustomMinimumSize = new Vector2(150, 46);
         _endTurnButton.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomRight);
-        _endTurnButton.OffsetLeft = -220;
-        _endTurnButton.OffsetTop = -76;
-        _endTurnButton.OffsetRight = -24;
-        _endTurnButton.OffsetBottom = -20;
+        _endTurnButton.OffsetLeft = -172;
+        _endTurnButton.OffsetTop = -58;
+        _endTurnButton.OffsetRight = -18;
+        _endTurnButton.OffsetBottom = -14;
         _endTurnButton.Pressed += () => EndTurnClicked?.Invoke();
         _root.AddChild(_endTurnButton);
 
@@ -302,6 +366,118 @@ public partial class BattleHud : CanvasLayer
             return;
         RefreshTop();
         RefreshHand();
+        RefreshPiles();
+    }
+
+    public void RefreshPiles()
+    {
+        if (_state == null)
+            return;
+
+        _deckPile.SetCount(_state.Player.Deck.Count);
+        _discardPile.SetCount(_state.Player.Discard.Count);
+        _exhaustPile.SetCount(Mathf.Max(0, _state.Player.Exhaust.Count - _pendingExhaust));
+    }
+
+    /// <summary>牌堆位置（给飞牌动画当目标点）。</summary>
+    public Vector2 PileCenter(PileView.PileKind kind) => kind switch
+    {
+        PileView.PileKind.Discard => _discardPile.StackCenter,
+        PileView.PileKind.Exhaust => _exhaustPile.StackCenter,
+        _ => _deckPile.StackCenter,
+    };
+
+    public void BumpPile(PileView.PileKind kind)
+    {
+        switch (kind)
+        {
+            case PileView.PileKind.Discard: _discardPile.Bump(); break;
+            case PileView.PileKind.Exhaust: _exhaustPile.Bump(); break;
+            default: _deckPile.Bump(); break;
+        }
+    }
+
+    /// <summary>打开某个牌堆的查看器。</summary>
+    public void ShowPile(string title, System.Collections.Generic.IEnumerable<string> cards,
+                         System.Collections.Generic.IReadOnlyList<int> etherealIndices = null) =>
+        _pileViewer.Open(title, cards, etherealIndices);
+
+    public void ClosePile() => _pileViewer.Close();
+
+    /// <summary>调试：抽牌堆当前缩放（验证悬停动画）。</summary>
+    public float DebugPileScale() => _deckPile.Scale.X;
+
+    /// <summary>调试：当前实际可见的手牌数量。</summary>
+    public int DebugVisibleCardCount() =>
+        _hand.Cards.Count(c => c.Visible);
+
+    /// <summary>取某张手牌的屏幕矩形（给飞牌动画用）。</summary>
+    public bool TryGetHandCardRect(int index, out Rect2 rect) =>
+        _hand.TryGetCardRect(index, out rect);
+
+    /// <summary>放一个飞牌动画。</summary>
+    public void PlayCardToss(CardDef def, Vector2 from, Vector2 to,
+                             float duration = 0.42f, float endScale = 0.3f,
+                             float arc = 120f, bool faceDown = false,
+                             System.Action onDone = null)
+    {
+        var fx = new CardTossEffect();
+        _effects.AddChild(fx);
+        fx.Play(def, from, to, duration, endScale, arc, faceDown, onDone);
+    }
+
+    /// <summary>抽牌动画：从抽牌堆飞到手上。</summary>
+    public void PlayDrawAnimation(int count)
+    {
+        if (count <= 0)
+            return;
+
+        Vector2 from = PileCenter(PileView.PileKind.Deck);
+        int total = _hand.Cards.Count;
+        int first = Mathf.Max(0, total - count);
+
+        for (int i = first; i < total; i++)
+        {
+            int index = i;
+            if (!_hand.TryGetCardTransform(index, out Rect2 rect, out _))
+                continue;
+
+            _hand.SetCardVisible(index, false);
+
+            float delay = (i - first) * 0.07f;
+            var timer = GetTree().CreateTimer(delay);
+            timer.Timeout += () =>
+            {
+                CardDef def = GameDatabase.Card(_state.Player.Hand.Count > index
+                    ? _state.Player.Hand[index] : null);
+                PlayCardToss(def, from, rect.Position + rect.Size * 0.5f, 0.34f, 0.72f, 90f,
+                    faceDown: true, onDone: () => _hand.SetCardVisible(index, true));
+            };
+        }
+    }
+
+    /// <summary>打出的卡飞向弃牌堆/消耗堆。</summary>
+    public void PlayToPileAnimation(CardDef def, Rect2 cardRect, bool exhaust)
+    {
+        Vector2 from = cardRect.Position + cardRect.Size * 0.5f;
+        Vector2 to = PileCenter(exhaust ? PileView.PileKind.Exhaust : PileView.PileKind.Discard);
+        PlayCardToss(def, from, to, 0.4f, 0.22f, 60f,
+            onDone: () => BumpPile(exhaust ? PileView.PileKind.Exhaust : PileView.PileKind.Discard));
+    }
+
+    /// <summary>洗回牌库：几张卡从弃牌堆飞向抽牌堆。</summary>
+    public void PlayReshuffleAnimation(int count = 4)
+    {
+        Vector2 from = PileCenter(PileView.PileKind.Discard);
+        Vector2 to = PileCenter(PileView.PileKind.Deck);
+
+        for (int i = 0; i < count; i++)
+        {
+            float delay = i * 0.08f;
+            var timer = GetTree().CreateTimer(delay);
+            timer.Timeout += () => PlayCardToss(null, from, to, 0.5f, 0.5f, 130f,
+                faceDown: true, onDone: () => BumpPile(PileView.PileKind.Deck));
+        }
     }
 
     public void RefreshTop()
@@ -375,6 +551,69 @@ public partial class BattleHud : CanvasLayer
         fly.Play(card, from, targetScreen);
     }
 
+    /// <summary>
+    /// 烧卡特效：卡牌被移除时在手牌原位置「烧掉」。
+    /// 必须在刷新（重建手牌）之前调用，否则拿不到卡面位置。
+    /// </summary>
+    public void BurnCards(IReadOnlyList<string> cardIds)
+    {
+        if (cardIds == null || cardIds.Count == 0)
+            return;
+
+        var used = new HashSet<int>();
+
+        foreach (string id in cardIds)
+        {
+            int index = _hand.IndexOfCard(id, used);
+            if (index < 0)
+                continue;
+            if (!_hand.TryGetCardTransform(index, out Rect2 rect, out float rot))
+                continue;
+
+            CardDef def = GameDatabase.Card(id);
+            if (def == null)
+                continue;
+
+            used.Add(index);
+
+            var burn = new CardBurnEffect { Name = "CardBurn" };
+            _root.AddChild(burn);
+            burn.Play(def, rect, rot);
+
+            // 先藏起原卡，避免和燃烧层重叠
+            _hand.SetCardVisible(index, false);
+        }
+    }
+
+    /// <summary>正在播放「烧卡」的消耗卡数量：烧完之前先不计入消耗堆显示。</summary>
+    private int _pendingExhaust;
+
+    /// <summary>在指定位置播「烧卡」特效用（消耗卡打出时用）。</summary>
+    public void BurnCardAt(CardDef def, Rect2 rect, float rotationDeg = 0f, System.Action onDone = null)
+    {
+        if (def == null)
+        {
+            onDone?.Invoke();
+            return;
+        }
+
+        _pendingExhaust++;
+        RefreshPiles();
+
+        var burn = new CardBurnEffect { Name = "CardBurn" };
+        _root.AddChild(burn);
+        burn.Play(def, rect, rotationDeg);
+
+        var timer = GetTree().CreateTimer(0.95);
+        timer.Timeout += () =>
+        {
+            _pendingExhaust = Mathf.Max(0, _pendingExhaust - 1);
+            RefreshPiles();
+            BumpPile(PileView.PileKind.Exhaust);
+            onDone?.Invoke();
+        };
+    }
+
     /// <summary>血条层：设置相机与每帧的数据。</summary>
     public void SetHealthCamera(Camera3D camera) => _bars?.SetCamera(camera);
 
@@ -385,7 +624,7 @@ public partial class BattleHud : CanvasLayer
 
     public void ShowInfo(string title, string body, string imagePath = null, bool showButtons = false,
         int extraFireCost = 0, bool extraFireReady = false, bool showDemolish = true,
-        bool canUpgrade = true)
+        bool canUpgrade = true, int repairCost = 0, bool repairAffordable = true)
     {
         _infoPanel.Visible = true;
         _infoTitle.Text = title;
@@ -406,7 +645,9 @@ public partial class BattleHud : CanvasLayer
             {
                 foreach (Node sub in v.GetChildren())
                 {
-                    if (sub is HBoxContainer h)
+                    if (sub is HFlowContainer hf)
+                        hf.Visible = showButtons;
+                    else if (sub is HBoxContainer h)
                         h.Visible = showButtons;
                 }
             }
@@ -421,6 +662,16 @@ public partial class BattleHud : CanvasLayer
                     ? $"{Loc.T("info.extra_fire")} {extraFireCost}$"
                     : Loc.T("info.extra_fire_used");
                 _extraFireBtn.Disabled = !extraFireReady;
+            }
+        }
+
+        if (_repairBtn != null)
+        {
+            _repairBtn.Visible = showButtons && repairCost > 0;
+            if (repairCost > 0)
+            {
+                _repairBtn.Text = $"维修 {repairCost}$";
+                _repairBtn.Disabled = !repairAffordable;
             }
         }
 

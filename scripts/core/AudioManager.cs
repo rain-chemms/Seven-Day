@@ -133,6 +133,85 @@ public partial class AudioManager : Node
 
     public static void PlayUi(string name) =>
         PlaySfx($"res://gameAsset/audios/sfx/{name}.ogg");
+
+    /// <summary>
+    /// 爆炸音效（导弹/炮弹落地）。带随机的音高与音量微扰，连续爆炸不会完全一样。
+    /// 想换音效：直接替换 res://gameAsset/audios/sfx/explosion.ogg 即可。
+    /// </summary>
+    public static void PlayExplosion(float volumeScale = 1f)
+    {
+        if (Instance == null)
+            return;
+
+        const string path = "res://gameAsset/audios/sfx/explosion.ogg";
+        if (!ResourceLoader.Exists(path))
+            return;
+
+        var stream = GD.Load<AudioStream>(path);
+        if (stream == null)
+            return;
+
+        AudioStreamPlayer player = Instance._sfx.Find(p => !p.Playing) ?? Instance._sfx[0];
+        player.Stream = stream;
+        player.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(volumeScale, 0.05f, 1.2f));
+        player.PitchScale = (float)GD.RandRange(0.9, 1.08);
+        player.Play();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--audio-log") >= 0)
+            GD.Print($"[Audio] 爆炸 vol={player.VolumeDb:F1}dB pitch={player.PitchScale:F2} len={stream.GetLength():F2}s");
+    }
+
+    /// <summary>
+    /// 维修/回血音效（柔和的铃声）。想换音效：替换 res://gameAsset/audios/sfx/heal.ogg。
+    /// </summary>
+    public static void PlayHeal()
+    {
+        if (Instance == null)
+            return;
+
+        const string path = "res://gameAsset/audios/sfx/heal.ogg";
+        if (!ResourceLoader.Exists(path))
+            return;
+
+        var stream = GD.Load<AudioStream>(path);
+        if (stream == null)
+            return;
+
+        AudioStreamPlayer player = Instance._sfx.Find(p => !p.Playing) ?? Instance._sfx[0];
+        player.Stream = stream;
+        player.VolumeDb = Mathf.LinearToDb(0.85f);
+        player.PitchScale = (float)GD.RandRange(0.98, 1.04);
+        player.Play();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--audio-log") >= 0)
+            GD.Print($"[Audio] 维修 vol={player.VolumeDb:F1}dB len={stream.GetLength():F2}s");
+    }
+
+    /// <summary>
+    /// 导弹飞行音效（喷流轰鸣）。替换 res://gameAsset/audios/sfx/missile_fly.ogg 即可换音。
+    /// </summary>
+    public static void PlayMissileFlight(float volumeScale = 0.9f)
+    {
+        if (Instance == null)
+            return;
+
+        const string path = "res://gameAsset/audios/sfx/missile_fly.ogg";
+        if (!ResourceLoader.Exists(path))
+            return;
+
+        var stream = GD.Load<AudioStream>(path);
+        if (stream == null)
+            return;
+
+        AudioStreamPlayer player = Instance._sfx.Find(p => !p.Playing) ?? Instance._sfx[0];
+        player.Stream = stream;
+        player.VolumeDb = Mathf.LinearToDb(Mathf.Clamp(volumeScale, 0.05f, 1.2f));
+        player.PitchScale = (float)GD.RandRange(0.96, 1.06);
+        player.Play();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--audio-log") >= 0)
+            GD.Print($"[Audio] 导弹飞行 vol={player.VolumeDb:F1}dB len={stream.GetLength():F2}s");
+    }
 }
 
 /// <summary>确保 Master / Music / SFX 三条音频总线的存在与音量映射。</summary>

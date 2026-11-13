@@ -38,6 +38,10 @@ public partial class UnitAnimator : Node
     private float _attackLeft = -1f;
     private bool _moving;
 
+    /// <summary>「等这一轮移动动画播完再切 Idle」的剩余时间（&lt;0 表示没有等待）。</summary>
+    private float _idleDelay = -1f;
+    private float _moveLoopLength;
+
     private Node3D _turret;
     private Vector3 _turretRest = Vector3.Zero;
     private float _turretYaw;
@@ -116,8 +120,9 @@ public partial class UnitAnimator : Node
         Node parent = model;
         animator._idlePlayer = animator.MakePlayer(model, "AP_Idle",
             Merge(idleClips, loop: true, turretName), out bool ok1);
-        animator._movePlayer = animator.MakePlayer(model, "AP_Move",
-            Merge(moveClips, loop: true, turretName), out bool ok2);
+        Godot.Animation moveAnim = Merge(moveClips, loop: true, turretName);
+        animator._moveLoopLength = (float)(moveAnim?.Length ?? 0);
+        animator._movePlayer = animator.MakePlayer(model, "AP_Move", moveAnim, out bool ok2);
         animator._attackPlayer = animator.MakePlayer(model, "AP_Attack",
             Merge(attackClips, loop: false, turretName), out bool ok3);
 
@@ -258,11 +263,38 @@ public partial class UnitAnimator : Node
         return leaf.Contains("Rotor");
     }
 
+    /// <summary>移动动画的播放倍速（飞机的盘旋循环慢得像悬停，需要加快）。</summary>
+    public void SetMoveSpeed(float scale)
+    {
+        _moveSpeed = Mathf.Max(scale, 0.1f);
+        if (_movePlayer != null)
+            _movePlayer.SpeedScale = _moveSpeed;
+    }
+
+    private float _moveSpeed = 1f;
+
     public void PlayIdle()
     {
         _moving = false;
         if (IsAttacking)
             return;
+
+        // 移动动画还没播完一轮时不要硬切：先让它把这一轮走完，
+        // 否则像战斗机这种长循环的动作会在中途被掐断，出现明显跳变
+        if (_movePlayer != null && _movePlayer.IsPlaying() && _moveLoopLength > 0.08f)
+        {
+            double length = _movePlayer.CurrentAnimationLength > 0.01
+                ? _movePlayer.CurrentAnimationLength
+                : _moveLoopLength;
+            double pos = _movePlayer.CurrentAnimationPosition % length;
+            // 剩余时间是「动画时间」除以播放倍速，才是真实等待秒数
+            float left = (float)((length - pos) / Mathf.Max(_moveSpeed, 0.1f)) + 0.02f;
+            // 最多再等 2.5 秒：避免某个特别长的循环让单位站着「滑行」太久
+            _idleDelay = Mathf.Min(left, 2.5f);
+            return;
+        }
+
+        _idleDelay = -1f;
         StopPlayer(_movePlayer);
         PlayPlayer(_idlePlayer);
     }
@@ -270,6 +302,7 @@ public partial class UnitAnimator : Node
     public void PlayMove()
     {
         _moving = true;
+        _idleDelay = -1f;
         if (IsAttacking)
             return;
         StopPlayer(_idlePlayer);
@@ -415,6 +448,18 @@ public partial class UnitAnimator : Node
         // 每帧重申炮塔朝向，避免被任何残留动画覆盖
         if (_turret != null && !Mathf.IsEqualApprox(_turret.RotationDegrees.Y - _turretRest.Y, _turretYaw))
             ApplyTurret();
+
+        // 等移动动画这一轮播完，再切回 Idle
+        if (_idleDelay > 0f)
+        {
+            _idleDelay -= (float)delta;
+            if (_idleDelay <= 0f)
+            {
+                _idleDelay = -1f;
+                StopPlayer(_movePlayer);
+                PlayPlayer(_idlePlayer);
+            }
+        }
 
         if (_attackLeft <= 0f)
             return;

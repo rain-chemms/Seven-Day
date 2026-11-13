@@ -334,6 +334,7 @@ public partial class HexMapView : Node3D
         foreach (BuildingInst b in _state.Buildings)
         {
             seenBuildings.Add(b.Id);
+            _buildingMeta[b.Id] = (b.Owner, b.Coord, b.IsHq);
 
             bool recreate = !_buildingViews.ContainsKey(b.Id);
             if (!recreate && _buildingLevels.TryGetValue(b.Id, out int shown) && shown != b.Level)
@@ -351,17 +352,20 @@ public partial class HexMapView : Node3D
 
         foreach (int id in _buildingViews.Keys.Where(id => !seenBuildings.Contains(id)).ToList())
         {
-            _buildingViews[id].QueueFree();
+            PlayDeathFx(id, false);      // 建筑
+            ShrinkAndFree(_buildingViews[id], 0.35f);
             _buildingViews.Remove(id);
             _buildingMaterials.Remove(id);
             _buildingTops.Remove(id);
             _buildingHeights.Remove(id);
+            _buildingMeta.Remove(id);
         }
 
         var seenUnits = new HashSet<int>();
         foreach (UnitInst u in _state.Units.Where(u => u.Alive))
         {
             seenUnits.Add(u.Id);
+            _unitMeta[u.Id] = (u.Owner, u.Coord);
             if (!_unitViews.ContainsKey(u.Id))
             {
                 _unitViews[u.Id] = CreateUnitView(u);
@@ -414,12 +418,75 @@ public partial class HexMapView : Node3D
 
         foreach (int id in _unitViews.Keys.Where(id => !seenUnits.Contains(id)).ToList())
         {
-            _unitViews[id].QueueFree();
+            // 单位阵亡：先缩到 0 再销毁，别「啪」一下消失
+            PlayDeathFx(id, true);       // 单位
+            ShrinkAndFree(_unitViews[id], 0.3f);
             _unitViews.Remove(id);
             _unitAnimators.Remove(id);
             _unitMoveTweens.Remove(id);
             _unitMaterials.Remove(id);
+            _unitMeta.Remove(id);
         }
+    }
+
+    /// <summary>单位 / 建筑的阵亡元数据（阵亡时视图已经快没了，靠它拿坐标和阵营）。</summary>
+    private readonly Dictionary<int, (PlayerId Owner, HexCoord Coord)> _unitMeta = new();
+    private readonly Dictionary<int, (PlayerId Owner, HexCoord Coord, bool IsHq)> _buildingMeta = new();
+
+    /// <summary>阵亡特效回调：世界坐标、阵营、是否单位、体型缩放。</summary>
+    public Action<Vector3, PlayerId, bool, float> DeathFx;
+
+    private void PlayDeathFx(int id, bool isUnit)
+    {
+        bool debug = System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--audio-log") >= 0;
+        if (debug)
+            GD.Print($"[DeathFx] 调用 isUnit={isUnit} id={id} hook={(DeathFx != null)}");
+
+        if (DeathFx == null)
+            return;
+
+        Vector3 world;
+        PlayerId owner;
+        float scale;
+
+        if (isUnit)
+        {
+            if (!_unitMeta.TryGetValue(id, out (PlayerId Owner, HexCoord Coord) meta))
+                return;
+            world = HexLayout.ToWorld(meta.Coord, TileTop + 0.35f);
+            owner = meta.Owner;
+            scale = 1f;
+        }
+        else
+        {
+            if (!_buildingMeta.TryGetValue(id, out (PlayerId Owner, HexCoord Coord, bool IsHq) meta))
+                return;
+            world = HexLayout.ToWorld(meta.Coord, TileTop + 0.3f);
+            owner = meta.Owner;
+            scale = meta.IsHq ? 1.7f : 1.2f;
+        }
+
+        DeathFx(world, owner, isUnit, scale);
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--audio-log") >= 0)
+            GD.Print($"[DeathFx] 触发 isUnit={isUnit} id={id} owner={owner} pos={world} scale={scale:F2}");
+    }
+
+    /// <summary>销毁前先缩放到 0（阵亡动画）。</summary>
+    private void ShrinkAndFree(Node3D view, float duration)
+    {
+        if (view == null || !IsInstanceValid(view))
+            return;
+
+        Tween t = CreateTween();
+        t.TweenProperty(view, "scale", Vector3.One * 0.01f, duration)
+            .SetTrans(Tween.TransitionType.Back)
+            .SetEase(Tween.EaseType.In);
+        t.TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(view))
+                view.QueueFree();
+        }));
     }
 
     /// <summary>建筑目标格指示：金色脉动圈，提示「建筑会落在这里」。</summary>
@@ -702,7 +769,7 @@ public partial class HexMapView : Node3D
         return new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
     }
 
-    private Node3D CreateBuildingView(BuildingInst b, int? levelOverride = null)
+    private Node3D CreateBuildingView(BuildingInst b, int? levelOverride = null, bool animate = true)
     {
         int level = levelOverride ?? b.Level;
         var root = new Node3D { Name = "B_" + b.DefId + "_" + b.Id, Position = HexLayout.ToWorld(b.Coord, TileTop) };
@@ -750,7 +817,26 @@ public partial class HexMapView : Node3D
         }
 
         RotateToward(root, b.Owner);
+        if (animate)
+            PopIn(root, 0.45f);
         return root;
+    }
+
+    /// <summary>
+    /// 部署动画：从 0 放大到 1（Back 缓动带一点回弹），只作用于外层 root，
+    /// 不影响模型自身的缩放（那个是 FitAndGround 算出来的）。
+    /// </summary>
+    private void PopIn(Node3D root, float duration = 0.28f, float delay = 0f)
+    {
+        if (root == null)
+            return;
+
+        root.Scale = Vector3.One * 0.01f;
+        CreateTween()
+            .TweenProperty(root, "scale", Vector3.One, duration)
+            .SetDelay(delay)
+            .SetTrans(Tween.TransitionType.Cubic)
+            .SetEase(Tween.EaseType.Out);
     }
 
     private Node3D CreateUnitView(UnitInst u)
@@ -782,6 +868,11 @@ public partial class HexMapView : Node3D
             UnitAnimator animator = UnitAnimator.Build(model);
             if (animator.HasAnimations)
             {
+                // 空中单位的移动片段（盘旋/俯冲循环）本来就慢，加快播放才像在飞：
+                // 战斗机动作幅度大，加得更多；直升机只是稍微快一点
+                if (u.IsAir)
+                    animator.SetMoveSpeed(u.DefId == "fighter" ? 1.9f : 1.3f);
+
                 _unitAnimators[u.Id] = animator;
                 animator.PlayIdle();
             }
@@ -804,6 +895,7 @@ public partial class HexMapView : Node3D
         }
 
         RotateToward(root, u.Owner);
+        PopIn(root, 0.32f);
         return root;
     }
 
@@ -823,7 +915,7 @@ public partial class HexMapView : Node3D
     }
 
     /// <summary>把视图的朝向补间到「面向 target」。</summary>
-    private void FaceViewToward(Node3D view, Vector3 worldTarget)
+    private void FaceViewToward(Node3D view, Vector3 worldTarget, float duration = 0.22f)
     {
         Vector3 dir = worldTarget - view.Position;
         dir.Y = 0f;
@@ -832,7 +924,7 @@ public partial class HexMapView : Node3D
 
         float yaw = Mathf.RadToDeg(Mathf.Atan2(dir.X, dir.Z));
         CreateTween()
-            .TweenProperty(view, "rotation_degrees:y", yaw, 0.22f)
+            .TweenProperty(view, "rotation_degrees:y", yaw, duration)
             .SetTrans(Tween.TransitionType.Cubic)
             .SetEase(Tween.EaseType.Out);
     }
@@ -943,7 +1035,7 @@ public partial class HexMapView : Node3D
 
         _previewBuildingId = b.Id;
         _previewSavedLevel = b.Level;
-        _buildingViews[b.Id] = CreateBuildingView(b, level);
+        _buildingViews[b.Id] = CreateBuildingView(b, level, animate: false);
 
         // 重建后会丢掉选中描边，补回来
         ReapplySelection();
@@ -971,7 +1063,7 @@ public partial class HexMapView : Node3D
 
         _previewBuildDefId = defId;
         _previewBuildCoord = coord;
-        _previewView = CreateBuildingView(fake, level);
+        _previewView = CreateBuildingView(fake, level, animate: false);
     }
 
     /// <summary>清除所有预览。</summary>
@@ -996,7 +1088,7 @@ public partial class HexMapView : Node3D
             BuildingInst inst = _state?.Buildings.FirstOrDefault(x => x.Id == id);
             if (inst != null)
             {
-                _buildingViews[id] = CreateBuildingView(inst);
+                _buildingViews[id] = CreateBuildingView(inst, animate: false);
                 ReapplySelection();
             }
         }
@@ -1028,8 +1120,53 @@ public partial class HexMapView : Node3D
         return "no-material";
     }
 
+    /// <summary>调试：当前单位视图数量。</summary>
+    public int DebugUnitViewCount() => _unitViews.Count;
+
     /// <summary>调试：建筑当前可见高度。</summary>
     public float DebugBuildingTop(int id) => _buildingTops.GetValueOrDefault(id, -1f);
+
+    /// <summary>播放建筑模型里自带的动画（例如发射井的 Fire_Silo_Missile）。</summary>
+    public bool PlayBuildingAnim(int buildingId, params string[] clipKeywords)
+    {
+        if (!_buildingViews.TryGetValue(buildingId, out Node3D view))
+            return false;
+
+        AnimationPlayer ap = view.FindChildren("*", "AnimationPlayer", true, false)
+            .OfType<AnimationPlayer>()
+            .FirstOrDefault();
+        if (ap == null)
+            return false;
+
+        string[] list = ap.GetAnimationList().Select(a => a.ToString()).ToArray();
+
+        foreach (string keyword in clipKeywords)
+        {
+            string match = list.FirstOrDefault(a => a.Contains(keyword));
+            if (match == null)
+                continue;
+
+            ap.Play(match, 0.08);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>调试：建筑动画状态。</summary>
+    public string DebugBuildingAnim(int buildingId)
+    {
+        if (!_buildingViews.TryGetValue(buildingId, out Node3D view))
+            return "no-view";
+
+        AnimationPlayer ap = view.FindChildren("*", "AnimationPlayer", true, false)
+            .OfType<AnimationPlayer>()
+            .FirstOrDefault();
+        if (ap == null)
+            return "no-player";
+
+        return $"{ap.CurrentAnimation} playing={ap.IsPlaying()} pos={ap.CurrentAnimationPosition:F2}";
+    }
 
     /// <summary>设置当前选中单位（-1 = 取消）：选中的那个用黄色描边，其余恢复阵营色。</summary>
     public void SetSelectedUnit(int unitId)

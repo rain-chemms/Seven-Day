@@ -72,6 +72,17 @@ public sealed class CardDef
     public string Effect { get; set; } = "";
     public int Power { get; set; }
 
+    /// <summary>
+    /// 关键字：retain = 保留（回合结束不被弃掉）；exhaust = 消耗（打出后进消耗堆，不再洗回牌库）。
+    /// </summary>
+    public string[] Keywords { get; set; } = System.Array.Empty<string>();
+
+    public bool Retain => HasKeyword("retain");
+    public bool Exhaust => HasKeyword("exhaust");
+
+    public bool HasKeyword(string key) =>
+        Keywords != null && System.Array.IndexOf(Keywords, key) >= 0;
+
     public CardKind KindEnum => Kind switch
     {
         "global" => CardKind.Global,

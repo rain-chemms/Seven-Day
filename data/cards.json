@@ -51,6 +51,7 @@
   },
   {
     "id": "magic_airstrike",
+    "keywords": ["exhaust"],
     "nameZh": "空袭",
     "nameEn": "Air Strike",
     "descriptionZh": "对一格内敌军造成 250 伤害。防空炮范围内无效。",
@@ -62,6 +63,7 @@
   },
   {
     "id": "magic_missile",
+    "keywords": ["retain"],
     "nameZh": "导弹袭击",
     "nameEn": "Missile Strike",
     "descriptionZh": "对一格内敌军造成 350 伤害。",
@@ -73,17 +75,19 @@
   },
   {
     "id": "magic_repair",
+    "keywords": ["retain"],
     "nameZh": "维修",
     "nameEn": "Repair",
-    "descriptionZh": "所有己方建筑恢复 200 点生命。",
-    "descriptionEn": "Heal friendly buildings for 200.",
-    "kind": "global",
+    "descriptionZh": "维修一格内所有己方单位，恢复 200 点生命。",
+    "descriptionEn": "Heal all friendly units in one tile for 200.",
+    "kind": "strike",
     "cost": 150,
     "effect": "repair",
     "power": 200
   },
   {
     "id": "magic_boost",
+    "keywords": ["exhaust"],
     "nameZh": "强行军",
     "nameEn": "Forced March",
     "descriptionZh": "本回合地面单位移动 +1。",

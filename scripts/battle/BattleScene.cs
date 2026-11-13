@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Godot;
 using SevenDay.Core;
 using SevenDay.Data;
@@ -22,8 +23,10 @@ public partial class BattleScene : Node3D
     private HexMapView _map;
     private CameraRig _rig;
     private BattleHud _hud;
+    private Vfx _vfx;
 
     private UnitInst _selUnit;
+    private int _infoUnitHp = -1;
     private BuildingInst _selBuilding;
     private HexCoord? _hover;
     private int _selCard = -1;
@@ -79,14 +82,32 @@ public partial class BattleScene : Node3D
         _hud.SetHealthCamera(_rig.Camera);
         WireHud();
 
+        _vfx = Vfx.Create(this);
+        _vfx.Shake = (amount, duration) => _rig.Shake(amount, duration);
+
+        // 单位/建筑阵亡时播对应的粒子
+        if (_map != null)
+        {
+            _map.DeathFx = (world, owner, isUnit, scale) =>
+            {
+                Color accent = ToonMaterial.OutlineFor(owner) ?? new Color("8A6A42");
+                if (isUnit)
+                    _vfx.UnitDeath(world, accent, scale);
+                else
+                    _vfx.BuildingDeath(world, accent, scale);
+            };
+        }
+
         _state.BeginTurn(PlayerId.Player);
-        // 补充设计：开局多给 3 张手牌，不然第一回合几乎没得打
-        _state.DrawCard(_state.Player, 3);
+        // 每回合抽 5 张，开局不再额外补牌（否则直接顶到上限）
         _map.SyncEntities();
         _map.RefreshZones();
         _hud.Setup(_state);
         _hud.Toast(Loc.T("battle.intro"));
         AudioManager.SetIntensity(0);
+
+        // 开局抽牌动画
+        _hud.PlayDrawAnimation(_state.DrawnThisTurn);
 
         // 开发调试：--autoplay 让 AI 替双方轮流走，用来跑通整局逻辑
         if (OS.GetCmdlineUserArgs().Contains("--autoplay"))
@@ -294,6 +315,141 @@ public partial class BattleScene : Node3D
         // 开发调试：--demo-preview-build 悬停建造项，预览建造后的样子
         if (OS.GetCmdlineUserArgs().Contains("--demo-preview-build"))
             DemoPreviewBuildFlow();
+
+        // 开发调试：--demo-dump-anims=<glb路径> 打印模型里的动画名
+        foreach (string arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith("--demo-dump-anims="))
+            {
+                var scene = GD.Load<PackedScene>(arg["--demo-dump-anims=".Length..]);
+                if (scene != null)
+                {
+                    Node n = scene.Instantiate();
+                    foreach (Node c in n.FindChildren("*", "AnimationPlayer", true, false))
+                    {
+                        if (c is AnimationPlayer ap)
+                            GD.Print($"[Anims] {string.Join(",", ap.GetAnimationList())}");
+                    }
+
+                    n.QueueFree();
+                }
+            }
+        }
+
+        // 开发调试：--demo-missile-card 导弹井发射导弹（卡牌特效）
+        if (OS.GetCmdlineUserArgs().Contains("--demo-missile-card"))
+            DemoMissileCardFlow();
+
+        // 开发调试：--demo-pile-hover 悬停牌堆时放大
+        if (OS.GetCmdlineUserArgs().Contains("--demo-pile-hover"))
+            DemoPileHoverFlow();
+
+        // 开发调试：--demo-global-burn 全局卡（强行军）打出时的烧卡特效
+        if (OS.GetCmdlineUserArgs().Contains("--demo-global-burn"))
+            DemoGlobalBurnFlow();
+
+        // 开发调试：--demo-death-fx 单位/建筑阵亡粒子
+        if (OS.GetCmdlineUserArgs().Contains("--demo-death-fx"))
+            DemoDeathFxFlow();
+
+        // 开发调试：--demo-dup-play 打出一张时不应连带另一张同名卡消失
+        if (OS.GetCmdlineUserArgs().Contains("--demo-dup-play"))
+            DemoDupPlayFlow();
+
+        // 开发调试：--demo-ethereal 建筑发的兵种卡带「虚无」
+        if (OS.GetCmdlineUserArgs().Contains("--demo-ethereal"))
+            DemoEtherealFlow();
+
+        // 开发调试：--demo-exhaust-burn 消耗卡打出时的烧卡特效
+        if (OS.GetCmdlineUserArgs().Contains("--demo-exhaust-burn"))
+            DemoExhaustBurnFlow();
+
+        // 开发调试：--demo-pile-flow 消耗/保留/弃牌 的状态流转
+        if (OS.GetCmdlineUserArgs().Contains("--demo-pile-flow"))
+            DemoPileFlow();
+
+        // 开发调试：--demo-piles 牌堆 UI / 关键字 / 弃牌
+        if (OS.GetCmdlineUserArgs().Contains("--demo-piles"))
+            DemoPilesFlow();
+
+        // 开发调试：--demo-missile-silo-link 选导弹卡时自动选中对应发射井
+        if (OS.GetCmdlineUserArgs().Contains("--demo-missile-silo-link"))
+            DemoMissileSiloLinkFlow();
+
+        // 开发调试：--demo-burn-card 发射井被毁 → 导弹卡燃烧消失
+        if (OS.GetCmdlineUserArgs().Contains("--demo-burn-card"))
+            DemoBurnCardFlow();
+
+        // 开发调试：--demo-hp-damage 血量越低攻击越低 + 面板彩色攻击力
+        if (OS.GetCmdlineUserArgs().Contains("--demo-hp-damage"))
+            DemoHpDamageFlow();
+
+        // 开发调试：--demo-build-with-units 有驻军的格子也能进建造菜单
+        if (OS.GetCmdlineUserArgs().Contains("--demo-build-with-units"))
+            DemoBuildWithUnitsFlow();
+
+        // 开发调试：--demo-water-build 验证水面不能建造
+        if (OS.GetCmdlineUserArgs().Contains("--demo-water-build"))
+            DemoWaterBuildFlow();
+
+        // 开发调试：--demo-water-deploy 检查陆军不能部署到水面
+        if (OS.GetCmdlineUserArgs().Contains("--demo-water-deploy"))
+            DemoWaterDeployFlow();
+
+        // 开发调试：--demo-missile-nosilo 没有发射井时打导弹卡
+        if (OS.GetCmdlineUserArgs().Contains("--demo-missile-nosilo"))
+            DemoMissileNoSiloFlow();
+
+        // 开发调试：--demo-enemy-turn 结束我方回合，观察 AI 行动时的特效
+        if (OS.GetCmdlineUserArgs().Contains("--demo-enemy-turn"))
+            DemoEnemyTurnFlow();
+
+        // 开发调试：--demo-kill 命中瞬间才结算 + 死亡缩放动画
+        if (OS.GetCmdlineUserArgs().Contains("--demo-kill"))
+            DemoKillFlow();
+
+        // 开发调试：--demo-check-enemy-cards 检查敌方生产建筑是否会发牌给我方
+        if (OS.GetCmdlineUserArgs().Contains("--demo-check-enemy-cards"))
+            DemoCheckEnemyCardsFlow();
+
+        // 开发调试：--demo-repair-building 建筑维修按钮
+        if (OS.GetCmdlineUserArgs().Contains("--demo-repair-building"))
+            DemoRepairBuildingFlow();
+
+        // 开发调试：--demo-repair 维修卡治疗一格内的己方单位
+        if (OS.GetCmdlineUserArgs().Contains("--demo-repair"))
+            DemoRepairFlow();
+
+        // 开发调试：--demo-strike-hq 验证空袭卡不能砸敌方指挥部
+        if (OS.GetCmdlineUserArgs().Contains("--demo-strike-hq"))
+            DemoStrikeHqFlow();
+
+        // 开发调试：--demo-turret-kill 防御建筑击杀后单位视图立即消失
+        if (OS.GetCmdlineUserArgs().Contains("--demo-turret-kill"))
+            DemoTurretKillFlow();
+
+        // 开发调试：--demo-missile-launcher 导弹车抛物线攻击
+        if (OS.GetCmdlineUserArgs().Contains("--demo-missile-launcher"))
+            DemoMissileLauncherFlow();
+
+        // 开发调试：--demo-fighter-attack 战斗机对地导弹
+        if (OS.GetCmdlineUserArgs().Contains("--demo-fighter-attack"))
+            DemoFighterAttackFlow();
+
+        // 开发调试：--demo-vfx=<explosion|missile|heal|bullet> 单独触发一个特效
+        foreach (string arg in OS.GetCmdlineUserArgs())
+        {
+            if (arg.StartsWith("--demo-vfx="))
+                DemoVfxFlow(arg["--demo-vfx=".Length..]);
+        }
+
+        // 开发调试：--demo-move-anim 验证落地后移动动画会走完一轮再切 Idle
+        if (OS.GetCmdlineUserArgs().Contains("--demo-move-anim"))
+            DemoMoveAnimFlow();
+
+        // 开发调试：--demo-pop 部署缩放动画
+        if (OS.GetCmdlineUserArgs().Contains("--demo-pop"))
+            DemoPopFlow();
 
         // 开发调试：--demo-bar-diag 选中建筑后点空地，检查血条位置与隐藏
         if (OS.GetCmdlineUserArgs().Contains("--demo-bar-diag"))
@@ -1074,6 +1230,1150 @@ public partial class BattleScene : Node3D
         _rig.SetVerticalOffset(0f);
 
         GD.Print($"[Preview] 建造预览 {hover} @ {spot.Value}");
+    }
+
+    /// <summary>导弹袭击卡：从发射井升空 → 高空掠过 → 砸到目标格。</summary>
+    private async void DemoMissileCardFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? siloCell = null;
+        HexCoord? target = null;
+        for (int q = -2; q < 8 && siloCell == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanBuildAt(c, PlayerId.Player))
+                siloCell = c;
+        }
+
+        if (siloCell == null)
+            return;
+
+        // 目标：离发射井 3 格左右的一格
+        target = siloCell.Value.Neighbor(0).Neighbor(0).Neighbor(0);
+
+        _state.SpawnBuilding("missileSilo", PlayerId.Player, siloCell.Value);
+        _state.SpawnUnit("infantry", PlayerId.Enemy, target.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(target.Value, 3.2f));
+        _rig.FrameMap(8.5f);
+        _rig.SetPitch(26f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Add("magic_missile");
+        var card = GameDatabase.Card("magic_missile");
+
+        UnitInst foe = _state.Units.First(u => u.Owner == PlayerId.Enemy && u.Alive);
+        int hpBefore = foe.Hp;
+
+        // 走真实路径：先播特效，命中才结算
+        TryPlayGlobal(card, target.Value);
+        GD.Print($"[MissileCard] 打出瞬间 敌人HP={foe.Hp}（应等于 {hpBefore}）待结算={_pendingCard != null}");
+
+        int siloId = _state.Buildings.First(b => b.DefId == "missileSilo").Id;
+        GD.Print($"[MissileCard] 发射井动画 状态={_map.DebugBuildingAnim(siloId)}");
+
+        await ToSignal(GetTree().CreateTimer(1.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[MissileCard] 命中后 敌人存活={foe.Alive} HP={foe.Hp}");
+    }
+
+    /// <summary>鼠标悬停牌堆按钮时应轻微放大。</summary>
+    private async void DemoPileHoverFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 pile = _hud.PileCenter(PileView.PileKind.Deck);
+        Vector2 screen = pile;      // PileCenter 已经是屏幕坐标
+        GD.Print($"[PileHover] 牌堆中心={screen} 悬停前缩放={_hud.DebugPileScale():F2}");
+
+        Input.WarpMouse(screen);
+        SendMotion(screen, screen);
+
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[PileHover] 悬停后缩放={_hud.DebugPileScale():F2}（应约 1.08）");
+    }
+
+    /// <summary>「强行军」是消耗卡：打出时要有烧卡特效。</summary>
+    private async void DemoGlobalBurnFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("magic_boost");
+        RefreshAll();
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[GlobalBurn] 打出前 手牌={string.Join(",", _state.Player.Hand)} 消耗={_state.Player.Exhaust.Count}");
+        OnCardClicked(0);   // 选中
+        OnCardClicked(0);   // 再点一次 → 打出
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[GlobalBurn] 打出后 手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"消耗={string.Join(",", _state.Player.Exhaust)}");
+    }
+
+    /// <summary>单位与建筑的阵亡粒子演示。</summary>
+    private async void DemoDeathFxFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        var spots = new List<HexCoord>();
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (spots.Count >= 3)
+                break;
+            if (c.Building == null && c.Terrain != TerrainType.Water)
+                spots.Add(c.Coord);
+        }
+
+        if (spots.Count < 3)
+            return;
+
+        UnitInst ally = _state.SpawnUnit("tank", PlayerId.Player, spots[0]);
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spots[1]);
+        BuildingInst city = _state.SpawnBuilding("city", PlayerId.Enemy, spots[2]);
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(spots[1], 1.2f));
+        _rig.FrameMap(3.6f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        // 直接让它们“阵亡”：从状态里移除，SyncEntities 会播阵亡粒子
+        _state.Units.Remove(ally);
+        _state.Units.Remove(foe);
+        _state.Buildings.Remove(city);
+        _map.SyncEntities();
+
+        GD.Print("[DeathFx] 已移除 1 坦克 / 1 步兵 / 1 城市，观察粒子");
+    }
+
+    /// <summary>手里有三张同名卡时，打出一张只应少一张。</summary>
+    private async void DemoDupPlayFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (_state.CanDeployCard("unit_infantry", PlayerId.Player, c.Coord, out _))
+            {
+                spot = c.Coord;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Hand.Add("unit_tank");
+        _state.Player.Gold = 2000;
+        RefreshAll();
+
+        GD.Print($"[DupPlay] 出牌前 手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"可见卡={_hud.DebugVisibleCardCount()}");
+
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+
+        OnCardClicked(1);                 // 选中间那张步兵
+        TryPlayCardAt(1, spot.Value);
+
+        await ToSignal(GetTree().CreateTimer(1.0), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[DupPlay] 出牌后 手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"可见卡={_hud.DebugVisibleCardCount()} 弃牌={string.Join(",", _state.Player.Discard)}");
+    }
+
+    /// <summary>建筑发出的兵种卡应带「虚无」：回合结束进消耗堆。</summary>
+    private async void DemoEtherealFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (_state.CanBuildAt(c.Coord, PlayerId.Player))
+            {
+                spot = c.Coord;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _state.SpawnBuilding("helipad", PlayerId.Player, spot.Value.Neighbor(0));
+
+        _state.Player.Hand.Clear();
+        _state.Player.Ethereal.Clear();
+        _state.Player.Discard.Clear();
+        _state.Player.Exhaust.Clear();
+
+        _state.BeginTurn(PlayerId.Player);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        var flags = new List<string>();
+        for (int i = 0; i < _state.Player.Hand.Count; i++)
+            flags.Add($"{_state.Player.Hand[i]}{(_state.IsEtherealAt(i) ? "(虚无)" : "")}");
+
+        GD.Print($"[Ethereal] 手牌={string.Join(",", flags)}");
+        GD.Print($"[Ethereal] 标记列表={string.Join(",", _state.Player.Ethereal)}");
+
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        var rects = new List<(string Id, Rect2 Rect)>();
+        for (int i = 0; i < _state.Player.Hand.Count; i++)
+        {
+            if (_hud.TryGetHandCardRect(i, out Rect2 r))
+                rects.Add((_state.Player.Hand[i], r));
+        }
+
+        _state.DiscardHand(PlayerId.Player);
+        RefreshAll();
+        AnimateEndOfTurnDiscards(rects);
+
+        GD.Print($"[Ethereal] 回合结束 手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"弃牌={string.Join(",", _state.Player.Discard)} " +
+                 $"消耗={string.Join(",", _state.Player.Exhaust)} " +
+                 $"虚无耗掉={string.Join(",", _state.Player.EtherealExhausted)}");
+
+        await ToSignal(GetTree().CreateTimer(1.3), SceneTreeTimer.SignalName.Timeout);
+
+        // 打开消耗堆查看器：虚无卡照样要显示关键字
+        OnPileClicked((int)PileView.PileKind.Exhaust);
+    }
+
+    /// <summary>打出一张「消耗」卡：应看到卡被烧掉，然后计入消耗堆。</summary>
+    private async void DemoExhaustBurnFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Building == null && c.Terrain != TerrainType.Water)
+            {
+                spot = c.Coord;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value);
+        _state.Player.Gold = 2000;
+
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Hand.Add("magic_airstrike");     // 消耗卡
+        _state.Player.Hand.Add("magic_repair");       // 保留卡（对比）
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.4f));
+        _rig.FrameMap(5.0f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        int idx = _state.Player.Hand.IndexOf("magic_airstrike");
+        GD.Print($"[ExhaustBurn] 打空袭 index={idx} 手上={string.Join(",", _state.Player.Hand)}");
+        ApplyCardAt(idx, spot.Value);
+
+        await ToSignal(GetTree().CreateTimer(2.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[ExhaustBurn] 之后 手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"消耗={string.Join(",", _state.Player.Exhaust)}");
+    }
+
+    /// <summary>验证「消耗 / 保留 / 回合结束弃牌」的状态流转。</summary>
+    private void DemoPileFlow()
+    {
+        _state.Player.Hand.Clear();
+        _state.Player.Discard.Clear();
+        _state.Player.Exhaust.Clear();
+
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Add("magic_airstrike");   // 消耗
+        _state.Player.Hand.Add("magic_repair");      // 保留
+        _state.Player.Hand.Add("unit_infantry");     // 普通
+
+        Cell foe = _state.Cells.Values.FirstOrDefault(c =>
+            c.Units.Any(u => u.Alive && u.Owner == PlayerId.Enemy));
+
+        if (foe == null)
+        {
+            HexCoord? spot = _state.Cells.Values
+                .Where(c => c.Building == null && c.Terrain != TerrainType.Water)
+                .Select(c => (HexCoord?)c.Coord)
+                .FirstOrDefault();
+            if (spot != null)
+            {
+                _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value);
+                foe = _state.Cell(spot.Value);
+            }
+        }
+
+        GD.Print($"[PileFlow] 初始 手牌={string.Join(",", _state.Player.Hand)}");
+
+        if (foe != null)
+        {
+            _state.PlayGlobalCard(_state.Player, "magic_airstrike", foe.Coord, out string err);
+            GD.Print($"[PileFlow] 打空袭 err={err}");
+        }
+
+        GD.Print($"[PileFlow] 打完后 手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"弃牌={string.Join(",", _state.Player.Discard)} " +
+                 $"消耗={string.Join(",", _state.Player.Exhaust)}");
+
+        _state.DiscardHand(PlayerId.Player);
+        GD.Print($"[PileFlow] 回合结束弃牌 手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"（应只剩维修） 弃牌={string.Join(",", _state.Player.Discard)}");
+    }
+
+    /// <summary>验证三堆 UI、关键字、回合结束弃牌与消耗。</summary>
+    private async void DemoPilesFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Add("magic_airstrike");   // 消耗
+        _state.Player.Hand.Add("magic_repair");      // 保留
+        RefreshAll();
+
+        GD.Print($"[Piles] 手牌={string.Join(",", _state.Player.Hand)}");
+        GD.Print($"[Piles] 牌堆 抽={_state.Player.Deck.Count} 弃={_state.Player.Discard.Count} " +
+                 $"消耗={_state.Player.Exhaust.Count}");
+
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        // 打开抽牌堆查看器
+        OnPileClicked((int)PileView.PileKind.Deck);
+
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        // 关掉查看器，打一张消耗卡，然后结束回合看弃牌
+        _hud.ShowPile("抽牌堆", _state.Player.Deck);   // 保持可见便于截图
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+    }
+
+    /// <summary>选择导弹卡时，应自动选中它关联的发射井。</summary>
+    private async void DemoMissileSiloLinkFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        var spots = new List<HexCoord>();
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (spots.Count >= 2)
+                break;
+            if (_state.CanBuildAt(c.Coord, PlayerId.Player))
+                spots.Add(c.Coord);
+        }
+
+        if (spots.Count < 2)
+            return;
+
+        BuildingInst siloA = _state.SpawnBuilding("missileSilo", PlayerId.Player, spots[0]);
+        BuildingInst siloB = _state.SpawnBuilding("missileSilo", PlayerId.Player, spots[1]);
+
+        _state.Player.Hand.Clear();
+        _state.Player.Produced.Clear();
+        _state.Player.Hand.Add("magic_missile");
+        _state.Player.Produced.Add((siloB.Id, "magic_missile"));   // 故意指向 B
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        _rig.FocusOn(HexLayout.ToWorld(spots[1], 1.0f));
+        _rig.FrameMap(3.4f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        OnCardClicked(0);
+        await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[SiloLink] A={siloA.Id} B={siloB.Id} 选中建筑={( _selBuilding?.Id.ToString() ?? "无")}" +
+                 $" 应该等于 B");
+
+        // 真打一张，看导弹从哪座井飞出来
+        _state.Player.Gold = 2000;
+        HexCoord targetCell = spots[1].Neighbor(0).Neighbor(0);
+        GD.Print($"[SiloLink] 发射井 A@{siloA.Coord} B@{siloB.Coord} 目标={targetCell}");
+        TryPlayGlobal(GameDatabase.Card("magic_missile"), targetCell);
+    }
+
+    /// <summary>发射井被拆除 → 手牌里的导弹卡烧掉。</summary>
+    private async void DemoBurnCardFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        // 找两格放两座发射井，用来验证「只烧对应井产出的卡」
+        var spots = new List<HexCoord>();
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (spots.Count >= 2)
+                break;
+            if (_state.CanBuildAt(c.Coord, PlayerId.Player))
+                spots.Add(c.Coord);
+        }
+
+        if (spots.Count < 2)
+            return;
+
+        BuildingInst siloA = _state.SpawnBuilding("missileSilo", PlayerId.Player, spots[0]);
+        BuildingInst siloB = _state.SpawnBuilding("missileSilo", PlayerId.Player, spots[1]);
+
+        _state.Player.Hand.Clear();
+        _state.Player.Produced.Clear();
+        _state.Player.Hand.Add("magic_missile");      // A 的
+        _state.Player.Produced.Add((siloA.Id, "magic_missile"));
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Hand.Add("magic_missile");      // B 的
+        _state.Player.Produced.Add((siloB.Id, "magic_missile"));
+
+        _map.SyncEntities();
+        RefreshAll();
+
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[BurnCard] 拆除 A 前手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"来源={string.Join(",", _state.Player.Produced.Select(p => $"{p.SiloId}:{p.Card}"))}");
+
+        // 只拆 A → 只应烧掉 A 的那张
+        _state.Demolish(siloA);
+        _map.SyncEntities();
+        RefreshAll();
+
+        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[BurnCard] 拆除 A 后手牌={string.Join(",", _state.Player.Hand)} " +
+                 $"（应剩 1 张导弹卡，属于 B）");
+    }
+
+    /// <summary>验证「血量越低攻击越低」与面板上的彩色攻击力。</summary>
+    private async void DemoHpDamageFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanDeployCard("unit_infantry", PlayerId.Player, c, out _))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst u = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.1f));
+        _rig.FrameMap(2.4f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        SelectUnit(u);
+        GD.Print($"[HpDmg] 满血 {u.Hp}/{u.MaxHp} 攻击={BattleState.EffectiveDamage(u)}/{u.Def.Damage}");
+
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+
+        foreach (float p in new[] { 0.6f, 0.5f, 0.2f })
+        {
+            u.Hp = Mathf.Max(1, Mathf.RoundToInt(u.MaxHp * p));
+            await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[HpDmg] 血量 {p:P0} → {u.Hp}/{u.MaxHp} " +
+                     $"攻击={BattleState.EffectiveDamage(u)}（满血 {u.Def.Damage}）");
+        }
+    }
+
+    /// <summary>验证「有己方驻军的格子」也能通过轮询进入建造菜单。</summary>
+    private async void DemoBuildWithUnitsFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst a = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        UnitInst b = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.2f));
+        _rig.FrameMap(2.8f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        Vector2 p = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(spot.Value, HexMapView.TileTop));
+        GD.Print($"[BuildUnits] 格子={spot.Value} 单位={a.Id},{b.Id}");
+
+        for (int i = 1; i <= 4; i++)
+        {
+            SendMotion(p, p);
+            UpdateHover(p);
+            await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+            OnLeftClick(p);
+            await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+
+            string sel = _selUnit != null ? $"单位 {_selUnit.Id}"
+                : _selBuilding != null ? "建筑"
+                : _hud.DebugBuildMenuVisible ? "建造菜单" : "无";
+            GD.Print($"[BuildUnits] 第{i}次点击 → {sel} 建造目标={_buildTarget}");
+        }
+
+        // 在驻军格上真的造一座
+        bool ok = _state.TryBuild(PlayerId.Player, "city", spot.Value, out string err);
+        GD.Print($"[BuildUnits] 在驻军格建造 TryBuild={ok} err={err}");
+        _map.SyncEntities();
+    }
+
+    /// <summary>验证水面不能建造。</summary>
+    private void DemoWaterBuildFlow()
+    {
+        Cell water = _state.Cells.Values.FirstOrDefault(c => c.Terrain == TerrainType.Water);
+        if (water == null)
+        {
+            GD.Print("[WaterBuild] 这张地图没有水面");
+            return;
+        }
+
+        bool can = _state.CanBuildAt(water.Coord, PlayerId.Player);
+        int gold = _state.Player.Gold;
+        bool built = _state.TryBuild(PlayerId.Player, "city", water.Coord, out string err);
+
+        GD.Print($"[WaterBuild] 水面格 {water.Coord} CanBuild={can} TryBuild={built} " +
+                 $"err={err} 金币 {gold}→{_state.Player.Gold}");
+    }
+
+    /// <summary>陆军不能部署到水面；空军可以。</summary>
+    private void DemoWaterDeployFlow()
+    {
+        Cell water = _state.Cells.Values.FirstOrDefault(c => c.Terrain == TerrainType.Water);
+        if (water == null)
+        {
+            GD.Print("[WaterDeploy] 这张地图没有水面");
+            return;
+        }
+
+        bool groundOk = _state.CanDeployCard("unit_infantry", PlayerId.Enemy, water.Coord, out string groundErr);
+        bool airOk = _state.CanDeployCard("unit_helicopter", PlayerId.Enemy, water.Coord, out string airErr);
+
+        GD.Print($"[WaterDeploy] 水面格 {water.Coord} 陆军可部署={groundOk} err={groundErr}");
+        GD.Print($"[WaterDeploy] 水面格 {water.Coord} 空军可部署={airOk} err={airErr}（控制区可能挡住，属正常）");
+
+        // 扫一遍场上有没有「陆军站在水上」的异常
+        int bad = _state.Units.Count(u => u.Alive && !u.IsAir &&
+                                          _state.Cell(u.Coord)?.Terrain == TerrainType.Water);
+        GD.Print($"[WaterDeploy] 场上站在水上的陆军数量={bad}（应为 0）");
+    }
+
+    /// <summary>没有导弹发射井时打出导弹卡：看特效与结算是否正常。</summary>
+    private async void DemoMissileNoSiloFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null)
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value);
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Add("magic_missile");
+        _map.SyncEntities();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 2.0f));
+        _rig.FrameMap(5.0f);
+        _rig.SetPitch(32f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        int siloCount = _state.Buildings.Count(b => b.Owner == PlayerId.Player && b.DefId == "missileSilo");
+        GD.Print($"[NoSilo] 发射井数量={siloCount} 敌人HP={foe.Hp}");
+
+        var card = GameDatabase.Card("magic_missile");
+        TryPlayGlobal(card, spot.Value);
+        GD.Print($"[NoSilo] 出牌后 敌人HP={foe.Hp} 待结算={_pendingCard != null}");
+
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[NoSilo] 命中后 敌人存活={foe.Alive} HP={foe.Hp}");
+    }
+
+    /// <summary>结束我方回合并观察敌方 AI 的行动特效。</summary>
+    private async void DemoEnemyTurnFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        // 摆几个敌我单位，保证 AI 有事可做
+        HexCoord? mine = null;
+        for (int q = -2; q < 8 && mine == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanDeployCard("unit_infantry", PlayerId.Player, c, out _))
+                mine = c;
+        }
+
+        if (mine == null)
+            return;
+
+        _state.SpawnUnit("infantry", PlayerId.Player, mine.Value);
+        UnitInst foe = _state.SpawnUnit("tank", PlayerId.Enemy, mine.Value.Neighbor(0));
+        _state.Enemy.Gold = 900;
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(mine.Value, 1.0f));
+        _rig.FrameMap(5.0f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[EnemyTurn] 结束我方回合，观察 AI（敌方坦克 {foe.Id}）");
+        OnEndTurn();
+
+        await ToSignal(GetTree().CreateTimer(4.0), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[EnemyTurn] 敌方回合结束 阶段={_state.Phase}");
+    }
+
+    /// <summary>验证「命中瞬间才结算伤害」与死亡缩放动画。</summary>
+    private async void DemoKillFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanDeployCard("unit_tank", PlayerId.Player, c, out _))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst tank = _state.SpawnUnit("tank", PlayerId.Player, spot.Value);
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value.Neighbor(0));
+        foe.Hp = 30;
+        _map.SyncEntities();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.4f));
+        _rig.FrameMap(3.0f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        SelectUnit(tank);
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 p = _rig.Camera.UnprojectPosition(
+            HexLayout.ToWorld(spot.Value.Neighbor(0), HexMapView.TileTop));
+        SendMotion(p, p);
+        UpdateHover(p);
+        await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+
+        OnLeftClick(p);
+        GD.Print($"[Kill] 点击瞬间 敌人HP={foe.Hp} 待结算={_pendingAttack != null}");
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Kill] 命中后 敌人存活={foe.Alive} HP={foe.Hp} 视图数={_map.DebugUnitViewCount()}");
+    }
+
+    /// <summary>确认敌方兵营/机场/导弹井只给敌方发牌，不会塞进我方手牌。</summary>
+    private async void DemoCheckEnemyCardsFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        // 找几格给敌方盖生产建筑
+        var spots = new List<HexCoord>();
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Building != null)
+                continue;
+            spots.Add(c.Coord);
+            if (spots.Count >= 3)
+                break;
+        }
+
+        if (spots.Count < 3)
+            return;
+
+        _state.SpawnBuilding("barracks", PlayerId.Enemy, spots[0]);
+        _state.SpawnBuilding("helipad", PlayerId.Enemy, spots[1]);
+        _state.SpawnBuilding("missileSilo", PlayerId.Enemy, spots[2]);
+        _map.SyncEntities();
+
+        var before = new List<string>(_state.Player.Hand);
+        GD.Print($"[CardCheck] 我方手牌（前）= {string.Join(",", before)}");
+        GD.Print($"[CardCheck] 敌方手牌（前）= {string.Join(",", _state.Enemy.Hand)}");
+
+        // 敌方回合开始 → 敌方建筑发牌
+        _state.BeginTurn(PlayerId.Enemy);
+        GD.Print($"[CardCheck] 敌方手牌（后）= {string.Join(",", _state.Enemy.Hand)}");
+
+        var after = _state.Player.Hand;
+        bool same = before.Count == after.Count && new HashSet<string>(before).SetEquals(after);
+        GD.Print($"[CardCheck] 我方手牌（后）= {string.Join(",", after)} 是否未变={same}");
+
+        // 再走一次我方回合开始（我方 HQ 会抽牌，这是设计内的）
+        _state.BeginTurn(PlayerId.Player);
+        GD.Print($"[CardCheck] 我方回合开始后 = {string.Join(",", _state.Player.Hand)}（+我方 HQ 抽牌）");
+    }
+
+    /// <summary>建筑维修：按损失血量计价，修满回血。</summary>
+    private async void DemoRepairBuildingFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        string kind = System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--turret") >= 0 ? "gunTurret" : "city";
+        BuildingInst city = _state.SpawnBuilding(kind, PlayerId.Player, spot.Value);
+        city.Hp = Mathf.RoundToInt(city.MaxHp * 0.35f);
+        _state.Player.Gold = 1000;
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.0f));
+        _rig.FrameMap(2.6f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        SelectBuilding(city);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        int cost = BattleState.RepairCost(city);
+        GD.Print($"[RepairB] 血量 {city.Hp}/{city.MaxHp} 维修费={cost}$ 金币={_state.Player.Gold}");
+
+        OnRepairClicked();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[RepairB] 维修后 血量 {city.Hp}/{city.MaxHp} 金币={_state.Player.Gold}");
+
+        // 满血时应该没有维修按钮
+        GD.Print($"[RepairB] 满血维修费={BattleState.RepairCost(city)}$（应为 0）");
+    }
+
+    /// <summary>维修卡：治疗指定格内的所有己方单位。</summary>
+    private async void DemoRepairFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanDeployCard("unit_infantry", PlayerId.Player, c, out _))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        UnitInst a = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        UnitInst b = _state.SpawnUnit("tank", PlayerId.Player, spot.Value);
+        a.Hp = 40;
+        b.Hp = 90;
+        _map.SyncEntities();
+
+        _state.Player.Gold = 1000;
+        _state.Player.Hand.Add("magic_repair");
+
+        int ha = a.Hp;
+        int hb = b.Hp;
+        string result = _state.PlayGlobalCard(_state.Player, "magic_repair", spot.Value, out string err);
+        GD.Print($"[Repair] 结果={result} err={err} " +
+                 $"步兵 {ha}→{a.Hp} 坦克 {hb}→{b.Hp}");
+
+        // 正常路径：治疗特效（截图看这个）
+        _map.SyncEntities();
+        _vfx.Heal(HexLayout.ToWorld(spot.Value, HexMapView.TileTop + 0.2f), 1.0f);
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.2f));
+        _rig.FrameMap(2.8f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        // 稍后再跑「空格子」的失败路径，免得提示盖住截图
+        await ToSignal(GetTree().CreateTimer(0.9), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? empty = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Building == null && c.Units.Count == 0)
+            {
+                empty = c.Coord;
+                break;
+            }
+        }
+
+        if (empty != null)
+        {
+            _state.Player.Hand.Add("magic_repair");
+            _state.PlayGlobalCard(_state.Player, "magic_repair", empty.Value, out string err2);
+            GD.Print($"[Repair] 空格子 err={err2}");
+
+            // 走 UI 路径：不该触发飞行动画（卡不会消失）
+            _map.SyncEntities();
+            bool consumed = TryPlayCardAt(_state.Player.Hand.Count - 1, empty.Value);
+            GD.Print($"[Repair] 空格子路径 卡消耗={consumed} 飞行中={_cardFlying}（飞行中应为 False）");
+        }
+    }
+
+    /// <summary>验证「直接伤害卡不能打指挥部」。</summary>
+    private async void DemoStrikeHqFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Enemy && b.IsHq);
+        if (hq == null)
+            return;
+
+        _state.Player.Gold = 5000;
+        if (!_state.Player.Hand.Contains("magic_airstrike"))
+            _state.Player.Hand.Add("magic_airstrike");
+
+        int hpBefore = hq.Hp;
+        string r1 = _state.PlayGlobalCard(_state.Player, "magic_airstrike", hq.Coord, out string err1);
+        GD.Print($"[StrikeHQ] 打指挥部 → error={err1} hp {hpBefore}→{hq.Hp}（hp 应不变）");
+
+        // 走界面路径：应当「立刻」提示，不播特效、不飞卡
+        int idx = _state.Player.Hand.IndexOf("magic_airstrike");
+        if (idx >= 0)
+        {
+            bool ok = TryPlayCardAt(idx, hq.Coord);
+            GD.Print($"[StrikeHQ] 界面路径 播放={ok} 飞行中={_cardFlying} 待结算={_pendingCard != null}" +
+                     "（都应为 False）");
+        }
+
+        // 再试一个普通敌方单位格：应该能正常打
+        HexCoord? free = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Building == null && c.Units.Count == 0 && HexCoord.Distance(c.Coord, hq.Coord) > 2)
+            {
+                free = c.Coord;
+                break;
+            }
+        }
+
+        UnitInst foe = null;
+        if (free != null)
+        {
+            foe = _state.SpawnUnit("infantry", PlayerId.Enemy, free.Value);
+            _map.SyncEntities();
+        }
+
+        if (foe != null)
+        {
+            if (!_state.Player.Hand.Contains("magic_airstrike"))
+                _state.Player.Hand.Add("magic_airstrike");
+            string r2 = _state.PlayGlobalCard(_state.Player, "magic_airstrike", foe.Coord, out string err2);
+            GD.Print($"[StrikeHQ] 打普通单位 → error={err2} result={r2}");
+        }
+
+        _map.SyncEntities();
+        _rig.FocusOn(HexLayout.ToWorld(hq.Coord, 1.2f));
+        _rig.FrameMap(3.6f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+    }
+
+    /// <summary>炮台打死敌方单位后，视图应立即消失（不用等下一回合）。</summary>
+    private async void DemoTurretKillFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null)
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        HexCoord turretCell = spot.Value;
+        HexCoord foeCell = turretCell.Neighbor(0);
+
+        _state.SpawnBuilding("gunTurret", PlayerId.Player, turretCell);
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, foeCell);
+        foe.Hp = 1;     // 一炮必死
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(foeCell, 0.8f));
+        _rig.FrameMap(3.4f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[TurretKill] 开火前 单位数={_state.Units.Count(u => u.Alive)} 视图数={_map.DebugUnitViewCount()}");
+
+        var volleys = _state.ResolveBuildingAttacks(PlayerId.Player);
+        GD.Print($"[TurretKill] 战报={string.Join("；", volleys)}");
+        PlayVolleys();
+
+        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[TurretKill] 开火后 单位数={_state.Units.Count(u => u.Alive)} 视图数={_map.DebugUnitViewCount()}");
+    }
+
+    /// <summary>导弹车攻击：抛物线弹道。</summary>
+    private async void DemoMissileLauncherFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null)
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        HexCoord fromCell = spot.Value;
+        HexCoord toCell = fromCell.Neighbor(0);
+
+        UnitInst launcher = _state.SpawnUnit("missileLauncher", PlayerId.Player, fromCell);
+        _state.SpawnUnit("infantry", PlayerId.Enemy, toCell);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(toCell, 1.2f));
+        _rig.FrameMap(4.2f);
+        _rig.SetPitch(32f);
+        _rig.SetVerticalOffset(0f);
+
+        SelectUnit(launcher);
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 p = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(toCell, HexMapView.TileTop));
+        SendMotion(p, p);
+        UpdateHover(p);
+        await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+        OnLeftClick(p);
+
+        GD.Print($"[MissileCar] {fromCell} → {toCell}");
+    }
+
+    /// <summary>战斗机攻击地面目标，检查空对地导弹特效。</summary>
+    private async void DemoFighterAttackFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null)
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        HexCoord fromCell = spot.Value;
+        HexCoord toCell = spot.Value.Neighbor(0);
+
+        UnitInst jet = _state.SpawnUnit("fighter", PlayerId.Player, fromCell);
+        _state.SpawnUnit("infantry", PlayerId.Enemy, toCell);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _rig.FocusOn(HexLayout.ToWorld(toCell, 1.4f));
+        _rig.FrameMap(3.6f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        SelectUnit(jet);
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 p = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(toCell, HexMapView.TileTop));
+        SendMotion(p, p);
+        UpdateHover(p);
+        await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+        OnLeftClick(p);
+
+        GD.Print($"[JetAtk] 战斗机 {fromCell} → {toCell} 可攻击={_state.CanAttack(jet, toCell)}");
+    }
+
+    /// <summary>单独播放一个特效，方便截图检查。</summary>
+    private async void DemoVfxFlow(string kind)
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null)
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        Vector3 at = HexLayout.ToWorld(spot.Value, HexMapView.TileTop);
+        _rig.FocusOn(at);
+        _rig.FrameMap(2.6f);
+        _rig.SetPitch(36f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+
+        switch (kind)
+        {
+            case "missile":
+                _vfx.MissileStrike(at + Vector3.Up * 0.2f, 1.2f);
+                break;
+            case "heal":
+                _vfx.Heal(at + Vector3.Up * 0.2f, 1.0f);
+                break;
+            case "bullet":
+                _vfx.BulletHit(at + Vector3.Up * 0.8f, 0.7f);
+                break;
+            default:
+                _vfx.Explosion(at + Vector3.Up * 0.35f, 1.2f);
+                break;
+        }
+
+        GD.Print($"[Vfx] {kind} @ {spot.Value}");
+    }
+
+    /// <summary>战斗机移动到位后，确认移动动画会先把这一轮播完再切 Idle。</summary>
+    private async void DemoMoveAnimFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? from = null;
+        HexCoord? to = null;
+        for (int q = -2; q < 8 && to == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            Cell cell = _state.Cell(c);
+            if (cell == null || cell.Building != null || cell.Units.Count > 0)
+                continue;
+
+            HexCoord nb = c.Neighbor(3);
+            Cell ncell = _state.Cell(nb);
+            if (ncell == null || ncell.Building != null || ncell.Units.Count > 0)
+                continue;
+
+            from = c;
+            to = nb;
+        }
+
+        if (from == null || to == null)
+            return;
+
+        UnitInst jet = _state.SpawnUnit("fighter", PlayerId.Player, from.Value);
+        _map.SyncEntities();
+
+        _rig.FocusOn(HexLayout.ToWorld(to.Value, 2.0f));
+        _rig.FrameMap(4.2f);
+        _rig.SetPitch(32f);
+        _rig.SetVerticalOffset(0f);
+
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[MoveAnim] 移动前 {_map.DebugUnitAnimState(jet.Id)} yaw={_map.DebugUnitYaw(jet.Id):F1}");
+
+        _state.TryMove(jet, to.Value, out _);
+        _map.SyncEntities();
+        float yawStart = _map.DebugUnitYaw(jet.Id);
+
+        for (int i = 0; i < 4; i++)
+        {
+            await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[MoveAnim] 转向 t+{(i + 1) * 0.05:F2}s yaw={_map.DebugUnitYaw(jet.Id):F1}（起始 {yawStart:F1}）");
+        }
+
+        for (int i = 0; i < 6; i++)
+        {
+            await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[MoveAnim] t+{(i + 1) * 0.35:F2}s {_map.DebugUnitAnimState(jet.Id)}");
+        }
+    }
+
+    /// <summary>同时部署一座建筑和一个单位，用来截取缩放动画。</summary>
+    private async void DemoPopFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 4);
+            if (_state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+            return;
+
+        _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.2f));
+        _rig.FrameMap(3.4f);
+        _rig.SetPitch(34f);
+        _rig.SetVerticalOffset(0f);
+
+        _state.SpawnBuilding("city", PlayerId.Player, spot.Value);
+        _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        GD.Print($"[Pop] 部署 city + infantry @ {spot.Value}");
     }
 
     /// <summary>选中建筑 → 点空地，检查血条是否隐藏、位置是否稳定。</summary>
@@ -1928,6 +3228,133 @@ public partial class BattleScene : Node3D
         AddChild(we);
     }
 
+    // ─────────────────────────── 特效 ───────────────────────────
+
+    /// <summary>把本回合防御建筑的开火记录播成特效（曳光 + 命中/爆炸）。</summary>
+    private void PlayVolleys()
+    {
+        if (_vfx == null || _state == null || _state.Volleys.Count == 0)
+            return;
+
+        float delay = 0.05f;
+        foreach ((HexCoord from, HexCoord to, string kind) in _state.Volleys)
+        {
+            Vector3 a = HexLayout.ToWorld(from, HexMapView.TileTop + 0.55f);
+            Vector3 b = HexLayout.ToWorld(to, HexMapView.TileTop + 0.45f);
+            float d = delay;
+            delay += 0.12f;
+
+            if (kind == "aa")
+            {
+                // 防空炮：空中爆开的炮弹
+                _vfx.Tracer(a, b + Vector3.Up * 1.4f, new Color("FFE9A8"), 0.03f);
+                var timer = GetTree().CreateTimer(d);
+                timer.Timeout += () => _vfx.Explosion(b + Vector3.Up * 1.5f, 0.55f);
+            }
+            else
+            {
+                // 炮台 / 指挥部：炮弹落地爆炸
+                _vfx.MuzzleFlash(a, 0.5f);
+                var timer = GetTree().CreateTimer(d);
+                timer.Timeout += () => _vfx.Explosion(b, 0.75f);
+            }
+        }
+
+        _state.Volleys.Clear();
+
+        // 视图的清理延后到「炮弹落地」那一刻，避免单位在爆炸前就消失
+        var sync = GetTree().CreateTimer(Mathf.Max(0.12f, delay));
+        sync.Timeout += () => _map?.SyncEntities();
+    }
+
+    /// <summary>等待特效命中的这一击：命中瞬间才结算伤害、清尸体、刷新界面。</summary>
+    private (UnitInst Unit, HexCoord Target)? _pendingAttack;
+
+    private void ResolvePendingAttack()
+    {
+        if (_pendingAttack == null)
+            return;
+
+        (UnitInst attacker, HexCoord coord) = _pendingAttack.Value;
+        _pendingAttack = null;
+
+        if (attacker == null || !attacker.Alive)
+            return;
+
+        string log = _state.PerformAttack(attacker, coord);
+        _hud.Toast(string.IsNullOrEmpty(log) ? "没有可攻击的目标" : log);
+
+        foreach (UnitInst t in _state.UnitsAt(coord))
+            _map.PunchUnit(t.Id);
+        if (_state.BuildingAt(coord) is { } hitBuilding)
+            _map.PunchBuilding(hitBuilding.Id);
+
+        SelectUnit(attacker);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        CheckGameOver();
+    }
+
+    /// <summary>单位开火：步兵/直升机打子弹，坦克打炮弹，战斗机打导弹。</summary>
+    private float PlayAttackVfx(UnitInst attacker, HexCoord target)
+    {
+        if (_vfx == null || attacker == null)
+            return 0f;
+
+        Vector3 from = _map.UnitBarAnchor(attacker) - Vector3.Up * 1.35f;
+        Vector3 to = HexLayout.ToWorld(target, HexMapView.TileTop + 0.45f);
+
+        switch (attacker.DefId)
+        {
+            case "fighter":
+                // 从飞机身上发射一枚小导弹，飞到目标格再爆炸
+                _vfx.MissileFromTo(from + Vector3.Up * 0.15f, to, 0.85f, 0.45f, 0.30f);
+                return 0.30f;
+
+            case "missileLauncher":
+                // 导弹车：抛物线弹道
+                _vfx.MissileFromTo(from + Vector3.Up * 0.35f, to, 0.95f, 0.55f, 0.45f, arc: 1.7f);
+                return 0.45f;
+
+            case "tank":
+                _vfx.MuzzleFlash(from + Vector3.Up * 0.1f, 0.55f);
+                _vfx.Tracer(from, to, new Color("FFC46A"), 0.045f);
+                var shell = GetTree().CreateTimer(0.09);
+                shell.Timeout += () => _vfx.Explosion(to, 0.85f);
+                return 0.09f;
+
+            case "helicopter":
+                _vfx.MuzzleFlash(from, 0.4f);
+                _vfx.Tracer(from, to, new Color("FFD98A"), 0.03f);
+                var rocket = GetTree().CreateTimer(0.12);
+                rocket.Timeout += () => _vfx.Explosion(to, 0.6f);
+                return 0.12f;
+
+            default:
+                // 步兵等轻武器：连续几发曳光 + 命中火花
+                for (int i = 0; i < 3; i++)
+                {
+                    float d = i * 0.06f;
+                    var t = GetTree().CreateTimer(d);
+                    t.Timeout += () =>
+                    {
+                        _vfx.MuzzleFlash(from, 0.3f);
+                        _vfx.Tracer(from, to, new Color("FFE9A8"), 0.03f);
+                    };
+
+                    var hit = GetTree().CreateTimer(d + 0.05f);
+                    float spread = 0.18f;
+                    hit.Timeout += () => _vfx.BulletHit(
+                        to + new Vector3((float)GD.RandRange(-spread, spread),
+                            (float)GD.RandRange(0f, spread), (float)GD.RandRange(-spread, spread)),
+                        0.45f);
+                }
+
+                return 0.05f;
+        }
+    }
+
     // ─────────────────────────── HUD 事件 ───────────────────────────
 
     private void WireHud()
@@ -1940,12 +3367,71 @@ public partial class BattleScene : Node3D
         _hud.EndTurnClicked += OnEndTurn;
         _hud.BuildClicked += OnBuildClicked;
         _hud.UpgradeClicked += OnUpgradeClicked;
+        _hud.RepairClicked += OnRepairClicked;
         _hud.DemolishClicked += OnDemolishClicked;
         _hud.ExtraFireClicked += OnExtraFireClicked;
         _hud.BuildHovered += OnBuildHovered;
         _hud.UpgradeHovered += OnUpgradeHovered;
         _hud.PreviewUnhovered += OnPreviewUnhovered;
         _hud.CancelClicked += () => { ClearSelection(); RefreshAll(); };
+        _hud.PileClicked += OnPileClicked;
+    }
+
+    /// <summary>点底部牌堆：弹出查看器。</summary>
+    private void OnPileClicked(int kind)
+    {
+        switch (kind)
+        {
+            case (int)PileView.PileKind.Discard:
+                _hud.ShowPile("弃牌堆", _state.Player.Discard);
+                break;
+            case (int)PileView.PileKind.Exhaust:
+            {
+                // 消耗堆里被「虚无」耗掉的卡，查看器里也要显示关键字
+                List<string> ids = _state.Player.Exhaust;
+                var etherealIndices = new List<int>();
+                var pool = new List<string>(_state.Player.EtherealExhausted);
+
+                for (int i = 0; i < ids.Count; i++)
+                {
+                    int k = pool.IndexOf(ids[i]);
+                    if (k < 0)
+                        continue;
+
+                    etherealIndices.Add(i);
+                    pool.RemoveAt(k);
+                }
+
+                _hud.ShowPile("消耗堆", ids, etherealIndices);
+                break;
+            }
+            default:
+                _hud.ShowPile("抽牌堆", _state.Player.Deck);
+                break;
+        }
+    }
+
+    /// <summary>选中这张导弹袭击卡对应的发射井（优先用产出它的那座）。</summary>
+    private void SelectRelatedMissileSilo(string cardId)
+    {
+        // 手牌里这张卡是从哪座井产出的
+        var entry = _state.Player.Produced.FirstOrDefault(p => p.Card == cardId);
+        BuildingInst silo = null;
+
+        if (entry.SiloId > 0)
+            silo = _state.Buildings.FirstOrDefault(b => b.Id == entry.SiloId && !b.IsDead);
+
+        // 兜底：自己任意一座还活着的井
+        silo ??= _state.Buildings.FirstOrDefault(b =>
+            b.Owner == PlayerId.Player && !b.IsDead && b.DefId == "missileSilo");
+
+        if (silo == null)
+            return;
+
+        _selBuilding = silo;
+        _map.SetSelectedUnit(-1);
+        _map.SetSelectedBuilding(silo.Id);
+        ShowBuildingInfo(silo);
     }
 
     private void OnCardClicked(int index)
@@ -1965,7 +3451,7 @@ public partial class BattleScene : Node3D
             // 再点一次：不需要地块的卡直接打出，其它卡取消选中
             if (card.KindEnum == CardKind.Global)
             {
-                TryPlayGlobal(card, null);
+                PlayGlobalFromHand(index, card);
                 return;
             }
 
@@ -1989,6 +3475,10 @@ public partial class BattleScene : Node3D
         CloseBuildMenu();
         _map.ClearHints();
 
+        // 导弹袭击卡：自动选中它关联的那座发射井，方便看是从哪飞出来的
+        if (card.Effect == "missile")
+            SelectRelatedMissileSilo(card.Id);
+
         if (card.KindEnum == CardKind.Unit)
         {
             var spots = _state.Cells.Values
@@ -1999,12 +3489,25 @@ public partial class BattleScene : Node3D
         }
         else if (card.KindEnum == CardKind.Strike)
         {
+            if (card.Effect == "repair")
+            {
+                // 维修卡：高亮「有己方单位」的格子
+                var mine = _state.Cells.Values
+                    .Where(c => c.Units.Any(u => u.Alive && u.Owner == PlayerId.Player))
+                    .Select(c => c.Coord);
+                _map.ShowHints(mine, new Color("8FE36B"));
+                _hud.Toast($"已选择「{card.NameZh}」：点击有己方单位的格子进行维修");
+                return;
+            }
+
+            // 敌方指挥部不参与直接伤害卡（只能用部队推进解决），高亮时排除掉
             var enemies = _state.Cells.Values
+                .Where(c => !(c.Building is { IsDead: false } b && b.IsHq && b.Owner == PlayerId.Enemy))
                 .Where(c => c.Units.Any(u => u.Alive && u.Owner == PlayerId.Enemy) ||
                             (c.Building != null && c.Building.Owner == PlayerId.Enemy))
                 .Select(c => c.Coord);
             _map.ShowHints(enemies, new Color("E8563F"));
-            _hud.Toast($"已选择「{card.NameZh}」：点击要打击的格子");
+            _hud.Toast($"已选择「{card.NameZh}」：点击要打击的格子（不能直接打指挥部）");
         }
         else
         {
@@ -2024,7 +3527,7 @@ public partial class BattleScene : Node3D
 
         if (card.KindEnum == CardKind.Global)
         {
-            TryPlayGlobal(card, null);
+            PlayGlobalFromHand(index, card);
             return;
         }
 
@@ -2044,7 +3547,7 @@ public partial class BattleScene : Node3D
 
         if (card.KindEnum == CardKind.Global)
         {
-            TryPlayGlobal(card, null);
+            PlayGlobalFromHand(index, card);
             return;
         }
 
@@ -2141,6 +3644,10 @@ public partial class BattleScene : Node3D
     {
         if (_state == null || _hud == null)
             return;
+
+        // 选中的单位血量变化时，面板里的攻击力也要跟着实时刷新
+        if (_selUnit != null && _selUnit.Alive && _selUnit.Hp != _infoUnitHp)
+            ShowUnitInfo(_selUnit);
 
         _barBuffer.Clear();
 
@@ -2239,20 +3746,19 @@ public partial class BattleScene : Node3D
         if (card.KindEnum != CardKind.Unit && card.KindEnum != CardKind.Strike)
             return false;
 
-        // 先做一次校验：打不出去就直接走原逻辑弹提示，别让它飞到一半才发现无效
+        // 先做一次完整校验：打不出去就当场提示，连特效都不播
         if (card.KindEnum == CardKind.Unit &&
             !_state.CanDeployCard(card.Id, PlayerId.Player, coord, out _))
         {
             return ApplyCardAt(index, coord);
         }
 
-        if (card.KindEnum == CardKind.Strike)
+        if (card.KindEnum == CardKind.Strike &&
+            !_state.CanPlayGlobalCard(_state.Player, card.Id, coord, out string why))
         {
-            bool blocked = _state.Player.Gold < card.Cost ||
-                           (card.Effect == "airstrike" &&
-                            _state.InEnemyAaRange(coord, PlayerId.Player));
-            if (blocked)
-                return ApplyCardAt(index, coord);
+            _hud.Toast(why);
+            RefreshAll();
+            return false;
         }
 
         Vector2 target = _rig.Camera.UnprojectPosition(
@@ -2277,6 +3783,10 @@ public partial class BattleScene : Node3D
         CardDef card = GameDatabase.Card(_state.Player.Hand[index]);
         if (card == null)
             return false;
+
+        // 出牌前记下这张牌在手上的位置，打完让它飞向牌堆
+        int indexBeforePlay = index;
+        _hud.TryGetHandCardRect(index, out _pendingPlayedRect);
 
         if (card.KindEnum == CardKind.Strike)
         {
@@ -2306,21 +3816,171 @@ public partial class BattleScene : Node3D
         _map.RefreshZones();
         RefreshAll();
         _hud.Toast($"已部署 {card.NameZh}");
+
+        // 打完的卡飞向弃牌堆 / 消耗堆
+        AnimateCardToPile(card, indexBeforePlay);
         return true;
+    }
+
+    /// <summary>从手牌打出一张「不需要地块」的卡：先记下卡面位置，消耗卡才能播烧卡特效。</summary>
+    private void PlayGlobalFromHand(int index, CardDef card)
+    {
+        if (_hud.TryGetHandCardRect(index, out Rect2 rect))
+            _pendingPlayedRect = rect;
+
+        TryPlayGlobal(card, null);
     }
 
     private void TryPlayGlobal(CardDef card, HexCoord? target)
     {
-        if (_state.Player.Gold < card.Cost)
+        // 再校验一次（防止状态在这期间变了）：不合法就只弹提示，不播任何特效
+        if (!_state.CanPlayGlobalCard(_state.Player, card.Id, target, out string why))
         {
-            _hud.Toast("金币不足");
+            _hud.Toast(why);
+            _selCard = -1;
+            _hud.SetSelectedCard(-1);
+            _map.ClearHints();
+            RefreshAll();
             return;
         }
 
-        string result = _state.PlayGlobalCard(_state.Player, card.Id, target, out string error);
+        // 先播特效，等「导弹/爆炸命中那一刻」再结算伤害与死亡清除
+        if (target != null)
+        {
+            // 导弹卡要从「产出它的那座发射井」发射
+            int siloId = 0;
+            if (card.Effect == "missile")
+            {
+                var entry = _state.Player.Produced.FirstOrDefault(p => p.Card == card.Id);
+                siloId = entry.SiloId;
+            }
+
+            float impact = PlayCardVfx(PlayerId.Player, card, target.Value, siloId);
+            _pendingCard = (card.Id, target.Value);
+
+            var timer = GetTree().CreateTimer(Mathf.Max(0.05f, impact));
+            timer.Timeout += ResolvePendingCard;
+            return;
+        }
+
+        // 不需要格子的卡：直接结算
+        ResolveCardNow(card.Id, null);
+    }
+
+    /// <summary>打击卡/维修卡的特效，返回「命中延迟」（秒）；siloId 指定从哪座发射井发射。</summary>
+    private float PlayCardVfx(PlayerId owner, CardDef card, HexCoord target, int siloId = 0)
+    {
+        if (_vfx == null)
+            return 0.05f;
+
+        Vector3 at = HexLayout.ToWorld(target, HexMapView.TileTop + 0.2f);
+
+        switch (card.Effect)
+        {
+            case "airstrike":
+                for (int i = 0; i < 3; i++)
+                    _vfx.MissileStrike(at, 1.05f, 4.2f, 0.5f, i * 0.14f);
+                return 0.5f + 0.28f;      // 最后一发落地
+
+            case "missile":
+            {
+                // 导弹井发射：从井口升空 → 高空掠过 → 砸到目标格
+                // 优先用「产出这张卡」的那座井；找不到再退回自己的任意一座井
+                BuildingInst silo = siloId > 0
+                    ? _state.Buildings.FirstOrDefault(b => b.Id == siloId && !b.IsDead)
+                    : null;
+
+                silo ??= _state.Buildings.FirstOrDefault(b =>
+                    b.Owner == owner && !b.IsDead && b.DefId == "missileSilo");
+
+                if (silo != null)
+                {
+                    if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--audio-log") >= 0)
+                        GD.Print($"[CardVfx] 导弹从发射井 {silo.Id}@{silo.Coord} 发射（请求 siloId={siloId}）");
+
+                    Vector3 from = HexLayout.ToWorld(silo.Coord,
+                        HexMapView.TileTop + Mathf.Max(0.6f, _map.DebugBuildingTop(silo.Id)));
+
+                    // 发射井自己的开火动画（模型里带的 Fire_Silo_Missile）
+                    _map.PlayBuildingAnim(silo.Id, "Fire_Silo_Missile", "Fire_Silo_Flame");
+
+                    _vfx.MissileLaunchFrom(from, at, 1.5f, 1.1f);
+                    return 1.1f;
+                }
+
+                // 没有发射井（理论上不该发生）就用高空直落兜底
+                _vfx.MissileStrike(at, 1.4f, 4.5f, 0.55f);
+                return 0.55f;
+            }
+
+            case "repair":
+                // 维修一格内的己方单位：地面绿光 + 每个单位身上冒绿星
+                _vfx.Heal(at, 0.9f);
+                foreach (UnitInst u in _state.UnitsAt(target)
+                             .Where(u => u.Owner == owner && u.Alive).ToList())
+                {
+                    _vfx.Heal(_map.UnitBarAnchor(u) - Vector3.Up * 1.2f, 0.55f);
+                }
+
+                return 0.15f;
+        }
+
+        return 0.05f;
+    }
+
+    /// <summary>等待特效命中的这张卡。</summary>
+    private (string CardId, HexCoord Target)? _pendingCard;
+
+    /// <summary>出牌时记下手牌矩形，结算后从那里飞向牌堆。</summary>
+    private Rect2 _pendingPlayedRect;
+
+    /// <summary>把打完的卡从手牌位置飞到弃牌堆/消耗堆；消耗卡先烧掉再进消耗堆。</summary>
+    private void AnimateCardToPile(CardDef card, int fallbackIndex)
+    {
+        if (card == null)
+            return;
+
+        Rect2 rect = _pendingPlayedRect;
+        if ((rect.Size.X <= 0 || rect.Size.Y <= 0) && fallbackIndex >= 0)
+            _hud.TryGetHandCardRect(fallbackIndex, out rect);
+
+        if (rect.Size.X <= 0 || rect.Size.Y <= 0)
+            return;
+
+        if (card.Exhaust)
+        {
+            // 消耗：原地烧掉 → 烧完再算进消耗堆
+            _hud.BurnCardAt(card, rect, 0f, () => _hud.BumpPile(PileView.PileKind.Exhaust));
+        }
+        else
+        {
+            _hud.PlayToPileAnimation(card, rect, false);
+        }
+
+        _pendingPlayedRect = default;
+    }
+
+    private void ResolvePendingCard()
+    {
+        if (_pendingCard == null)
+            return;
+
+        (string cardId, HexCoord target) = _pendingCard.Value;
+        _pendingCard = null;
+        ResolveCardNow(cardId, target);
+    }
+
+    /// <summary>真正结算这张卡（命中之后才调用）。</summary>
+    private void ResolveCardNow(string cardId, HexCoord? target)
+    {
+        string result = _state.PlayGlobalCard(_state.Player, cardId, target, out string error);
         if (!string.IsNullOrEmpty(error))
         {
             _hud.Toast(error);
+            _selCard = -1;
+            _hud.SetSelectedCard(-1);
+            _map.ClearHints();
+            RefreshAll();
             return;
         }
 
@@ -2331,7 +3991,53 @@ public partial class BattleScene : Node3D
         _map.SyncEntities();
         _map.RefreshZones();
         RefreshAll();
+        AnimateCardToPile(GameDatabase.Card(cardId), -1);
         CheckGameOver();
+    }
+
+    /// <summary>回合结束弃掉的手牌：普通卡飞向弃牌堆，虚无卡原地烧掉。</summary>
+    private void AnimateEndOfTurnDiscards(List<(string Id, Rect2 Rect)> handRects)
+    {
+        if (_state.DiscardedThisTurn.Count == 0 && _state.ExhaustedThisTurn.Count == 0)
+            return;
+
+        var pool = new List<(string Id, Rect2 Rect)>(handRects);
+        int stagger = 0;
+
+        bool TryTake(string id, out Rect2 rect)
+        {
+            int idx = pool.FindIndex(p => p.Id == id);
+            rect = default;
+            if (idx < 0)
+                return false;
+            rect = pool[idx].Rect;
+            pool.RemoveAt(idx);
+            return true;
+        }
+
+        // 虚无：原地烧掉（烧完才计入消耗堆）
+        foreach (string id in _state.ExhaustedThisTurn)
+        {
+            if (!TryTake(id, out Rect2 rect))
+                continue;
+
+            CardDef def = GameDatabase.Card(id);
+            float delay = stagger++ * 0.05f;
+            var timer = GetTree().CreateTimer(delay);
+            timer.Timeout += () => _hud.BurnCardAt(def, rect);
+        }
+
+        // 普通弃牌：飞向弃牌堆
+        foreach (string id in _state.DiscardedThisTurn)
+        {
+            if (!TryTake(id, out Rect2 rect))
+                continue;
+
+            CardDef def = GameDatabase.Card(id);
+            float delay = stagger++ * 0.05f;
+            var timer = GetTree().CreateTimer(delay);
+            timer.Timeout += () => _hud.PlayToPileAnimation(def, rect, false);
+        }
     }
 
     private void OnEndTurn()
@@ -2340,43 +4046,112 @@ public partial class BattleScene : Node3D
             return;
 
         ClearSelection();
+
+        // 记下手牌位置：回合结束弃掉的牌要从这里飞向弃牌堆
+        var handRects = new List<(string Id, Rect2 Rect)>();
+        for (int i = 0; i < _state.Player.Hand.Count; i++)
+        {
+            if (_hud.TryGetHandCardRect(i, out Rect2 r))
+                handRects.Add((_state.Player.Hand[i], r));
+        }
+
         _state.EndTurn();
+        PlayVolleys();
         AudioManager.SetIntensity(_state.TurnNumber < 4 ? 0 : _state.TurnNumber < 8 ? 1 : 2);
         RefreshAll();
+        AnimateEndOfTurnDiscards(handRects);
 
         if (_state.Phase == BattlePhase.EnemyTurn)
             CallDeferred(nameof(RunEnemyTurnDeferred));
     }
 
-    private void RunEnemyTurnDeferred()
+    private async void RunEnemyTurnDeferred()
     {
         _enemyBusy = true;
         RefreshAll();
         _hud.Toast("敌方行动中…");
 
-        var timer = GetTree().CreateTimer(0.45);
-        timer.Timeout += () =>
+        await ToSignal(GetTree().CreateTimer(0.45), SceneTreeTimer.SignalName.Timeout);
+
+        // 让 AI 的攻击与打击卡也走特效：钩子里播特效、命中才结算
+        var ai = new AIController(_state, _state.Difficulty);
+        ai.AttackHook = PlayAiAttackAsync;
+        ai.StrikeHook = PlayAiStrikeAsync;
+
+        string log = await ai.RunTurnAsync();
+
+        if (!string.IsNullOrEmpty(_state.LastBuildingLog))
+            log = _state.LastBuildingLog + (string.IsNullOrEmpty(log) ? "" : "；" + log);
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        _hud.Toast(string.IsNullOrEmpty(log) ? "敌方结束了回合" : "敌方：" + log);
+
+        if (_state.Phase == BattlePhase.GameOver)
         {
-            string log = new AIController(_state, _state.Difficulty).RunTurn();
-            if (!string.IsNullOrEmpty(_state.LastBuildingLog))
-                log = _state.LastBuildingLog + (string.IsNullOrEmpty(log) ? "" : "；" + log);
-
-            _map.SyncEntities();
-            _map.RefreshZones();
-            _hud.Toast(string.IsNullOrEmpty(log) ? "敌方结束了回合" : "敌方：" + log);
-
-            if (_state.Phase == BattlePhase.GameOver)
-            {
-                _enemyBusy = false;
-                CheckGameOver();
-                return;
-            }
-
-            _state.EndTurn();
             _enemyBusy = false;
-            RefreshAll();
             CheckGameOver();
-        };
+            return;
+        }
+
+        _state.EndTurn();
+        PlayVolleys();
+        _enemyBusy = false;
+        RefreshAll();
+
+        // 新回合抽牌：洗回提示 + 从抽牌堆飞进手牌
+        if (_state.LastDrawReshuffled)
+            _hud.PlayReshuffleAnimation();
+        _hud.PlayDrawAnimation(_state.DrawnThisTurn);
+
+        CheckGameOver();
+    }
+
+    /// <summary>AI 单位开火：播开火特效 → 命中瞬间结算。</summary>
+    private async Task PlayAiAttackAsync(UnitInst attacker, HexCoord target)
+    {
+        Vector3 world = HexLayout.ToWorld(target, HexMapView.TileTop);
+        if (!_map.FaceUnitTurretToward(attacker, world))
+            _map.FaceUnitToward(attacker, world);
+
+        _map.PlayUnitAttack(attacker.Id);
+        AudioManager.PlayAttack(attacker.DefId);
+        _map.FlashCell(target, new Color("E8563F"));
+
+        float impact = PlayAttackVfx(attacker, target);
+        await ToSignal(GetTree().CreateTimer(Mathf.Max(impact, 0.03f)), SceneTreeTimer.SignalName.Timeout);
+
+        _state.PerformAttack(attacker, target);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        // 一点点间隔，连续攻击不至于糊成一团
+        await ToSignal(GetTree().CreateTimer(0.14f), SceneTreeTimer.SignalName.Timeout);
+    }
+
+    /// <summary>AI 打击卡：播导弹/空袭特效 → 命中瞬间结算。</summary>
+    private async Task PlayAiStrikeAsync(string cardId, HexCoord target)
+    {
+        CardDef card = GameDatabase.Card(cardId);
+        if (card == null)
+            return;
+
+        // AI 也用「产出这张卡」的那座井发射
+        int siloId = 0;
+        if (card.Effect == "missile")
+        {
+            var entry = _state.Enemy.Produced.FirstOrDefault(p => p.Card == cardId);
+            siloId = entry.SiloId;
+        }
+
+        float impact = PlayCardVfx(PlayerId.Enemy, card, target, siloId);
+        await ToSignal(GetTree().CreateTimer(Mathf.Max(impact, 0.05f)), SceneTreeTimer.SignalName.Timeout);
+
+        _state.PlayGlobalCard(_state.Enemy, cardId, target, out _);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        await ToSignal(GetTree().CreateTimer(0.12f), SceneTreeTimer.SignalName.Timeout);
     }
 
     // ─────────────────────────── 建造 / 升级 ───────────────────────────
@@ -2425,6 +4200,27 @@ public partial class BattleScene : Node3D
         // 建造预览的信息面板也一起收起来（选中建筑时会随即重新显示）
         if (_selBuilding == null)
             _hud.HideInfo();
+    }
+
+    /// <summary>维修选中的建筑：按损失血量扣钱，回满血并播回血特效。</summary>
+    private void OnRepairClicked()
+    {
+        if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player)
+            return;
+
+        int cost = BattleState.RepairCost(_selBuilding);
+        if (!_state.TryRepair(_selBuilding, out string error))
+        {
+            _hud.Toast(error);
+            return;
+        }
+
+        AudioManager.PlayUi("ui_click");
+        _vfx?.Heal(_map.BuildingBarAnchor(_selBuilding) - Vector3.Up * 0.9f, 1.0f);
+        _hud.Toast($"维修完成，花费 {cost}$");
+        _map.PunchBuilding(_selBuilding.Id);
+        ShowBuildingInfo(_selBuilding);
+        RefreshAll();
     }
 
     private void OnUpgradeClicked()
@@ -2591,6 +4387,10 @@ public partial class BattleScene : Node3D
         if (Time.GetTicksMsec() < _inputGateUntil)
             return;
 
+        // 还有一击在等特效命中结算，先别接受新指令
+        if (_pendingAttack != null || _pendingCard != null)
+            return;
+
         if (!_rig.TryPickGround(screenPos, HexMapView.TileTop, out Vector3 world))
             return;
 
@@ -2622,8 +4422,6 @@ public partial class BattleScene : Node3D
             if (_state.CanAttack(_selUnit, coord))
             {
                 UnitInst attacker = _selUnit;
-                string log = _state.PerformAttack(attacker, coord);
-                _hud.Toast(string.IsNullOrEmpty(log) ? "没有可攻击的目标" : log);
 
                 AudioManager.PlayAttack(attacker.DefId);
                 // 攻击时转向目标：有炮塔的只转炮塔，其余整体转身；然后播放一次攻击动作
@@ -2632,16 +4430,13 @@ public partial class BattleScene : Node3D
                     _map.FaceUnitToward(attacker, targetWorld);
                 _map.PlayUnitAttack(attacker.Id);
                 _map.FlashCell(coord, new Color("E8563F"));
-                foreach (UnitInst t in _state.UnitsAt(coord))
-                    _map.PunchUnit(t.Id);
-                if (_state.BuildingAt(coord) is { } hitBuilding)
-                    _map.PunchBuilding(hitBuilding.Id);
 
-                SelectUnit(attacker);
-                _map.SyncEntities();
-                _map.RefreshZones();
-                RefreshAll();
-                CheckGameOver();
+                // 先播特效，等「命中那一刻」再结算伤害（伤害检测 / 死亡清除都在爆炸瞬间）
+                float impact = PlayAttackVfx(attacker, coord);
+
+                _pendingAttack = (attacker, coord);
+                var timer = GetTree().CreateTimer(Mathf.Max(impact, 0.03f));
+                timer.Timeout += ResolvePendingAttack;
                 return;
             }
 
@@ -2659,12 +4454,19 @@ public partial class BattleScene : Node3D
         // 3) 点己方单位 / 己方建筑 → 选中；同一格有多个目标时反复点击轮换
         //    轮询队列 = 格内所有己方单位（按顺序）+ 该格的己方建筑（排在最后），
         //    这样单位压在建筑上时也能点选到下面的建筑。
-        var cycle = new List<(UnitInst Unit, BuildingInst Building)>();
+        //    轮询队列 = 格内所有己方单位 + 该格的己方建筑 + 「在此建造」
+        //    （有驻军的格子也能通过轮询进入建造菜单）
+        var cycle = new List<(UnitInst Unit, BuildingInst Building, bool Build)>();
+
         foreach (UnitInst u in cell.Units.Where(x => x.Alive && x.Owner == PlayerId.Player))
-            cycle.Add((u, null));
+            cycle.Add((u, null, false));
 
         if (cell.Building != null && cell.Building.Owner == PlayerId.Player && !cell.Building.IsDead)
-            cycle.Add((null, cell.Building));
+            cycle.Add((null, cell.Building, false));
+
+        // 该格还没有建筑、且在己方控制区内 → 加一个「建造」选项
+        if (cell.Building == null && _state.CanBuildAt(coord, PlayerId.Player))
+            cycle.Add((null, null, true));
 
         if (cycle.Count > 0)
         {
@@ -2673,16 +4475,23 @@ public partial class BattleScene : Node3D
                 index = cycle.FindIndex(e => e.Unit == _selUnit);
             else if (_selBuilding != null && _selBuilding.Coord == coord)
                 index = cycle.FindIndex(e => e.Building == _selBuilding);
+            else if (_buildTarget == coord)
+                index = cycle.FindIndex(e => e.Build);
 
-            (UnitInst Unit, BuildingInst Building) pick = cycle[(index + 1) % cycle.Count];
+            (UnitInst Unit, BuildingInst Building, bool Build) pick = cycle[(index + 1) % cycle.Count];
+
             if (pick.Unit != null)
             {
                 AudioManager.PlaySelect(pick.Unit.DefId);
                 SelectUnit(pick.Unit);
             }
-            else
+            else if (pick.Building != null)
             {
                 SelectBuilding(pick.Building);
+            }
+            else
+            {
+                OpenBuildAt(coord);
             }
 
             return;
@@ -2696,7 +4505,13 @@ public partial class BattleScene : Node3D
         }
 
         // 5) 空地 → 己方控制区内弹建造菜单
-        //    注意用 ClearSelection()：它会同时把单位/建筑的黄色描边与血条的「选中」状态清掉
+        OpenBuildAt(coord);
+    }
+
+    /// <summary>在指定格打开建造菜单（同时清掉单位/建筑的选中状态）。</summary>
+    private void OpenBuildAt(HexCoord coord)
+    {
+        // 注意用 ClearSelection()：它会同时把单位/建筑的黄色描边与血条的「选中」状态清掉
         ClearSelection();
         _map.ClearHints();
         _hud.HideInfo();
@@ -2715,7 +4530,7 @@ public partial class BattleScene : Node3D
         else
         {
             CloseBuildMenu();
-            _hud.Toast("这里不能建造（需要在己方控制区、且不与敌方控制区重叠）");
+            _hud.Toast("这里不能建造（需要地面、己方控制区，且不与敌方控制区重叠）");
         }
     }
 
@@ -2751,9 +4566,28 @@ public partial class BattleScene : Node3D
             }
         }
 
+        ShowUnitInfo(u);
+    }
+
+    /// <summary>刷新单位信息面板（攻击力按血量变色，实时调用）。</summary>
+    private void ShowUnitInfo(UnitInst u)
+    {
+        if (u == null || _hud == null)
+            return;
+
+        // 攻击力：血量越低越弱（最低 35%），文字按血量比例上色
+        int dmg = BattleState.EffectiveDamage(u);
+        float ratio = BattleState.HpRatio(u);
+        string atkColor = ratio > 0.67f ? "5FBF5A" : ratio > 0.34f ? "E5B436" : "E8563F";
+        string atkText = $"[color=#{atkColor}]{dmg}[/color]";
+        if (dmg < u.Def.Damage)
+            atkText += $"（满血 {u.Def.Damage}）";
+
+        _infoUnitHp = u.Hp;
+
         _hud.ShowInfo(
             $"{u.Def.NameZh}  {u.Hp}/{u.MaxHp}",
-            $"攻击 {u.Def.Damage}　移动 {u.Def.Move}　射程 {u.Def.Range}\n" +
+            $"攻击 {atkText}　移动 {u.Def.Move}　射程 {u.Def.Range}\n" +
             $"{(u.IsAir ? "空中单位，可越过地形" : "地面单位")}" +
             $"{(u.Def.CanHitAir ? "，可对空" : "")}\n" +
             $"{(u.Moved ? "已移动" : "可移动")}　{(u.Attacked ? "已攻击" : "可攻击")}");
@@ -2820,10 +4654,14 @@ public partial class BattleScene : Node3D
         lines.Add(upgrade);
 
         string title = $"{b.Def.NameZh}  Lv.{level}  {b.Hp}/{b.MaxHp}";
+        int repairCost = b.Owner == PlayerId.Player ? BattleState.RepairCost(b) : 0;
+
         _hud.ShowInfo(title, string.Join("\n", lines),
             b.Def.Preview, showButtons: b.Owner == PlayerId.Player,
             extraFireCost: canExtra ? b.Def.ExtraFireCost : 0, extraFireReady: extraReady,
-            showDemolish: !b.IsHq, canUpgrade: canUp);
+            showDemolish: !b.IsHq, canUpgrade: canUp,
+            repairCost: repairCost,
+            repairAffordable: _state.Player.Gold >= repairCost);
     }
 
     /// <summary>建造前的信息预览：右侧面板显示一级的数值（没有按钮）。</summary>
@@ -2942,8 +4780,28 @@ public partial class BattleScene : Node3D
 
     private void RefreshAll()
     {
+        // 手牌要重建之前，先把「因为失去发射井而被移除的卡」烧掉（需要旧布局的卡面位置）
+        FlushBurnedCards();
+
         _hud.RefreshAll();
         _map.ShowHover(_hover);
+    }
+
+    /// <summary>把本帧因失去发射井而移除的己方卡牌，播一个燃烧特效。</summary>
+    private void FlushBurnedCards()
+    {
+        if (_state == null || _state.RemovedCards.Count == 0)
+            return;
+
+        var mine = _state.RemovedCards
+            .Where(r => r.Owner == PlayerId.Player)
+            .Select(r => r.Card)
+            .ToList();
+
+        _state.RemovedCards.Clear();
+
+        if (mine.Count > 0)
+            _hud.BurnCards(mine);
     }
 
     private void CheckGameOver()

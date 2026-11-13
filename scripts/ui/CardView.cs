@@ -32,6 +32,8 @@ public partial class CardView : Control
     private Label _cost;
     private Label _title;
     private Label _desc;
+    private Label _keyword;
+    private PanelContainer _keywordBadge;
     private TextureRect _art;
     private Panel _artPlaceholder;
     private StyleBoxFlat _frame;
@@ -118,6 +120,40 @@ public partial class CardView : Control
         _title.AddThemeColorOverride("font_color", UiTheme.Ink);
         top.AddChild(_title);
 
+        // 关键字角标（保留 / 消耗 / 虚无）：浮在卡图右上角，长卡名也不会把它挤掉
+        _keywordBadge = new PanelContainer { MouseFilter = MouseFilterEnum.Ignore };
+        var badgeStyle = new StyleBoxFlat
+        {
+            BgColor = new Color("2B2317"),
+            CornerRadiusTopLeft = 5,
+            CornerRadiusTopRight = 5,
+            CornerRadiusBottomLeft = 5,
+            CornerRadiusBottomRight = 5,
+            ContentMarginLeft = 5,
+            ContentMarginRight = 5,
+            ContentMarginTop = 1,
+            ContentMarginBottom = 1,
+        };
+        _keywordBadge.AddThemeStyleboxOverride("panel", badgeStyle);
+
+        _keyword = new Label
+        {
+            Text = "",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            MouseFilter = MouseFilterEnum.Ignore,
+        };
+        _keyword.AddThemeFontSizeOverride("font_size", 10);
+        _keyword.AddThemeColorOverride("font_color", new Color("F0D98A"));
+        _keywordBadge.AddChild(_keyword);
+
+        // 浮在卡图右上角
+        _keywordBadge.SetAnchorsPreset(LayoutPreset.TopRight);
+        _keywordBadge.OffsetLeft = -78;
+        _keywordBadge.OffsetRight = -8;
+        _keywordBadge.OffsetTop = 30;
+        _keywordBadge.OffsetBottom = 48;
+        _body.AddChild(_keywordBadge);
+
         // 卡图
         var artHolder = new Panel { CustomMinimumSize = new Vector2(0, 66), MouseFilter = MouseFilterEnum.Ignore };
         var artStyle = new StyleBoxFlat
@@ -163,6 +199,38 @@ public partial class CardView : Control
         content.AddChild(_desc);
     }
 
+    public void SetEthereal(bool on)
+    {
+        if (_ethereal == on)
+            return;
+
+        _ethereal = on;
+        if (_keyword != null)
+            ApplyKeyword();
+    }
+
+    private bool _ethereal;
+
+    private void ApplyKeyword()
+    {
+        if (_keyword == null)
+            return;
+
+        string text = KeywordText();
+        _keyword.Text = text;
+        if (_keywordBadge != null)
+            _keywordBadge.Visible = !string.IsNullOrEmpty(text);
+    }
+
+    private string KeywordText()
+    {
+        string baseText = UiText.KeywordsOf(Def);
+        if (!_ethereal)
+            return baseText;
+
+        return string.IsNullOrEmpty(baseText) ? "虚无" : baseText + " · 虚无";
+    }
+
     public void Refresh(bool affordable)
     {
         if (Def == null)
@@ -187,6 +255,7 @@ public partial class CardView : Control
         _cost.Text = Def.Cost.ToString();
         _title.Text = Loc.Name(Def.NameZh, Def.NameEn);
         _desc.Text = Loc.IsChinese ? Def.DescriptionZh : Def.DescriptionEn;
+        ApplyKeyword();
 
         string unitId = Def.Unit;
         if (!string.IsNullOrEmpty(unitId) &&
