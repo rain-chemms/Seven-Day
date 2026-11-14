@@ -45,13 +45,26 @@
     "hp": 250,
     "damage": 150,
     "move": 3,
-    "range": 2,
+    "range": 1,
     "canHitAir": false,
     "canHitGround": true,
     "isAir": true,
     "model": "res://gameAsset/models/militaries/helicopter/helicopter.glb"
   },
   {
+    "id": "fpvDrone",
+    "nameZh": "FPV无人机",
+    "nameEn": "FPV Drone",
+    "hp": 100,
+    "damage": 175,
+    "move": 3,
+    "range": 1,
+    "canHitAir": false,
+    "canHitGround": true,
+    "isAir": true,
+    "suicide": true,
+    "model": "res://gameAsset/models/militaries/fpvDrone/fpvDrone.glb"
+  },  {
     "id": "fighter",
     "nameZh": "战斗机",
     "nameEn": "Fighter",

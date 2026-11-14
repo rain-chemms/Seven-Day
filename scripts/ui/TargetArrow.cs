@@ -79,13 +79,37 @@ public partial class TargetArrow : Control
         float wobble = Mathf.Sin(_time * 4.2f) * 9f;
         Vector2 ctrl = mid + perp * (bend + wobble);
 
-        var pts = new Vector2[Segments];
+        // 整条曲线（采样点），后面按「弧长」决定主线画到哪
+        var curve = new Vector2[Segments];
         for (int i = 0; i < Segments; i++)
         {
             float t = i / (float)(Segments - 1);
             float u = 1f - t;
-            pts[i] = u * u * _from + 2f * u * t * ctrl + t * t * _to;
+            curve[i] = u * u * _from + 2f * u * t * ctrl + t * t * _to;
         }
+
+        // 主线终点：从箭尖沿曲线回退约半个箭头长度，并再往箭头里多埋 6px，
+        // 保证线和箭头有重叠 —— 否则弧长和直线距离不一致时会露出一段空隙（箭头「断掉」）
+        float headLen = 24f;
+        float keepFromTip = headLen * 0.5f;
+
+        int cut = Segments - 1;
+        float walked = 0f;
+        for (int i = Segments - 2; i >= 0; i--)
+        {
+            walked += curve[i].DistanceTo(curve[i + 1]);
+            cut = i;
+            if (walked >= keepFromTip)
+                break;
+        }
+
+        // 线尾比切点再多伸一点，塞进箭头里
+        Vector2 tail = curve[cut] + (curve[cut] - curve[Mathf.Min(cut + 1, Segments - 1)]).Normalized() * 6f;
+
+        var pts = new Vector2[cut + 2];
+        for (int i = 0; i <= cut; i++)
+            pts[i] = curve[i];
+        pts[cut + 1] = tail;
 
         // 深色底 + 彩色主线
         DrawPolyline(pts, OutlineColor, 13f, true);
@@ -103,13 +127,13 @@ public partial class TargetArrow : Control
         }
 
         // 箭头
-        Vector2 tipDir = (pts[Segments - 1] - pts[Segments - 4]).Normalized();
+        Vector2 tipDir = (curve[Segments - 1] - curve[Segments - 4]).Normalized();
         if (tipDir.LengthSquared() < 0.001f)
             tipDir = dir;
         Vector2 normal = new(-tipDir.Y, tipDir.X);
 
         // 箭头的「脖子」稍微加宽一点，看起来更有力
-        Vector2 baseCenter = _to - tipDir * 24f;
+        Vector2 baseCenter = _to - tipDir * headLen;
         Vector2[] head =
         {
             _to,
@@ -117,11 +141,13 @@ public partial class TargetArrow : Control
             baseCenter - normal * 13f,
         };
         DrawColoredPolygon(head, OutlineColor);
+
+        // 内层只比外层缩进 1.5px：留一圈细描边，箭尖不会被深色「尖刺」顶出去
         Vector2[] headInner =
         {
-            _to - tipDir * 3.5f,
-            baseCenter + normal * 8f,
-            baseCenter - normal * 8f,
+            _to,
+            baseCenter + normal * 8.5f,
+            baseCenter - normal * 8.5f,
         };
         DrawColoredPolygon(headInner, color);
 

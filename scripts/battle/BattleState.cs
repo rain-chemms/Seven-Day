@@ -284,10 +284,28 @@ public sealed class BattleState
     /// <summary>因为失去发射井而从手牌里移除的卡（表现层用来播「烧卡」特效）。</summary>
     public readonly List<(PlayerId Owner, string Card)> RemovedCards = new();
 
+    /// <summary>拆掉这座建筑能返还多少金币（本金的 65%）。</summary>
+    public static int DemolishRefund(BuildingInst b)
+    {
+        if (b == null || b.Def == null)
+            return 0;
+
+        // 本金 = 建造价 + 已付的各级升级价
+        int invested = b.Def.UpgradeCostAt(0);
+        for (int lv = 1; lv < b.Level; lv++)
+            invested += b.Def.UpgradeCostAt(lv);
+
+        return (int)Math.Floor(invested * 0.65f + 0.5f);
+    }
     public void Demolish(BuildingInst b)
     {
         if (b == null)
             return;
+        PlayerState owner = StateOf(b.Owner);
+        int refund = DemolishRefund(b);
+        if (refund > 0)
+            owner.Gold += refund;
+
         Cell cell = Cell(b.Coord);
         if (cell != null && cell.Building == b)
             cell.Building = null;
@@ -589,6 +607,18 @@ public sealed class BattleState
         int dmg = EffectiveDamage(u);
         var log = new List<string>();
 
+        // 自杀式单位（FPV 无人机）：先冲到目标格，再自爆。
+        // 注意：如果目标就是自己脚下那一格（站在敌方建筑上打它），也照样自爆，
+        // 不能因为「没移动」就跳过自毁。
+        bool suicide = u.Def.Suicide;
+        if (suicide && u.Coord != target)
+        {
+            Cell origin = Cell(u.Coord);
+            origin?.Units.Remove(u);
+            cell.Units.Add(u);
+            u.Coord = target;
+        }
+
         foreach (UnitInst t in cell.Units.ToList())
         {
             if (!t.Alive || t.Owner == u.Owner)
@@ -620,6 +650,16 @@ public sealed class BattleState
         }
 
         u.Attacked = true;
+
+        // 自爆：打完自己也报销（无人机撞上去就没了）
+        if (suicide)
+        {
+            cell.Units.Remove(u);
+            Units.Remove(u);
+            u.Hp = 0;
+            log.Add($"{u.Def.NameZh} 自爆");
+        }
+
         CheckVictory();
         return string.Join("，", log);
     }
@@ -904,6 +944,28 @@ public sealed class BattleState
                 SendToPlayedPile(st, card);
                 return $"{card.NameZh}：本回合地面单位移动 +{card.Power}";
             }
+            case "supply":
+            {
+                st.Gold -= card.Cost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+                DrawCard(st, card.Power);
+
+                // 抽完之后还要弃 1 张：玩家由界面弹选牌，AI 直接挑一张最没用的
+                if (st.Id == PlayerId.Enemy)
+                {
+                    int pick = PickAutoDiscardIndex(st);
+                    if (pick >= 0)
+                        DiscardOne(st, pick);
+
+                    return $"{card.NameZh}：抽 {card.Power} 张，弃掉 1 张";
+                }
+
+                if (st.Hand.Count > 0)
+                    PendingDiscard++;
+
+                return $"{card.NameZh}：抽 {card.Power} 张，选择一张手牌弃掉";
+            }
             default:
                 st.Gold -= card.Cost;
                 RemoveCardFromHand(st, cardId);
@@ -1110,11 +1172,14 @@ public sealed class BattleState
         }
         else
         {
-            BuildingInst enemyBuilding = Buildings
-                .Where(x => x.Owner != b.Owner && !x.IsDead && x != b &&
-                            HexCoord.Distance(x.Coord, b.Coord) <= radius)
-                .OrderBy(x => HexCoord.Distance(x.Coord, b.Coord))
-                .FirstOrDefault();
+            // 建筑算地面目标：只打空中的（防空炮）不能拿它轰建筑
+            BuildingInst enemyBuilding = b.Def.CanHitGround
+                ? Buildings
+                    .Where(x => x.Owner != b.Owner && !x.IsDead && x != b &&
+                                HexCoord.Distance(x.Coord, b.Coord) <= radius)
+                    .OrderBy(x => HexCoord.Distance(x.Coord, b.Coord))
+                    .FirstOrDefault()
+                : null;
 
             if (enemyBuilding == null)
             {
@@ -1299,6 +1364,71 @@ public sealed class BattleState
 
     /// <summary>本回合被弃掉的手牌（表现层用来播「飞向弃牌堆」的动画）。</summary>
     public readonly List<string> DiscardedThisTurn = new();
+
+    /// <summary>
+    /// 「物资运输」这类卡抽完牌后还欠几次弃牌（由表现层弹选牌界面）。
+    /// 每次弃完减 1，减到 0 恢复自由操作。
+    /// </summary>
+    public int PendingDiscard;
+
+    /// <summary>弃掉手牌里的第 index 张（含「虚无」处理）。</summary>
+    public bool DiscardOne(PlayerState st, int handIndex)
+    {
+        if (st == null || handIndex < 0 || handIndex >= st.Hand.Count)
+            return false;
+
+        string id = st.Hand[handIndex];
+        st.Hand.RemoveAt(handIndex);
+
+        int ethereal = st.Ethereal.IndexOf(id);
+        if (ethereal >= 0)
+        {
+            st.Ethereal.RemoveAt(ethereal);
+            st.Exhaust.Add(id);
+            st.EtherealExhausted.Add(id);
+            ExhaustedThisTurn.Add(id);
+            return true;
+        }
+
+        st.Discard.Add(id);
+        DiscardedThisTurn.Add(id);
+
+        int produced = st.Produced.FindIndex(p => p.Card == id);
+        if (produced >= 0)
+            st.Produced.RemoveAt(produced);
+
+        return true;
+    }
+
+    /// <summary>AI 用：挑一张「最没用」的手牌（保留卡与高费卡优先留下）。</summary>
+    private static int PickAutoDiscardIndex(PlayerState st)
+    {
+        int best = -1;
+        int bestScore = int.MaxValue;
+
+        for (int i = 0; i < st.Hand.Count; i++)
+        {
+            CardDef card = GameDatabase.Card(st.Hand[i]);
+            if (card == null)
+                continue;
+
+            if (card.Retain)
+                continue;
+
+            // 费用越低越不值钱；单位卡再优先一点（部队还能上场）
+            int score = card.Cost;
+            if (card.KindEnum == CardKind.Unit)
+                score -= 40;
+
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = i;
+            }
+        }
+
+        return best >= 0 ? best : (st.Hand.Count > 0 ? 0 : -1);
+    }
 
     /// <summary>本回合因「虚无」被耗掉的手牌（表现层用来播「烧卡」动画）。</summary>
     public readonly List<string> ExhaustedThisTurn = new();

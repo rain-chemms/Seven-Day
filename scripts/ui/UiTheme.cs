@@ -16,6 +16,7 @@ public static class UiTheme
     public static readonly Color OnPressedText = new("D8CDA6");
     public const string PanelDir = "res://gameAsset/textures/ui/panel/";
     public const string BarDir = "res://gameAsset/textures/ui/progressBar/";
+    public const string SliderDir = "res://gameAsset/textures/ui/slider/";
     public const string IconDir = "res://gameAsset/textures/ui/icon/";
 
     public static readonly Color Ink = new("3B2E16");
@@ -93,6 +94,14 @@ public static class UiTheme
         theme.SetStylebox("background", "ProgressBar", Box(BarDir + "bar_bg.png", 10));
         theme.SetStylebox("fill", "ProgressBar", Box(BarDir + "bar_fill_green.png", 10));
         theme.SetColor("font_color", "ProgressBar", Ink);
+
+        // 滑条：凹槽用 slider_track，左侧已填充部分用金色条，滑块用 slider_grabber
+        theme.SetStylebox("slider", "HSlider", Box(SliderDir + "slider_track.png", 10));
+        theme.SetStylebox("grabber_area", "HSlider", Box(BarDir + "bar_fill_gold.png", 10));
+        theme.SetStylebox("grabber_area_highlight", "HSlider", Box(BarDir + "bar_fill_gold.png", 10));
+        theme.SetIcon("grabber", "HSlider", GD.Load<Texture2D>(SliderDir + "slider_grabber.png"));
+        theme.SetIcon("grabber_highlight", "HSlider", GD.Load<Texture2D>(SliderDir + "slider_grabber.png"));
+        theme.SetIcon("grabber_disabled", "HSlider", GD.Load<Texture2D>(SliderDir + "slider_grabber.png"));
 
         theme.SetStylebox("tab_selected", "TabContainer", Box("res://gameAsset/textures/ui/tab/tab_selected.png", 12, 14, 14, 8, 6));
         theme.SetStylebox("tab_unselected", "TabContainer", Box("res://gameAsset/textures/ui/tab/tab_normal.png", 12, 14, 14, 8, 6));

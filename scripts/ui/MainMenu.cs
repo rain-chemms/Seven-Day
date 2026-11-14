@@ -32,6 +32,7 @@ public partial class MainMenu : Node3D
         AddChild(new MainMenuBackdrop { Name = "Backdrop" });
         BuildUi();
         ApplyAudioFromSettings();
+        AudioManager.StopStinger();       // 从结算界面回来时别让胜利/失败音效继续响
         AudioManager.PlayBgm("res://gameAsset/audios/bgm/menu_theme.ogg", 1.2f);
         Loc.Changed += RebuildTexts;
 
@@ -85,6 +86,9 @@ public partial class MainMenu : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-btn-hold"))
             CallDeferred(nameof(DemoButtonHold));
 
+        if (OS.GetCmdlineUserArgs().Contains("--demo-click-through"))
+            CallDeferred(nameof(DemoClickThrough));
+
         if (OS.GetCmdlineUserArgs().Contains("--demo-deck-close"))
             CallDeferred(nameof(DemoDeckClose));
 
@@ -132,6 +136,37 @@ public partial class MainMenu : Node3D
     }
 
     /// <summary>打开后关闭，用来看关闭动画。</summary>
+    /// <summary>验证进场遮罩：刚进场景时的点击不应该打开卡组面板。</summary>
+    private async void DemoClickThrough()
+    {
+        await ToSignal(GetTree().CreateTimer(0.05), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 p = new(940f, 355f);      // 「出战卡组」按钮
+        Input.WarpMouse(p);
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = p, GlobalPosition = p,
+        });
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = p, GlobalPosition = p,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Mask] 遮罩期内点击后 卡组面板={_deckPanel.Visible}（应为 False）");
+
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = p, GlobalPosition = p,
+        });
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = p, GlobalPosition = p,
+        });
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Mask] 遮罩结束后点击后 卡组面板={_deckPanel.Visible}（应为 True）");
+    }
     private async void DemoDeckClose()
     {
         _deckPanel.Open();
@@ -593,6 +628,43 @@ public partial class MainMenu : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--wheel-test"))
             CallDeferred(nameof(TestSettingsWheel));
 
+        // 把鼠标停在「关闭」上，检查悬停时有没有被裁边
+        if (OS.GetCmdlineUserArgs().Contains("--hover-close"))
+        {
+            Button best = null;
+            foreach (Node node in _settingsPanel.FindChildren("*", "Button", true, false))
+            {
+                if (node is not Button b)
+                    continue;
+
+                GD.Print($"[CloseHover] 候选 '{b.Text}' rect={b.GetGlobalRect()} vis={b.IsVisibleInTree()}");
+                if (b.Text != Loc.T("settings.close") || !b.IsVisibleInTree())
+                    continue;
+
+                if (best == null || b.Size.X > best.Size.X)
+                    best = b;
+            }
+
+            // 布局坐标这一刻还没刷新，直接用实测的按钮中心
+            Vector2 p2 = new(640f, 575f);
+            Input.WarpMouse(p2);
+            Input.ParseInputEvent(new InputEventMouseMotion { Position = p2, GlobalPosition = p2 });
+            GD.Print($"[CloseHover] warp={p2} best={(best != null)}");
+
+            // --click-close：再点一下，用来听「后退」音效
+            if (OS.GetCmdlineUserArgs().Contains("--click-close"))
+            {
+                Input.ParseInputEvent(new InputEventMouseButton
+                {
+                    ButtonIndex = MouseButton.Left, Pressed = true, Position = p2, GlobalPosition = p2,
+                });
+                Input.ParseInputEvent(new InputEventMouseButton
+                {
+                    ButtonIndex = MouseButton.Left, Pressed = false, Position = p2, GlobalPosition = p2,
+                });
+            }
+        }
+
         // 把鼠标停在某个页签上，用来看悬停样式
         if (OS.GetCmdlineUserArgs().Contains("--hover-tab"))
         {
@@ -669,9 +741,42 @@ public partial class MainMenu : Node3D
         BuildGalleryPanel();
         BuildDeckPanel();
         ButtonJuice.AttachAll(_root);
+        UiSound.AttachAll(_root);
         RebuildTexts();
+
+        // 切场景瞬间的输入遮罩：从地图选择点「返回」时鼠标还按着，
+        // 不挡住的话这一下会穿透到菜单的「出战卡组」上
+        BuildTransitionMask();
     }
 
+    private ColorRect _transitionMask;
+
+    /// <summary>
+    /// 进场遮罩：铺满屏幕、吃掉所有鼠标事件，约 0.35s 内淡出。
+    /// 主要防「上一个场景按下的键在这里被当成点击」。
+    /// </summary>
+    private void BuildTransitionMask()
+    {
+        _transitionMask = new ColorRect
+        {
+            Name = "TransitionMask",
+            Color = new Color(0.05f, 0.04f, 0.02f, 0.5f),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            ZIndex = 60,
+        };
+        _transitionMask.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_transitionMask);
+
+        Tween tween = CreateTween();
+        tween.TweenInterval(0.12f);
+        tween.TweenProperty(_transitionMask, "color:a", 0f, 0.24f);
+        tween.TweenCallback(Callable.From(() =>
+        {
+            if (_transitionMask != null && IsInstanceValid(_transitionMask))
+                _transitionMask.QueueFree();
+            _transitionMask = null;
+        }));
+    }
     private void BuildTitleCard()
     {
         var panel = new PanelContainer { Name = "TitleCard" };
@@ -1006,7 +1111,7 @@ public partial class MainMenu : Node3D
         _settingsDim.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
         _root.AddChild(_settingsDim);
 
-        _settingsPanel = new PanelContainer { Name = "Settings", Visible = false, ZIndex = 12, ClipContents = true };
+        _settingsPanel = new PanelContainer { Name = "Settings", Visible = false, ZIndex = 12 };
         _settingsPanel.SetAnchorsPreset(Control.LayoutPreset.Center);
         _root.AddChild(_settingsPanel);
         ApplySettingsSize();
@@ -1016,14 +1121,19 @@ public partial class MainMenu : Node3D
         _settingsScroll = new ScrollContainer
         {
             HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever,
-            VerticalScrollMode = ScrollContainer.ScrollMode.ShowNever,
+            VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
         _settingsScroll.GuiInput += OnSettingsScrollInput;
-        _settingsPanel.AddChild(_settingsScroll);
 
-        var pad = new MarginContainer();
+        // 面板纵向布局：内容区（可横向滚动）+ 底部按钮区
+        var layout = new VBoxContainer { SizeFlagsVertical = Control.SizeFlags.ExpandFill };
+        layout.AddThemeConstantOverride("separation", 0);
+        _settingsPanel.AddChild(layout);
+        layout.AddChild(_settingsScroll);
+
+        var pad = new MarginContainer { SizeFlagsVertical = Control.SizeFlags.ExpandFill };
         pad.AddThemeConstantOverride("margin_left", 16);
         pad.AddThemeConstantOverride("margin_right", 16);
         pad.AddThemeConstantOverride("margin_top", 16);
@@ -1034,6 +1144,7 @@ public partial class MainMenu : Node3D
         {
             CustomMinimumSize = new Vector2(SettingsContentWidth, 0),
             SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
         outer.AddThemeConstantOverride("separation", 10);
         pad.AddChild(outer);
@@ -1088,7 +1199,7 @@ public partial class MainMenu : Node3D
         // 页面容器：三页都放进去，只显示当前那页
         var pages = new PanelContainer
         {
-            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+            SizeFlagsVertical = Control.SizeFlags.ShrinkBegin,
             CustomMinimumSize = new Vector2(0, 300),
         };
         pages.AddThemeStyleboxOverride("panel",
@@ -1107,10 +1218,31 @@ public partial class MainMenu : Node3D
 
         SelectSettingsTab(OS.GetCmdlineUserArgs().Contains("--video-tab") ? 0 : 2);
 
+        // 底部按钮区：上下两个可伸缩空白把「关闭」夹在剩余空间的正中
+        var bottom = new VBoxContainer { SizeFlagsVertical = Control.SizeFlags.ExpandFill };
+        bottom.AddThemeConstantOverride("separation", 0);
+        layout.AddChild(bottom);
+
+        bottom.AddChild(new Control { SizeFlagsVertical = Control.SizeFlags.ExpandFill });
+
+        var closePad = new MarginContainer();
+        closePad.AddThemeConstantOverride("margin_left", 16);
+        closePad.AddThemeConstantOverride("margin_right", 16);
+        bottom.AddChild(closePad);
+
+        // 关闭按钮：自己做一套「轻微放大 + 按下回缩」，幅度比 ButtonJuice 小，
+        // 避免整条横条放大后压到面板边框
         var close = new Button { Text = Loc.T("settings.close"), CustomMinimumSize = new Vector2(0, 46) };
+        close.SetMeta("juice", true);
+        close.MouseEntered += () => TweenControlScale(close, 1.025f, 0.12f, Tween.TransitionType.Back, Tween.EaseType.Out);
+        close.MouseExited += () => TweenControlScale(close, 1f, 0.12f, Tween.TransitionType.Cubic, Tween.EaseType.Out);
+        close.ButtonDown += () => TweenControlScale(close, 0.985f, 0.06f, Tween.TransitionType.Sine, Tween.EaseType.Out);
+        close.ButtonUp += () => TweenControlScale(close, 1.025f, 0.15f, Tween.TransitionType.Back, Tween.EaseType.Out);
         close.Pressed += CloseSettings;
-        outer.AddChild(close);
+        closePad.AddChild(close);
         _locBindings.Add(("settings.close", () => close.Text = Loc.T("settings.close")));
+
+        bottom.AddChild(new Control { SizeFlagsVertical = Control.SizeFlags.ExpandFill });
     }
 
     private Control BuildVideoTab()
@@ -1480,6 +1612,7 @@ public partial class MainMenu : Node3D
     private void OnDeck()
     {
         _deckPanel.Open();
+        UiSound.AttachAll(_deckPanel);      // 卡组面板是懒加载的，打开后补挂音效
     }
 
     private void RebuildTexts()

@@ -1247,6 +1247,53 @@ public partial class HexMapView : Node3D
             animator.PlayAttack();
     }
 
+    /// <summary>
+    /// 自杀式单位（FPV 无人机）的冲击：把模型直接补间到目标格（带俯冲），
+    /// 期间播放 Move 动作并加速，返回冲刺时长（秒）。
+    /// </summary>
+    public float DashUnitTo(int unitId, HexCoord to, float duration = 0.34f)
+    {
+        if (!_unitViews.TryGetValue(unitId, out Node3D view) || !IsInstanceValid(view))
+            return 0f;
+
+        Vector3 target = HexLayout.ToWorld(to, TileTop + (UnitDefAir(unitId) ? 1.25f : 0f));
+
+        // 阵亡特效按 _unitMeta 里的坐标放：先更新，爆炸才会落在目标格
+        if (_unitMeta.TryGetValue(unitId, out (PlayerId Owner, HexCoord Coord) meta))
+            _unitMeta[unitId] = (meta.Owner, to);
+
+        if (_unitMoveTweens.TryGetValue(unitId, out Tween previous) && previous != null && previous.IsValid())
+            previous.Kill();
+
+        FaceViewToward(view, target);
+
+        if (_unitAnimators.TryGetValue(unitId, out UnitAnimator animator))
+        {
+            animator.SetMoveSpeed(2.2f);
+            animator.PlayMove();
+        }
+
+        Tween tween = view.GetTree()?.CreateTween();
+        if (tween == null)
+            return 0f;
+
+        _unitMoveTweens[unitId] = tween;
+        tween.TweenProperty(view, "position", target, duration)
+            .SetTrans(Tween.TransitionType.Cubic)
+            .SetEase(Tween.EaseType.In);
+
+        // 冲刺时稍微压一下机身，看起来像俯冲
+        tween.Parallel().TweenProperty(view, "scale", view.Scale * 0.86f, duration)
+            .SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.In);
+
+        return duration;
+    }
+
+    private bool UnitDefAir(int unitId) =>
+        _unitMeta.TryGetValue(unitId, out var meta) &&
+        _state != null &&
+        _state.Units.Any(u => u.Id == unitId && u.IsAir);
+
     // ─────────────────────────── 网格构造 ───────────────────────────
 
     public static Mesh BuildRingMesh(float innerT, float outerT)

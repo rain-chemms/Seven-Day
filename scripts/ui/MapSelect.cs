@@ -101,11 +101,19 @@ public partial class MapSelect : Control
         right.AddChild(start);
 
         var back = new Button { Text = Loc.T("mapselect.back"), CustomMinimumSize = new Vector2(0, 44) };
-        back.Pressed += () => GetTree().ChangeSceneToFile("res://scenes/mainMenu.tscn");
+        back.Pressed += () =>
+        {
+            if (_leaving)
+                return;
+
+            _leaving = true;
+            GetTree().ChangeSceneToFile("res://scenes/mainMenu.tscn");
+        };
         right.AddChild(back);
 
         OnMapSelected(0);
         ButtonJuice.AttachAll(this);
+        UiSound.AttachAll(this);
     }
 
     private void AddDiff(GridContainer grid, AIDifficulty diff, string key)
@@ -133,8 +141,15 @@ public partial class MapSelect : Control
                         $"双方指挥部距离 {HexCoord.Distance(new HexCoord(m.PlayerHq[0], m.PlayerHq[1]), new HexCoord(m.EnemyHq[0], m.EnemyHq[1]))} 格";
     }
 
+    /// <summary>已经在切场景了：防止同一次点击触发两次跳转。</summary>
+    private bool _leaving;
+
     private void StartBattle()
     {
+        if (_leaving)
+            return;
+
+        _leaving = true;
         GetTree().ChangeSceneToFile("res://scenes/battleScene.tscn");
     }
 }

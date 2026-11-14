@@ -56,6 +56,8 @@ public partial class BattleHud : CanvasLayer
     private PanelContainer _infoPanel;
     private Button _extraFireBtn;
     private Button _demolishBtn;
+    private Label _demolishName;
+    private Label _demolishGold;
     private Button _upgradeBtn;
     private Button _repairBtn;
     private PanelContainer _buildMenu;
@@ -86,6 +88,17 @@ public partial class BattleHud : CanvasLayer
         };
         _root.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
         AddChild(_root);
+
+        // 弃牌阶段的场景遮罩：压在 3D 地图上、所有 UI 之下（第一个子节点=画在最底层）
+        _pickDim = new ColorRect
+        {
+            Name = "PickDim",
+            Color = new Color(0f, 0f, 0f, 0f),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            Visible = false,
+        };
+        _pickDim.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_pickDim);
 
         // 出牌指示箭头：放在最底层，被手牌和面板盖住
         _arrow = new TargetArrow { Name = "TargetArrow" };
@@ -192,8 +205,37 @@ public partial class BattleHud : CanvasLayer
         _repairBtn.Visible = false;
         infoButtons.AddChild(_repairBtn);
 
-        _demolishBtn = NewButton("拆除");
+        // 「拆除」按钮：文字拆成两个 Label —— 名称保持墨色，金额用亮金色
+        _demolishBtn = NewButton("");
+        _demolishBtn.CustomMinimumSize = new Vector2(170, 44);   // 给「拆除 +金额」留足宽度
         _demolishBtn.Pressed += () => DemolishClicked?.Invoke();
+
+        var demolishRow = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+        demolishRow.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        demolishRow.Alignment = BoxContainer.AlignmentMode.Center;
+        demolishRow.AddThemeConstantOverride("separation", 0);
+        _demolishBtn.AddChild(demolishRow);
+
+        _demolishName = new Label
+        {
+            Text = "拆除",
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        demolishRow.AddChild(_demolishName);
+
+        _demolishGold = new Label
+        {
+            Text = "",
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _demolishGold.AddThemeColorOverride("font_color", new Color("FFE45C"));
+        _demolishGold.AddThemeFontSizeOverride("font_size", 19);
+        _demolishGold.AddThemeConstantOverride("outline_size", 3);
+        _demolishGold.AddThemeColorOverride("font_outline_color", new Color("3B2E16"));
+        demolishRow.AddChild(_demolishGold);
+
         infoButtons.AddChild(_demolishBtn);
 
         // 炮台等建筑可以花钱多打一炮
@@ -323,7 +365,29 @@ public partial class BattleHud : CanvasLayer
         };
         buildBox.AddChild(cancelBtn);
 
+        // 弃牌阶段的大号提示：持续显示在画面中上方
+        _pickBanner = new Label
+        {
+            Name = "PickBanner",
+            Text = Loc.T("battle.pick_discard"),
+            Visible = false,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _pickBanner.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
+        _pickBanner.OffsetLeft = -420;
+        _pickBanner.OffsetRight = 420;
+        _pickBanner.OffsetTop = 92;
+        _pickBanner.OffsetBottom = 156;
+        _pickBanner.AddThemeFontSizeOverride("font_size", 34);
+        _pickBanner.AddThemeColorOverride("font_color", new Color("FFF6DC"));
+        _pickBanner.AddThemeConstantOverride("outline_size", 10);
+        _pickBanner.AddThemeColorOverride("font_outline_color", new Color("241C0E"));
+        _root.AddChild(_pickBanner);
+
         ButtonJuice.AttachAll(_root);
+        UiSound.AttachAll(_root);
     }
 
     private static Label NewLabel(string text, int size)
@@ -337,6 +401,7 @@ public partial class BattleHud : CanvasLayer
     private static Button NewButton(string text)
     {
         var b = new Button { Text = text };
+        UiSound.Attach(b);
         b.AddThemeFontSizeOverride("font_size", 18);
         // 禁用态也要能看清文字（默认禁用色在沙色底上几乎隐形）
         b.AddThemeColorOverride("font_disabled_color", new Color(0.23f, 0.18f, 0.09f, 0.55f));
@@ -485,10 +550,12 @@ public partial class BattleHud : CanvasLayer
         _turnLabel.Text = Loc.T("battle.turn", _state.TurnNumber);
         _goldLabel.Text = $"{_state.Player.Gold}";
         _enemyGoldLabel.Text = Loc.T("battle.enemy", _state.Enemy.Gold);
-        _endTurnButton.Disabled = _state.Phase != BattlePhase.PlayerTurn;
-        _endTurnButton.Text = _state.Phase == BattlePhase.PlayerTurn
-            ? Loc.T("battle.end_turn")
-            : Loc.T("battle.enemy_turn");
+        _endTurnButton.Disabled = _state.Phase != BattlePhase.PlayerTurn || _handPickMode;
+        _endTurnButton.Text = _handPickMode
+            ? Loc.T("battle.discard_first")
+            : _state.Phase == BattlePhase.PlayerTurn
+                ? Loc.T("battle.end_turn")
+                : Loc.T("battle.enemy_turn");
     }
 
     public void RefreshHand()
@@ -501,11 +568,100 @@ public partial class BattleHud : CanvasLayer
         _hand.SetSelected(_selectedCard);
     }
 
+    /// <summary>进场遮罩：挡住从上一场景带过来的按下/松开，0.36s 内淡出。</summary>
+    public void ShowTransitionMask()
+    {
+        if (_root == null)
+            return;
+
+        var mask = new ColorRect
+        {
+            Name = "TransitionMask",
+            Color = new Color(0.05f, 0.04f, 0.02f, 0.5f),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            ZIndex = 90,
+        };
+        mask.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(mask);
+
+        Tween tween = CreateTween();
+        tween.TweenInterval(0.12f);
+        tween.TweenProperty(mask, "color:a", 0f, 0.24f);
+        tween.TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(mask))
+                mask.QueueFree();
+        }));
+    }
     public void SetSelectedCard(int index)
     {
         _selectedCard = index;
         _hand.SetSelected(index);
     }
+
+    /// <summary>
+    /// 「选一张手牌弃掉」阶段：整排手牌泛绿并轻轻起伏，
+    /// 同时压暗 3D 场景（不遮 UI）并显示一条持续的大号提示。
+    /// </summary>
+    public void SetHandPickMode(bool on)
+    {
+        _handPickMode = on;
+        _hand.Modulate = on ? new Color(0.82f, 1f, 0.86f) : Colors.White;
+
+        if (on)
+        {
+            _hand.PulseHint();
+            ShowPickHint();
+        }
+        else
+        {
+            HidePickHint();
+        }
+
+        // 选牌期间「回合结束」不可点
+        if (_state != null)
+            RefreshTop();
+    }
+
+    private void ShowPickHint()
+    {
+        if (_pickDim != null)
+        {
+            _pickDim.Visible = true;
+            Tween tween = CreateTween();
+            tween.TweenProperty(_pickDim, "color:a", 0.45f, 0.18f);
+        }
+
+        if (_pickBanner == null)
+            return;
+
+        _pickBanner.Text = Loc.T("battle.pick_discard");
+        _pickBanner.Visible = true;
+        _pickBanner.Modulate = new Color(1f, 1f, 1f, 1f);
+        _pickBanner.Scale = Vector2.One;
+        _pickBanner.PivotOffset = _pickBanner.Size * 0.5f;
+    }
+
+    private void HidePickHint()
+    {
+        if (_pickDim != null && _pickDim.Visible)
+        {
+            Tween tween = CreateTween();
+            tween.TweenProperty(_pickDim, "color:a", 0f, 0.15f);
+            tween.TweenCallback(Callable.From(() =>
+            {
+                if (IsInstanceValid(_pickDim))
+                    _pickDim.Visible = false;
+            }));
+        }
+
+        if (_pickBanner != null)
+            _pickBanner.Visible = false;
+    }
+
+    private bool _handPickMode;
+    private ColorRect _pickDim;
+    private Label _pickBanner;
 
     /// <summary>调试用：取第 index 张卡的屏幕矩形。</summary>
     public bool TryGetCardRect(int index, out Rect2 rect) => _hand.TryGetCardRect(index, out rect);
@@ -624,7 +780,8 @@ public partial class BattleHud : CanvasLayer
 
     public void ShowInfo(string title, string body, string imagePath = null, bool showButtons = false,
         int extraFireCost = 0, bool extraFireReady = false, bool showDemolish = true,
-        bool canUpgrade = true, int repairCost = 0, bool repairAffordable = true)
+        bool canUpgrade = true, int repairCost = 0, bool repairAffordable = true,
+        int demolishRefund = 0)
     {
         _infoPanel.Visible = true;
         _infoTitle.Text = title;
@@ -676,7 +833,16 @@ public partial class BattleHud : CanvasLayer
         }
 
         if (_demolishBtn != null)
+        {
             _demolishBtn.Visible = showButtons && showDemolish;
+
+            // 名称保持墨色，金额单独用亮金色
+            if (_demolishGold != null)
+            {
+                _demolishName.Text = "拆除";
+                _demolishGold.Text = demolishRefund > 0 ? $"  +{demolishRefund}$" : "";
+            }
+        }
 
         if (_upgradeBtn != null)
         {

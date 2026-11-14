@@ -87,6 +87,7 @@ public partial class PileViewer : Control
         header.AddChild(_title);
 
         Button close = new() { Text = "关闭" };
+        UiSound.Attach(close);
         close.CustomMinimumSize = new Vector2(96, 40);
         close.Pressed += Close;
         header.AddChild(close);

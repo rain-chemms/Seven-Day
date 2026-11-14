@@ -67,6 +67,23 @@ public partial class CardHandView : Control
         return true;
     }
 
+    /// <summary>「选一张弃掉」阶段的提示：整排手牌轻轻抬一下再落回。</summary>
+    public void PulseHint()
+    {
+        foreach (CardView card in _cards)
+        {
+            if (!card.Visible)
+                continue;
+
+            card.PivotOffset = card.Size * 0.5f;
+            Tween tween = CreateTween();
+            tween.TweenProperty(card, "scale", card.Scale * 1.05f, 0.12f)
+                .SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+            tween.TweenProperty(card, "scale", card.Scale, 0.18f)
+                .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        }
+    }
+
     /// <summary>临时隐藏某张卡（出牌飞行期间用），布局保持不变。</summary>
     public void SetCardVisible(int index, bool visible)
     {

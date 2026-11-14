@@ -167,6 +167,7 @@ public partial class DeckBuilderPanel : PanelContainer
         (GetParent() as Control ?? this).AddChild(_dragGhost);
 
         WireButtons(this);
+        UiSound.AttachAll(this);
     }
 
     /// <summary>弹窗类控件：缩一下 + 淡出，结束后才隐藏。</summary>
@@ -722,6 +723,7 @@ public partial class DeckBuilderPanel : PanelContainer
         {
             if (e is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb)
             {
+                PlayCardChoiceSound();
                 StartDrag(def.Id, mb.GlobalPosition);
                 AcceptEvent();
             }
@@ -870,6 +872,7 @@ public partial class DeckBuilderPanel : PanelContainer
                 return;
 
             // 按下先待定：拖动到左侧（出牌区外）移除，原地点击也移除一张
+            PlayCardChoiceSound();
             StartDrag(cardId, mb.GlobalPosition, DragSource.Deck, index);
             AcceptEvent();
         };
@@ -888,6 +891,9 @@ public partial class DeckBuilderPanel : PanelContainer
         return holder;
     }
 
+    /// <summary>卡组界面里点/拖卡牌的专属音效（只在这里用，战斗里的手牌不播）。</summary>
+    private static void PlayCardChoiceSound() =>
+        AudioManager.PlaySfx("res://gameAsset/audios/ui/cardConfig_choice.ogg", -2f);
     // ─────────────────────────── 拖拽 ───────────────────────────
 
     private enum DragSource
@@ -1687,6 +1693,7 @@ public partial class DeckBuilderPanel : PanelContainer
         }
 
         WireButtons(_renamePanel);
+        UiSound.AttachAll(_renamePanel);
     }
 
     private void ConfirmRename()

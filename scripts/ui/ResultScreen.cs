@@ -76,6 +76,7 @@ public partial class ResultScreen : CanvasLayer
         row.AddChild(menu);
 
         ButtonJuice.AttachAll(_root);
+        UiSound.AttachAll(_root);
     }
 
     public void Show(bool win, int turns, string mapName, int difficulty, int playerHqHp, int enemyHqHp)

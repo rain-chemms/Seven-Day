@@ -18,6 +18,12 @@ public sealed class UnitDef
     public bool CanHitAir { get; set; }
     public bool CanHitGround { get; set; } = true;
     public bool IsAir { get; set; }
+
+    /// <summary>
+    /// 自杀式单位（FPV 无人机）：攻击时冲到目标格自爆，造成伤害后自己也死亡。
+    /// </summary>
+    public bool Suicide { get; set; }
+
     public string Model { get; set; } = "";
 }
 

@@ -79,6 +79,7 @@
     "id": "aaGun",
     "nameZh": "防空炮",
     "nameEn": "AA Gun",
+    "extraFireCost": 50,
     "hp": [400, 600, 750],
     "income": [0, 0, 0],
     "upgradeCost": [200, 250, 350],

@@ -50,6 +50,15 @@
     "cost": 450
   },
   {
+    "id": "unit_fpv_drone",
+    "nameZh": "FPV无人机",
+    "nameEn": "FPV Drone",
+    "descriptionZh": "自杀式无人机：冲到目标格自爆，造成 175 伤害后自身损毁。",
+    "descriptionEn": "Suicide drone: dives into a tile, deals 175 damage, then explodes.",
+    "kind": "unit",
+    "unit": "fpvDrone",
+    "cost": 75
+  },  {
     "id": "magic_airstrike",
     "keywords": ["exhaust"],
     "nameZh": "空袭",
@@ -86,6 +95,16 @@
     "power": 200
   },
   {
+    "id": "magic_supply",
+    "nameZh": "物资运输",
+    "nameEn": "Supply Transport",
+    "descriptionZh": "抽 3 张牌，然后选择 1 张手牌弃掉。",
+    "descriptionEn": "Draw 3 cards, then discard 1.",
+    "kind": "global",
+    "cost": 250,
+    "effect": "supply",
+    "power": 3
+  },  {
     "id": "magic_boost",
     "keywords": ["exhaust"],
     "nameZh": "强行军",

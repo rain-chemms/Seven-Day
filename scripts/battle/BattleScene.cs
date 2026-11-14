@@ -30,6 +30,9 @@ public partial class BattleScene : Node3D
     private BuildingInst _selBuilding;
     private HexCoord? _hover;
     private int _selCard = -1;
+
+    /// <summary>正在等玩家选一张手牌弃掉（物资运输）。</summary>
+    private bool _discardMode;
     private HexCoord? _buildTarget;
     private bool _dragPan;
     private bool _rightDragging;
@@ -48,6 +51,7 @@ public partial class BattleScene : Node3D
 
     public override void _Ready()
     {
+        AudioManager.StopStinger();      // 重开一局时清掉上一局的结算音效
         GameDatabase.EnsureLoaded();
         ToonMaterial.Disabled = OS.GetCmdlineUserArgs().Contains("--nomats");
         _mouseScreen = GetViewport().GetVisibleRect().Size * 0.5f;
@@ -81,6 +85,7 @@ public partial class BattleScene : Node3D
         AddChild(_hud);
         _hud.SetHealthCamera(_rig.Camera);
         WireHud();
+        _hud.ShowTransitionMask();
 
         _vfx = Vfx.Create(this);
         _vfx.Shake = (amount, duration) => _rig.Shake(amount, duration);
@@ -115,6 +120,29 @@ public partial class BattleScene : Node3D
             var t = GetTree().CreateTimer(0.3);
             t.Timeout += RunAutoStep;
         }
+
+        // 开发调试：--demo-victory / --demo-defeat 直接结束对局，验证结算音效
+        if (OS.GetCmdlineUserArgs().Contains("--demo-victory"))
+            CallDeferred(nameof(DemoForceEnd), true);
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-defeat"))
+            CallDeferred(nameof(DemoForceEnd), false);
+
+        // 开发调试：--demo-demolish 验证拆除返还 65% 本金
+        if (OS.GetCmdlineUserArgs().Contains("--demo-demolish"))
+            CallDeferred(nameof(DemoDemolish));
+
+        // 开发调试：--demo-drone-same 验证无人机站在敌方建筑上攻击也自爆
+        if (OS.GetCmdlineUserArgs().Contains("--demo-drone-same"))
+            CallDeferred(nameof(DemoDroneSameCell));
+
+        // 开发调试：--demo-drone 验证 FPV 无人机自杀式攻击
+        if (OS.GetCmdlineUserArgs().Contains("--demo-drone"))
+            CallDeferred(nameof(DemoDrone));
+
+        // 开发调试：--demo-supply 验证「物资运输」抽 3 弃 1
+        if (OS.GetCmdlineUserArgs().Contains("--demo-supply"))
+            CallDeferred(nameof(DemoSupply));
 
         // 开发调试：--demo-deploy 放几个单位并选中，用来检查移动/攻击高亮
         if (OS.GetCmdlineUserArgs().Contains("--demo-deploy"))
@@ -918,8 +946,14 @@ public partial class BattleScene : Node3D
             return;
         }
 
-        BuildingInst turret = _state.SpawnBuilding("gunTurret", PlayerId.Player, spot.Value);
-        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value.Neighbor(2));
+        BuildingInst turret = OS.GetCmdlineUserArgs().Contains("--aa")
+            ? _state.SpawnBuilding("aaGun", PlayerId.Player, spot.Value)
+            : _state.SpawnBuilding("gunTurret", PlayerId.Player, spot.Value);
+
+        // 防空炮只打空中目标，用直升机当靶子；炮台用步兵
+        UnitInst foe = OS.GetCmdlineUserArgs().Contains("--aa")
+            ? _state.SpawnUnit("helicopter", PlayerId.Enemy, spot.Value.Neighbor(2))
+            : _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value.Neighbor(2));
 
         _map.SyncEntities();
         _map.RefreshZones();
@@ -1175,6 +1209,9 @@ public partial class BattleScene : Node3D
 
         UnitInst heli = _state.SpawnUnit("helicopter", PlayerId.Player, spot.Value);
         _map.SyncEntities();
+
+        if (OS.GetCmdlineUserArgs().Contains("--range-log"))
+            GD.Print($"[Range] 武装直升机 射程={GameDatabase.Unit("helicopter").Range} 移动={GameDatabase.Unit("helicopter").Move}");
 
         _rig.FocusOn(HexLayout.ToWorld(spot.Value, 1.6f));
         _rig.FrameMap(2.4f);
@@ -3101,6 +3138,214 @@ public partial class BattleScene : Node3D
         });
     }
 
+    /// <summary>验证「物资运输」：抽 3 张 → 进入选牌弃牌 → 点一张弃掉。</summary>
+    private async void DemoSupply()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Gold = 999;
+        _state.Player.Hand.Insert(0, "magic_supply");
+        RefreshAll();
+
+        int handBefore = _state.Player.Hand.Count;
+        int deckBefore = _state.Player.Deck.Count;
+        GD.Print($"[Supply] 出牌前 手牌={handBefore} 牌库={deckBefore} 金币={_state.Player.Gold}");
+
+        PlayGlobalFromHand(0, GameDatabase.Card("magic_supply"));
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Supply] 出牌后 手牌={_state.Player.Hand.Count} 牌库={_state.Player.Deck.Count} " +
+                 $"待弃={_state.PendingDiscard} 选牌模式={_discardMode}");
+
+        if (_discardMode && _state.Player.Hand.Count > 0)
+        {
+            int discardBefore = _state.Player.Discard.Count;
+            TryDiscardHandCard(0);
+            await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+            GD.Print($"[Supply] 弃牌后 手牌={_state.Player.Hand.Count} 弃牌堆={discardBefore}→{_state.Player.Discard.Count} " +
+                     $"待弃={_state.PendingDiscard} 选牌模式={_discardMode}");
+        }
+    }
+
+    /// <summary>验证 FPV 无人机：冲刺 → 爆炸 → 造成伤害 → 自身消失。</summary>
+    private async void DemoDrone()
+    {
+        await ToSignal(GetTree().CreateTimer(0.55), SceneTreeTimer.SignalName.Timeout);
+
+        // 找一块己方控制区放无人机
+        HexCoord? spot = null;
+        for (int q = -7; q < 8 && spot == null; q++)
+        {
+            for (int r = 0; r < 10 && spot == null; r++)
+            {
+                var c = new HexCoord(q, r);
+                Cell cell = _state.Cell(c);
+                if (cell == null || cell.Building != null || cell.Units.Count > 0)
+                    continue;
+                if (cell.ControlPlayer && !cell.ControlEnemy)
+                    spot = c;
+            }
+        }
+
+        if (spot == null)
+        {
+            GD.Print("[Drone] 找不到部署点");
+            return;
+        }
+
+        UnitInst drone = _state.SpawnUnit("fpvDrone", PlayerId.Player, spot.Value);
+
+        // 旁边找一格放个敌方步兵当靶子
+        HexCoord? foeCell = _state.Cells.Keys
+            .Where(c => HexCoord.Distance(c, spot.Value) == 1)
+            .Cast<HexCoord?>()
+            .FirstOrDefault(c => _state.Cell(c!.Value).Building == null && _state.Cell(c.Value).Units.Count == 0);
+
+        if (foeCell == null)
+        {
+            GD.Print("[Drone] 找不到目标格");
+            return;
+        }
+
+        UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, foeCell.Value);
+        _map.SyncEntities();
+
+        AudioManager.PlayDeploy("fpvDrone");
+        GD.Print($"[Drone] 旋翼 0.0s = {_map.DebugUnitRotor(drone.Id)}");
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Drone] 旋翼 0.3s = {_map.DebugUnitRotor(drone.Id)}");
+
+        // 镜头拉近看冲刺与爆炸
+        _rig.FocusOn(HexLayout.ToWorld(foeCell.Value, 0.7f));
+        _rig.FrameMap(4.2f);
+        _rig.SetPitch(38f);
+        _rig.SetVerticalOffset(0f);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        int hpBefore = foe.Hp;
+        int unitsBefore = _state.Units.Count(u => u.Owner == PlayerId.Player);
+        GD.Print($"[Drone] 攻击前 敌方HP={hpBefore} 我方单位={unitsBefore} 敌方单位={_state.Units.Count(u => u.Owner == PlayerId.Enemy)}");
+
+        _map.PlayUnitAttack(drone.Id);
+        float delay = PlayAttackVfx(drone, foeCell.Value);
+        await ToSignal(GetTree().CreateTimer(Mathf.Max(delay, 0.05f)), SceneTreeTimer.SignalName.Timeout);
+
+        string log = _state.PerformAttack(drone, foeCell.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        bool foeAlive = _state.Units.Any(u => u.Id == foe.Id && u.Alive);
+        bool droneAlive = _state.Units.Any(u => u.Id == drone.Id && u.Alive);
+        GD.Print($"[Drone] 战报={log}");
+        GD.Print($"[Drone] 攻击后 敌方HP={(foeAlive ? foe.Hp.ToString() : "阵亡")} 无人机存活={droneAlive} " +
+                 $"我方单位={_state.Units.Count(u => u.Owner == PlayerId.Player)}");
+    }
+    /// <summary>验证「无人机站在敌方建筑同一格上攻击」也要自爆。</summary>
+    private async void DemoDroneSameCell()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        // 场上没有敌方建筑就直接造一座防空炮当靶子
+        BuildingInst foe = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Enemy && !b.IsDead && !b.IsHq);
+        if (foe == null)
+        {
+            HexCoord? spot = _state.Cells.Keys
+                .Where(c => _state.Cell(c) != null && _state.Cell(c).Building == null)
+                .Cast<HexCoord?>()
+                .FirstOrDefault();
+
+            if (spot == null)
+            {
+                GD.Print("[DroneSame] 找不到空地放靶子");
+                return;
+            }
+
+            foe = _state.SpawnBuilding("aaGun", PlayerId.Enemy, spot.Value);
+        }
+
+        // 把无人机直接放到那座建筑所在的格子上（单位可以站在建筑上）
+        UnitInst drone = _state.SpawnUnit("fpvDrone", PlayerId.Player, foe.Coord);
+        _map.SyncEntities();
+
+        _rig.FocusOn(HexLayout.ToWorld(foe.Coord, 0.7f));
+        _rig.FrameMap(4.0f);
+        _rig.SetPitch(38f);
+        _rig.SetVerticalOffset(0f);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[DroneSame] 攻击前 无人机格={drone.Coord} 建筑格={foe.Coord} 建筑HP={foe.Hp}");
+
+        string log = _state.PerformAttack(drone, foe.Coord);
+        _map.SyncEntities();
+
+        GD.Print($"[DroneSame] 战报={log}");
+        GD.Print($"[DroneSame] 无人机存活={_state.Units.Any(u => u.Id == drone.Id && u.Alive)} " +
+                 $"建筑HP={foe.Hp}");
+    }
+    /// <summary>直接把一方指挥部打爆，验证胜利/失败流程与音效。</summary>
+    private async void DemoForceEnd(bool win)
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        PlayerId loser = win ? PlayerId.Enemy : PlayerId.Player;
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == loser && b.IsHq && !b.IsDead);
+        if (hq == null)
+        {
+            GD.Print("[ForceEnd] 找不到要摧毁的指挥部");
+            return;
+        }
+
+        hq.Hp = 0;
+        _state.CheckVictory();
+        GD.Print($"[ForceEnd] win={win} winner={_state.Winner} phase={_state.Phase}");
+
+        _map.SyncEntities();
+        RefreshAll();
+        CheckGameOver();
+    }
+    /// <summary>验证拆除返还：建造 → 升级 → 拆除，打印金币变化与返还比例。</summary>
+    private async void DemoDemolish()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        for (int q = -2; q < 8 && spot == null; q++)
+        {
+            var c = new HexCoord(q, 5);
+            if (_state.Cell(c) != null && _state.Cell(c).Building == null && _state.CanBuildAt(c, PlayerId.Player))
+                spot = c;
+        }
+
+        if (spot == null)
+        {
+            GD.Print("[Demolish] 找不到可建造的格子");
+            return;
+        }
+
+        _state.Player.Gold = 2000;
+        BuildingInst b = _state.SpawnBuilding("gunTurret", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        int buildCost = b.Def.UpgradeCostAt(0);
+        int upgradeCost = b.Def.UpgradeCostAt(1);
+        b.Level = 2;
+
+        int refund = BattleState.DemolishRefund(b);
+        int before = _state.Player.Gold;
+        GD.Print($"[Demolish] 建造={buildCost} 升级={upgradeCost} 本金={buildCost + upgradeCost} " +
+                 $"返还={refund}（应≈{(buildCost + upgradeCost) * 0.65f:F0}）");
+
+        SelectBuilding(b);
+        OnDemolishClicked();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Demolish] 金币 {before} → {_state.Player.Gold}（+{_state.Player.Gold - before}）");
+    }
     private void DemoDeploy()
     {
         BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
@@ -3289,7 +3534,17 @@ public partial class BattleScene : Node3D
         if (_state.BuildingAt(coord) is { } hitBuilding)
             _map.PunchBuilding(hitBuilding.Id);
 
-        SelectUnit(attacker);
+        // 自杀式单位打完就没了：别再选中一个死掉的单位
+        if (attacker.Alive)
+        {
+            SelectUnit(attacker);
+        }
+        else
+        {
+            ClearSelection();
+            _map.SyncEntities();
+        }
+
         _map.SyncEntities();
         _map.RefreshZones();
         RefreshAll();
@@ -3330,6 +3585,22 @@ public partial class BattleScene : Node3D
                 var rocket = GetTree().CreateTimer(0.12);
                 rocket.Timeout += () => _vfx.Explosion(to, 0.6f);
                 return 0.12f;
+
+            case "fpvDrone":
+            {
+                // 自杀式无人机：不开枪、只俯冲，撞上去才炸
+                AudioManager.PlayMove(attacker.DefId);
+                float dash = _map.DashUnitTo(attacker.Id, target, 0.36f);
+
+                var boom = GetTree().CreateTimer(Mathf.Max(0.12f, dash));
+                boom.Timeout += () =>
+                {
+                    _vfx.Explosion(to + Vector3.Up * 0.45f, 1.25f);
+                    _vfx.Explosion(to + Vector3.Up * 0.1f, 0.8f);
+                };
+
+                return Mathf.Max(0.12f, dash) + 0.04f;
+            }
 
             default:
                 // 步兵等轻武器：连续几发曳光 + 命中火花
@@ -3441,6 +3712,13 @@ public partial class BattleScene : Node3D
 
         if (index < 0 || index >= _state.Player.Hand.Count)
             return;
+
+        // 「物资运输」的弃牌阶段：点哪张弃哪张
+        if (_discardMode)
+        {
+            TryDiscardHandCard(index);
+            return;
+        }
 
         CardDef card = GameDatabase.Card(_state.Player.Hand[index]);
         if (card == null)
@@ -3810,7 +4088,7 @@ public partial class BattleScene : Node3D
         _selCard = -1;
         _hud.SetSelectedCard(-1);
         _map.ClearHints();
-        AudioManager.PlayMove(card.Unit);
+        AudioManager.PlayDeploy(card.Unit);
         _map.FlashCell(coord, new Color("7FD35B"));
         _map.SyncEntities();
         _map.RefreshZones();
@@ -3984,7 +4262,10 @@ public partial class BattleScene : Node3D
             return;
         }
 
-        _hud.Toast(result);
+        // 进入弃牌阶段时不再弹小提示（有大号横幅）
+        if (_state.PendingDiscard <= 0)
+            _hud.Toast(result);
+
         _selCard = -1;
         _hud.SetSelectedCard(-1);
         _map.ClearHints();
@@ -3993,6 +4274,9 @@ public partial class BattleScene : Node3D
         RefreshAll();
         AnimateCardToPile(GameDatabase.Card(cardId), -1);
         CheckGameOver();
+
+        if (_state.PendingDiscard > 0)
+            EnterDiscardMode();
     }
 
     /// <summary>回合结束弃掉的手牌：普通卡飞向弃牌堆，虚无卡原地烧掉。</summary>
@@ -4040,10 +4324,66 @@ public partial class BattleScene : Node3D
         }
     }
 
+    /// <summary>
+    /// 「物资运输」抽完牌后的弃牌阶段：手牌整体泛绿提示，点一张就弃掉。
+    /// </summary>
+    private void EnterDiscardMode()
+    {
+        if (_state.PendingDiscard <= 0 || _state.Player.Hand.Count == 0)
+        {
+            _state.PendingDiscard = 0;
+            ExitDiscardMode();
+            return;
+        }
+
+        _discardMode = true;
+        ClearSelection();
+        _hud.SetSelectedCard(-1);
+        _hud.SetHandPickMode(true);
+        RefreshAll();
+    }
+
+    private void ExitDiscardMode()
+    {
+        _discardMode = false;
+        _hud?.SetHandPickMode(false);
+    }
+
+    private void TryDiscardHandCard(int index)
+    {
+        if (index < 0 || index >= _state.Player.Hand.Count)
+            return;
+
+        string id = _state.Player.Hand[index];
+        CardDef def = GameDatabase.Card(id);
+
+        Rect2 rect = default;
+        bool hasRect = _hud.TryGetHandCardRect(index, out rect);
+
+        if (!_state.DiscardOne(_state.Player, index))
+            return;
+
+        _state.PendingDiscard = Mathf.Max(0, _state.PendingDiscard - 1);
+
+        if (hasRect && def != null)
+            _hud.PlayToPileAnimation(def, rect, _state.Player.Exhaust.Contains(id));
+
+        RefreshAll();
+
+        if (_state.PendingDiscard <= 0)
+            ExitDiscardMode();
+    }
+
     private void OnEndTurn()
     {
         if (_state.Phase != BattlePhase.PlayerTurn || _enemyBusy)
             return;
+
+        if (_discardMode)
+        {
+            _hud.Toast("请先选择一张手牌弃掉");
+            return;
+        }
 
         ClearSelection();
 
@@ -4252,13 +4592,14 @@ public partial class BattleScene : Node3D
         if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player || _selBuilding.IsHq)
             return;
 
+        int refund = BattleState.DemolishRefund(_selBuilding);
         _state.Demolish(_selBuilding);
         _selBuilding = null;
         _hud.HideInfo();
         _map.SyncEntities();
         _map.RefreshZones();
         RefreshAll();
-        _hud.Toast("已拆除");
+        _hud.Toast(refund > 0 ? $"已拆除，返还 {refund}$" : "已拆除");
     }
 
     // ─────────────────────────── 输入 ───────────────────────────
@@ -4361,6 +4702,29 @@ public partial class BattleScene : Node3D
         }
     }
 
+    private ulong _lastHexSfxMs;
+    private HexCoord? _lastHexSfxTile;
+
+    /// <summary>格子的「选择」音效：同一格不重复，且两次至少间隔 120ms。</summary>
+    private void PlayHexTileSound(float volumeDb, HexCoord? tile = null)
+    {
+        ulong now = Time.GetTicksMsec();
+
+        if (tile != null && _lastHexSfxTile != null && _lastHexSfxTile.Value == tile.Value &&
+            now - _lastHexSfxMs < 400)
+        {
+            return;
+        }
+
+        if (now - _lastHexSfxMs < 120)
+            return;
+
+        _lastHexSfxMs = now;
+        if (tile != null)
+            _lastHexSfxTile = tile;
+
+        AudioManager.PlaySfx("res://gameAsset/audios/sfx/select_hexTile.ogg", volumeDb);
+    }
     private void UpdateHover(Vector2 screenPos)
     {
         if (!_rig.TryPickGround(screenPos, HexMapView.TileTop, out Vector3 world))
@@ -4378,8 +4742,13 @@ public partial class BattleScene : Node3D
             return;
         }
 
+        bool changed = _hover == null || _hover.Value != coord;
         _hover = coord;
         _map.ShowHover(coord);
+
+        // 选卡/选目标时，鼠标移到新格子上给一声轻提示（带 120ms 去抖，扫过一排不会连响）
+        if (changed && _selCard >= 0)
+            PlayHexTileSound(-6f, coord);
     }
 
     private void OnLeftClick(Vector2 screenPos)
@@ -4401,6 +4770,8 @@ public partial class BattleScene : Node3D
 
         if (_state.Phase != BattlePhase.PlayerTurn)
             return;
+
+        PlayHexTileSound(-3f, coord);
 
         // 1) 正在选卡
         if (_selCard >= 0 && _selCard < _state.Player.Hand.Count)
@@ -4644,12 +5015,12 @@ public partial class BattleScene : Node3D
             ? $"升级到 Lv.{next} 需要 {b.Def.UpgradeCostAt(level)}$"
             : "已满级";
 
-        // 炮台之类可以花钱多打一炮
+        // 炮台 / 防空炮可以花钱多打一次
         bool canExtra = b.Owner == PlayerId.Player && b.Def.ExtraFireCost > 0 &&
                         b.Def.AttackRange > 0;
         bool extraReady = canExtra && !b.ExtraFired && _state.Player.Gold >= b.Def.ExtraFireCost;
         if (canExtra && !b.ExtraFired)
-            upgrade += $"\n额外开炮 {b.Def.ExtraFireCost}$（每回合一次）";
+            upgrade += $"\n额外开火 {b.Def.ExtraFireCost}$（每回合一次）";
 
         lines.Add(upgrade);
 
@@ -4661,7 +5032,10 @@ public partial class BattleScene : Node3D
             extraFireCost: canExtra ? b.Def.ExtraFireCost : 0, extraFireReady: extraReady,
             showDemolish: !b.IsHq, canUpgrade: canUp,
             repairCost: repairCost,
-            repairAffordable: _state.Player.Gold >= repairCost);
+            repairAffordable: _state.Player.Gold >= repairCost,
+            demolishRefund: b.Owner == PlayerId.Player && !b.IsHq
+                ? BattleState.DemolishRefund(b)
+                : 0);
     }
 
     /// <summary>建造前的信息预览：右侧面板显示一级的数值（没有按钮）。</summary>
@@ -4835,6 +5209,13 @@ public partial class BattleScene : Node3D
         Session.LastWin = win;
 
         AudioManager.StopBgm(0.8f);
+
+        // 胜利 / 失败音效（走独立通道，不会被战场 SFX 抢掉）
+        if (win)
+            AudioManager.PlayVictory();
+        else
+            AudioManager.PlayDefeat();
+
         _hud.Toast(win ? Loc.T("battle.victory") : Loc.T("battle.defeat"));
 
         _result = new ResultScreen();

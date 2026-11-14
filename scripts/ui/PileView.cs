@@ -1,4 +1,5 @@
 using Godot;
+using SevenDay.Core;
 
 namespace SevenDay.UI;
 
@@ -34,7 +35,11 @@ public partial class PileView : Control
         MouseFilter = MouseFilterEnum.Stop;
         CustomMinimumSize = new Vector2(84, 98);
 
-        MouseEntered += () => AnimateScale(HoverScale, 0.12f);
+        MouseEntered += () =>
+        {
+            AnimateScale(HoverScale, 0.12f);
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/button_hover.ogg", -7f);
+        };
         MouseExited += () => AnimateScale(1f, 0.14f);
     }
 
@@ -204,6 +209,7 @@ public partial class PileView : Control
         if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
         {
             PlayPressAnimation();
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_enterOrEnable.ogg", -1.5f);
             EmitSignal(SignalName.PileClicked, (int)Kind);
             AcceptEvent();
         }
