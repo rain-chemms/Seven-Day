@@ -32,6 +32,25 @@ public static class UiTheme
 
     private static Theme _theme;
 
+    private static Theme _msdfShared;
+
+    /// <summary>
+    /// MSDF 字体主题：任意倍率放大都不会糊，用于放大检视 / 牌堆浏览这类需要缩放的卡牌。
+    /// </summary>
+    public static Theme MsdfTheme()
+    {
+        if (_msdfShared != null)
+            return _msdfShared;
+
+        var font = new SystemFont
+        {
+            FontNames = new[] { "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI" },
+            MultichannelSignedDistanceField = true,
+        };
+
+        _msdfShared = new Theme { DefaultFont = font, DefaultFontSize = 18 };
+        return _msdfShared;
+    }
     public static Theme Get()
     {
         return _theme ??= Build();
@@ -60,6 +79,16 @@ public static class UiTheme
 
     public static Texture2D CardFace(string unitId) =>
         GD.Load<Texture2D>("res://gameAsset/textures/cardface/cardface_" + unitId + ".png");
+
+    /// <summary>预载所有卡面贴图，避免第一次打开卡组界面时集中解码造成卡顿。</summary>
+    public static void PreloadCardFaces()
+    {
+        foreach (Data.CardDef def in Data.GameDatabase.Cards.Values)
+        {
+            if (!string.IsNullOrEmpty(def.Unit))
+                CardFace(def.Unit);
+        }
+    }
 
     private static Theme Build()
     {

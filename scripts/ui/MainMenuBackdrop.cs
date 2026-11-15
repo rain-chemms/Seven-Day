@@ -30,6 +30,17 @@ public partial class MainMenuBackdrop : Node3D
         (new HexCoord(-1, -1), "res://gameAsset/models/militaries/infantry/infantry.glb", 0.85f),
     };
 
+    /// <summary>按模型路径找到建筑定义，取它配置的隐藏部件名（导弹、尾焰等）。</summary>
+    private static string[] HiddenPartsOf(string modelPath)
+    {
+        foreach (Data.BuildingDef def in Data.GameDatabase.Buildings.Values)
+        {
+            if (def.Model == modelPath)
+                return def.HiddenParts;
+        }
+
+        return null;
+    }
     private static readonly string[] Decorations =
     {
         "res://gameAsset/models/decorates/pine/pine.glb",
@@ -161,7 +172,13 @@ public partial class MainMenuBackdrop : Node3D
             AddChild(holder);
             // 菜单小岛上直接展示三级建筑（最高形态最好看），兵种传 0 表示不做等级筛选
             bool isBuilding = model.Contains("/buildings/");
-            Node3D m = ModelUtil.SpawnModel(model, holder, width, isBuilding ? 3 : 0);
+
+            // 导弹井这类建筑要跳过「隐藏部件」（导弹、尾焰）参与落地计算，
+            // 否则那些部件的最低点会把整栋楼顶起来悬空
+            string[] hidden = isBuilding ? HiddenPartsOf(model) : null;
+
+            Node3D m = ModelUtil.SpawnModel(model, holder, width, isBuilding ? 3 : 0,
+                out float _, hiddenParts: hidden);
             if (m != null)
                 holder.RotationDegrees = new Vector3(0, coord.R % 2 == 0 ? 28f : -18f, 0);
         }

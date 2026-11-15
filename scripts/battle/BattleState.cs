@@ -44,8 +44,20 @@ public sealed class BuildingInst
     /// <summary>本回合是否已经花过钱多开一炮（每回合重置）。</summary>
     public bool ExtraFired;
 
+    /// <summary>本回合是否已经出过兵（每回合重置）。</summary>
+    public bool SpawnUsed;
+
+    /// <summary>是否允许这座建筑每回合产卡（可开关，默认开）。</summary>
+    public bool ProduceEnabled = true;
+
+    /// <summary>所属战场（用于读取所在格地形）。</summary>
+    public BattleState State;
+
     public int MaxHp => Def.HpAt(Level);
-    public int ControlRadius => Def.ControlAt(Level);
+
+    /// <summary>控制半径：雪地上的建筑 +1。</summary>
+    public int ControlRadius =>
+        Def.ControlAt(Level) + (State != null && State.TerrainAt(Coord) == TerrainType.Snow ? 1 : 0);
     public bool IsHq => DefId == "hq";
     public bool IsDead => Hp <= 0;
 }
@@ -60,6 +72,9 @@ public sealed class UnitInst
     public int Hp;
     public bool Moved;
     public bool Attacked;
+
+    /// <summary>本回合刚由建筑出兵：登场当回合不能行动，下回合恢复。</summary>
+    public bool SpawnedThisTurn;
 
     public int MaxHp => Def.Hp;
     public bool IsAir => Def.IsAir;
@@ -84,6 +99,9 @@ public sealed class PlayerState
     /// </summary>
     public readonly List<(int SiloId, string Card)> Produced = new();
 
+    /// <summary>手牌里「发射井产出、打出后应进消耗堆」的卡（按张记录，出牌时消耗一个）。</summary>
+    public readonly List<string> ProducedExhaust = new();
+
     /// <summary>
     /// 带「虚无」关键字的手牌实例（建筑发给你的兵种卡）：
     /// 己方回合结束时若还在手上，直接进消耗堆而不是弃牌堆。
@@ -92,6 +110,18 @@ public sealed class PlayerState
 
     /// <summary>消耗堆里那些「虚无」卡（查看器里照样显示关键字）。</summary>
     public readonly List<string> EtherealExhausted = new();
+
+    /// <summary>弃牌堆里那些「虚无」卡（打出去后关键字不能丢）。</summary>
+    public readonly List<string> EtherealDiscarded = new();
+
+    /// <summary>抽牌堆里那些「虚无」卡（洗回牌库时标记跟着走）。</summary>
+    public readonly List<string> EtherealDeck = new();
+
+    /// <summary>弃牌堆里那些「发射井产出、打出即消耗」的卡。</summary>
+    public readonly List<string> ProducedExhaustDiscarded = new();
+
+    /// <summary>抽牌堆里那些「发射井产出、打出即消耗」的卡。</summary>
+    public readonly List<string> ProducedExhaustDeck = new();
 
     public bool BonusMove;
 
@@ -194,6 +224,7 @@ public sealed class BattleState
             Coord = coord,
             Level = level,
             Hp = def.HpAt(level),
+            State = this,
         };
         cell.Building = b;
         Buildings.Add(b);
@@ -355,6 +386,154 @@ public sealed class BattleState
         }
     }
 
+    // ─────────────────────────── 建筑出兵 ───────────────────────────
+
+    /// <summary>该建筑在当前等级可以出的所有兵种（按等级累加）。</summary>
+    public static List<string> SpawnOptions(BuildingInst b)
+    {
+        var result = new List<string>();
+        string[][] table = b?.Def?.SpawnByLevel;
+        if (table == null || table.Length == 0)
+            return result;
+
+        int index = Mathf.Clamp(b.Level - 1, 0, table.Length - 1);
+        foreach (string id in table[index])
+        {
+            if (!string.IsNullOrEmpty(id))
+                result.Add(id);
+        }
+
+        return result;
+    }
+
+    /// <summary>兵种对应的卡牌价格（找不到就按 0 处理）。</summary>
+    public static int UnitCost(string cardId)
+    {
+        CardDef card = GameDatabase.Card(cardId);
+        return card?.Cost ?? 0;
+    }
+
+    /// <summary>能否从这座建筑出兵：等级 / 金币 / 本回合次数 / 格子占用。</summary>
+    public bool CanSpawnFrom(BuildingInst b, string cardId, out string reason)
+    {
+        reason = "";
+        if (b == null || b.IsDead)
+        {
+            reason = "建筑不可用";
+            return false;
+        }
+
+        if (!SpawnOptions(b).Contains(cardId))
+        {
+            reason = "当前等级无法生产该兵种";
+            return false;
+        }
+
+        if (b.SpawnUsed)
+        {
+            reason = "本回合已出过兵";
+            return false;
+        }
+
+        if (StateOf(b.Owner).Gold < UnitCost(cardId))
+        {
+            reason = "金币不足";
+            return false;
+        }
+
+        if (Cell(b.Coord) == null)
+        {
+            reason = "格子不可用";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>在建筑本格召唤一个兵种（扣费 + 标记本回合已出兵）。</summary>
+    public UnitInst TrySpawnFromBuilding(BuildingInst b, string cardId, out string reason)
+    {
+        if (!CanSpawnFrom(b, cardId, out reason))
+            return null;
+
+        CardDef card = GameDatabase.Card(cardId);
+        UnitDef def = GameDatabase.Unit(card?.Unit);
+        if (def == null)
+        {
+            reason = "找不到兵种";
+            return null;
+        }
+
+        StateOf(b.Owner).Gold -= UnitCost(cardId);
+
+        UnitInst spawned = SpawnUnit(def.Id, b.Owner, b.Coord);
+        if (spawned != null)
+        {
+            spawned.SpawnedThisTurn = true;
+            spawned.Moved = true;      // 刚登场：本回合不能移动
+            spawned.Attacked = true;   // 本回合不能攻击
+        }
+
+        b.SpawnUsed = true;
+        reason = "";
+        return spawned;
+    }
+    // ─────────────────────────── 地形效果 ───────────────────────────
+
+    /// <summary>该格地形（越界按泥土处理）。</summary>
+    public TerrainType TerrainAt(HexCoord c) => Cell(c)?.Terrain ?? TerrainType.Dirt;
+
+    /// <summary>地形对陆军移动力的修正：沙地 -1，岩地 +1，其余 0。</summary>
+    public static int TerrainMoveDelta(TerrainType t) => t switch
+    {
+        TerrainType.Sand => -1,
+        TerrainType.Rock => 1,
+        _ => 0,
+    };
+
+    /// <summary>单位实际移动力（基础 + 战术加成 + 地形修正，至少 1；空军不吃地形）。</summary>
+    public int MoveStepsOf(UnitInst u)
+    {
+        if (u == null)
+            return 0;
+
+        int steps = u.Def.Move;
+        if (StateOf(u.Owner).BonusMove && !u.IsAir)
+            steps += 1;
+
+        if (!u.IsAir)
+            steps += TerrainMoveDelta(TerrainAt(u.Coord));
+
+        return Mathf.Max(1, steps);
+    }
+
+    /// <summary>单位实际攻击射程：雪地 +1。</summary>
+    public int AttackRangeOf(UnitInst u)
+    {
+        if (u == null)
+            return 0;
+
+        return u.Def.Range + (TerrainAt(u.Coord) == TerrainType.Snow ? 1 : 0);
+    }
+
+    /// <summary>某玩家本回合所有产出金币的来源（建筑）。</summary>
+    public IEnumerable<(BuildingInst Building, int Amount)> IncomeSources(PlayerId who) =>
+        Buildings.Where(b => b.Owner == who && !b.IsDead)
+                 .Select(b => (b, IncomeOf(b)))
+                 .Where(x => x.Item2 > 0);
+
+    /// <summary>建筑收入：草地上的建筑 +20%。</summary>
+    public int IncomeOf(BuildingInst b)
+    {
+        if (b == null)
+            return 0;
+
+        int income = b.Def.IncomeAt(b.Level);
+        if (TerrainAt(b.Coord) == TerrainType.Grass)
+            income = Mathf.RoundToInt(income * 1.2f);
+
+        return income;
+    }
     // ─────────────────────────── 单位 ───────────────────────────
 
     public UnitInst SpawnUnit(string defId, PlayerId owner, HexCoord coord)
@@ -388,7 +567,7 @@ public sealed class BattleState
         if (u == null || !u.Alive || u.Moved)
             return result;
 
-        int steps = u.Def.Move + (StateOf(u.Owner).BonusMove && !u.IsAir ? 1 : 0);
+        int steps = MoveStepsOf(u);
         var visited = new Dictionary<HexCoord, int> { [u.Coord] = 0 };
         var queue = new Queue<HexCoord>();
         queue.Enqueue(u.Coord);
@@ -492,7 +671,7 @@ public sealed class BattleState
         if (u == null || !u.Alive)
             yield break;
 
-        foreach (HexCoord h in HexCoord.Spiral(u.Coord, u.Def.Range))
+        foreach (HexCoord h in HexCoord.Spiral(u.Coord, AttackRangeOf(u)))
         {
             if (h != u.Coord && Cell(h) != null)
                 yield return h;
@@ -504,7 +683,7 @@ public sealed class BattleState
         if (u == null || !u.Alive || u.Attacked)
             yield break;
 
-        foreach (HexCoord h in HexCoord.Spiral(u.Coord, u.Def.Range))
+        foreach (HexCoord h in HexCoord.Spiral(u.Coord, AttackRangeOf(u)))
         {
             Cell cell = Cell(h);
             if (cell == null)
@@ -966,8 +1145,37 @@ public sealed class BattleState
 
                 return $"{card.NameZh}：抽 {card.Power} 张，选择一张手牌弃掉";
             }
-            default:
+            case "reclaim_exhaust":
+            {
+                // 战场扫荡：从消耗堆拿回一张牌（先检查有没有可拿的，避免白扣费用）
+                if (st.Exhaust.Count == 0)
+                {
+                    error = "消耗堆是空的";
+                    return "";
+                }
+
                 st.Gold -= card.Cost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                if (st.Id == PlayerId.Player)
+                    PendingReclaimExhaust = true;
+
+                return $"{card.NameZh}：选择消耗堆中的一张牌";
+            }
+            case "gold_percent":
+            {
+                // 汇率调节：按「当前资金」的比例追加（先扣费用再加，费用为 0 时等价）
+                st.Gold -= card.Cost;
+                int gain = Mathf.Max(0, Mathf.FloorToInt(st.Gold * card.Power / 100f));
+                st.Gold += gain;
+
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                return $"{card.NameZh}：获得 {gain}$";
+            }
+            default:                st.Gold -= card.Cost;
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
                 return card.NameZh;
@@ -995,21 +1203,28 @@ public sealed class BattleState
         st.BonusMove = false;
         DrawnThisTurn = 0;
         LastDrawReshuffled = false;
+        ProducedThisTurn.Clear();
+        DrawnIndicesThisTurn.Clear();
 
         // 金币收入
         int income = 0;
         foreach (BuildingInst b in Buildings.Where(b => b.Owner == who && !b.IsDead))
-            income += b.Def.IncomeAt(b.Level);
+            income += IncomeOf(b);
         st.Gold += income;
 
         // 每回合抽五张
         DrawCard(st, 5);
+
+        // 重置建筑出兵次数
+        foreach (BuildingInst b in Buildings.Where(b => b.Owner == who))
+            b.SpawnUsed = false;
 
         // 重置本单位行动
         foreach (UnitInst u in Units.Where(u => u.Owner == who))
         {
             u.Moved = false;
             u.Attacked = false;
+            u.SpawnedThisTurn = false;
         }
 
         foreach (BuildingInst b in Buildings.Where(b => b.Owner == who))
@@ -1019,11 +1234,32 @@ public sealed class BattleState
         LastBuildingLog = string.Join("；", ResolveBuildingAttacks(who));
 
         // 建筑发卡：指挥部 / 兵营 / 直升机坪 / 导弹井
+        // 依次添加；手牌满就取消后续添加（不会出现「加到一半」的情况）
         foreach (BuildingInst b in Buildings.Where(b => b.Owner == who && !b.IsDead).ToList())
+        {
+            if (st.Hand.Count >= HandLimit)
+                break;
+
             GrantBuildingCards(b, st);
+        }
     }
 
     public string LastBuildingLog = "";
+
+    /// <summary>本次打出的手牌下标（-1 表示未指定，退回按 id 找第一张）。</summary>
+    public int PlayIndex = -1;
+
+    /// <summary>「战场扫荡」打出后等待玩家从消耗堆选一张。</summary>
+    public bool PendingReclaimExhaust;
+
+    /// <summary>刚从手牌移除的那张是不是「虚无」实例。</summary>
+    public bool LastRemovedEthereal { get; private set; }
+
+    /// <summary>刚从手牌移除的那张是不是「发射井产出、打出即消耗」实例。</summary>
+    public bool LastRemovedProducedExhaust { get; private set; }
+
+    /// <summary>最近打出的卡是否虚无（表现层给飞行/烧卡加关键字）。</summary>
+    public bool LastPlayedEthereal { get; private set; }
 
     /// <summary>本次回合开始一共进了几张牌（表现层用来播抽牌动画）。</summary>
     public int DrawnThisTurn;
@@ -1202,8 +1438,15 @@ public sealed class BattleState
         return true;
     }
 
+    /// <summary>这座建筑会不会产卡（指挥部抽牌 / 兵营、机坪发兵种卡 / 导弹井发导弹卡）。</summary>
+    public static bool IsCardProducer(string defId) =>
+        defId is "hq" or "barracks" or "helipad" or "missileSilo";
+
     private void GrantBuildingCards(BuildingInst b, PlayerState st)
     {
+        if (!b.ProduceEnabled)
+            return;                    // 玩家手动关掉了产卡
+
         switch (b.DefId)
         {
             case "hq":
@@ -1216,7 +1459,7 @@ public sealed class BattleState
                 if (AddToHand(st, card))
                 {
                     st.Ethereal.Add(card);      // 建筑发的兵种卡带「虚无」
-                    DrawnThisTurn++;
+                    ProducedThisTurn.Add((card, b.Coord, st.Hand.Count - 1));
                 }
                 break;
             }
@@ -1226,7 +1469,7 @@ public sealed class BattleState
                 if (AddToHand(st, card))
                 {
                     st.Ethereal.Add(card);
-                    DrawnThisTurn++;
+                    ProducedThisTurn.Add((card, b.Coord, st.Hand.Count - 1));
                 }
                 break;
             }
@@ -1235,7 +1478,8 @@ public sealed class BattleState
                 if (TurnNumber % every == 0 && AddToHand(st, "magic_missile"))
                 {
                     st.Produced.Add((b.Id, "magic_missile"));   // 记住这张卡是哪座井产出的
-                    DrawnThisTurn++;
+                    st.ProducedExhaust.Add("magic_missile");    // 这张打出后进消耗堆
+                    ProducedThisTurn.Add(("magic_missile", b.Coord, st.Hand.Count - 1));
                 }
                 break;
         }
@@ -1249,31 +1493,159 @@ public sealed class BattleState
         return true;
     }
 
-    /// <summary>从手牌移除一张卡，同时清掉它的「来源建筑 / 虚无」记录。</summary>
-    private static void RemoveCardFromHand(PlayerState st, string cardId)
+    /// <summary>从消耗堆取回第 index 张到手牌；返回手牌下标（失败 -1）。</summary>
+    public int ReclaimFromExhaust(PlayerState st, int index)
     {
-        if (!st.Hand.Remove(cardId))
+        if (st == null || index < 0 || index >= st.Exhaust.Count)
+            return -1;
+
+        string id = st.Exhaust[index];
+        st.Exhaust.RemoveAt(index);
+
+        // 虚无标记跟着走回手牌
+        int eth = st.EtherealExhausted.IndexOf(id);
+        if (eth >= 0)
+        {
+            st.EtherealExhausted.RemoveAt(eth);
+            st.Ethereal.Add(id);
+        }
+
+        st.Hand.Add(id);
+        PendingReclaimExhaust = false;
+        return st.Hand.Count - 1;
+    }
+    /// <summary>从手牌移除一张卡，同时清掉它的「来源建筑 / 虚无」记录。</summary>
+    private void RemoveCardFromHand(PlayerState st, string cardId)
+    {
+        // 手牌里同名牌可能同时存在「虚无 / 产出」两种实例，
+        // 必须按「第几次出现」精确移除，否则打普通那张会误删虚无那张。
+        int at = PlayIndex;
+        if (at < 0 || at >= st.Hand.Count || st.Hand[at] != cardId)
+            at = st.Hand.IndexOf(cardId);
+
+        if (at < 0)
             return;
 
-        int idx = st.Produced.FindIndex(p => p.Card == cardId);
-        if (idx >= 0)
-            st.Produced.RemoveAt(idx);
+        int occurrence = 0;
+        for (int i = 0; i < at; i++)
+        {
+            if (st.Hand[i] == cardId)
+                occurrence++;
+        }
 
-        int ethereal = st.Ethereal.IndexOf(cardId);
-        if (ethereal >= 0)
-            st.Ethereal.RemoveAt(ethereal);
+        st.Hand.RemoveAt(at);
+
+        // 先判断这一张带哪些实例关键字，后面决定要不要保留到弃牌堆/消耗堆
+        LastRemovedEthereal = TakeEtherealOccurrence(st, cardId, occurrence);
+        LastRemovedProducedExhaust = TakeOccurrence(st.ProducedExhaust, cardId, occurrence);
+
+        int produced = 0;
+        for (int i = 0; i < st.Produced.Count; i++)
+        {
+            if (st.Produced[i].Card != cardId)
+                continue;
+
+            if (produced++ == occurrence)
+            {
+                st.Produced.RemoveAt(i);
+                break;
+            }
+        }
+
+        if (occurrence == 0)
+            st.ProducedExhaust.Remove(cardId);   // 一次只消耗一张标记
     }
 
+    /// <summary>移除列表里「第 occurrence 次出现的 cardId」。</summary>
+    private static void RemoveOccurrence(List<string> list, string cardId, int occurrence)
+    {
+        int seen = 0;
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i] != cardId)
+                continue;
+
+            if (seen++ == occurrence)
+            {
+                list.RemoveAt(i);
+                return;
+            }
+        }
+    }
+
+    /// <summary>取出列表里「第 occurrence 次出现的 cardId」，成功返回 true。</summary>
+    private static bool TakeOccurrence(List<string> list, string cardId, int occurrence)
+    {
+        int seen = 0;
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i] != cardId)
+                continue;
+
+            if (seen++ == occurrence)
+            {
+                list.RemoveAt(i);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>取出「第 occurrence 次出现的虚无标记」。</summary>
+    private static bool TakeEtherealOccurrence(PlayerState st, string cardId, int occurrence) =>
+        TakeOccurrence(st.Ethereal, cardId, occurrence);
+
+    /// <summary>手牌第 index 张是同名卡里的第几次出现。</summary>
+    private static int OccurrenceAt(List<string> hand, int index)
+    {
+        int occurrence = 0;
+        for (int i = 0; i < index && i < hand.Count; i++)
+        {
+            if (hand[i] == hand[index])
+                occurrence++;
+        }
+
+        return occurrence;
+    }
     /// <summary>打完的卡去哪：带「消耗」关键字进消耗堆，否则进弃牌堆（可洗回）。</summary>
-    private static void SendToPlayedPile(PlayerState st, CardDef card)
+    private void SendToPlayedPile(PlayerState st, CardDef card)
     {
         if (card == null)
             return;
 
-        if (card.Exhaust)
+        bool exhaust = card.Exhaust || LastRemovedProducedExhaust;
+        LastPlayedExhaust = exhaust;
+        LastPlayedEthereal = LastRemovedEthereal;
+
+        if (exhaust)
+        {
             st.Exhaust.Add(card.Id);
+            if (LastRemovedEthereal)
+                st.EtherealExhausted.Add(card.Id);
+        }
         else
+        {
             st.Discard.Add(card.Id);
+            if (LastRemovedEthereal)
+                st.EtherealDiscarded.Add(card.Id);
+            if (LastRemovedProducedExhaust)
+                st.ProducedExhaustDiscarded.Add(card.Id);
+        }
+    }
+
+    /// <summary>最近一次打出的卡是否进消耗堆（表现层据此播烧卡/飞牌动画）。</summary>
+    public bool LastPlayedExhaust { get; private set; }
+
+    /// <summary>若这张卡是发射井产出的，消耗一个标记并返回 true。</summary>
+    private static bool ConsumeProducedExhaust(PlayerState st, string cardId)
+    {
+        int idx = st.ProducedExhaust.IndexOf(cardId);
+        if (idx < 0)
+            return false;
+
+        st.ProducedExhaust.RemoveAt(idx);
+        return true;
     }
 
     public void DrawCard(PlayerState st, int count)
@@ -1288,6 +1660,14 @@ public sealed class BattleState
                     return;
                 st.Deck.AddRange(st.Discard);
                 st.Discard.Clear();
+
+                // 弃牌堆里的虚无标记跟着洗进牌库，不能丢
+                st.EtherealDeck.AddRange(st.EtherealDiscarded);
+                st.EtherealDiscarded.Clear();
+
+                st.ProducedExhaustDeck.AddRange(st.ProducedExhaustDiscarded);
+                st.ProducedExhaustDiscarded.Clear();
+
                 Shuffle(st.Deck);
                 LastDrawReshuffled = true;
             }
@@ -1296,9 +1676,46 @@ public sealed class BattleState
             st.Deck.RemoveAt(0);
             st.Hand.Add(card);
             DrawnThisTurn++;
+            DrawnIndicesThisTurn.Add(st.Hand.Count - 1);
+
+            // 抽到的这张如果带虚无标记，标记跟着进手牌
+            int deckEth = st.EtherealDeck.IndexOf(card);
+            if (deckEth >= 0)
+            {
+                st.EtherealDeck.RemoveAt(deckEth);
+                st.Ethereal.Add(card);
+            }
+
+            int deckPe = st.ProducedExhaustDeck.IndexOf(card);
+            if (deckPe >= 0)
+            {
+                st.ProducedExhaustDeck.RemoveAt(deckPe);
+                st.ProducedExhaust.Add(card);
+            }
         }
     }
 
+    /// <summary>手牌第 index 张是不是「发射井产出、打出即消耗」的那张。</summary>
+    public bool IsProducedExhaustAt(int handIndex)
+    {
+        PlayerState st = Player;
+        if (handIndex < 0 || handIndex >= st.Hand.Count)
+            return false;
+
+        string id = st.Hand[handIndex];
+        int marked = st.ProducedExhaust.Count(x => x == id);
+        if (marked <= 0)
+            return false;
+
+        int occurrence = 0;
+        for (int i = 0; i < handIndex; i++)
+        {
+            if (st.Hand[i] == id)
+                occurrence++;
+        }
+
+        return occurrence < marked;
+    }
     /// <summary>手牌第 index 张是不是「虚无」实例（同种卡按出现顺序对应）。</summary>
     public bool IsEtherealAt(int handIndex)
     {
@@ -1378,12 +1795,11 @@ public sealed class BattleState
             return false;
 
         string id = st.Hand[handIndex];
+        int occurrence = OccurrenceAt(st.Hand, handIndex);
         st.Hand.RemoveAt(handIndex);
 
-        int ethereal = st.Ethereal.IndexOf(id);
-        if (ethereal >= 0)
+        if (TakeEtherealOccurrence(st, id, occurrence))
         {
-            st.Ethereal.RemoveAt(ethereal);
             st.Exhaust.Add(id);
             st.EtherealExhausted.Add(id);
             ExhaustedThisTurn.Add(id);
@@ -1392,6 +1808,9 @@ public sealed class BattleState
 
         st.Discard.Add(id);
         DiscardedThisTurn.Add(id);
+
+        if (TakeOccurrence(st.ProducedExhaust, id, occurrence))
+            st.ProducedExhaustDiscarded.Add(id);   // 关键字跟着牌走
 
         int produced = st.Produced.FindIndex(p => p.Card == id);
         if (produced >= 0)
@@ -1430,6 +1849,12 @@ public sealed class BattleState
         return best >= 0 ? best : (st.Hand.Count > 0 ? 0 : -1);
     }
 
+    /// <summary>本回合从牌库抽到手里的手牌下标（表现层只给这些卡播「从牌库飞入」）。</summary>
+    public readonly List<int> DrawnIndicesThisTurn = new();
+
+    /// <summary>本回合建筑产出的卡：卡牌 id、产出建筑所在格、进手牌时的下标（表现层播飞牌）。</summary>
+    public readonly List<(string Card, HexCoord From, int HandIndex)> ProducedThisTurn = new();
+
     /// <summary>本回合因「虚无」被耗掉的手牌（表现层用来播「烧卡」动画）。</summary>
     public readonly List<string> ExhaustedThisTurn = new();
 
@@ -1447,13 +1872,12 @@ public sealed class BattleState
             if (card != null && card.Retain)
                 continue;                     // 保留：跨回合留在手里
 
+            int occurrence = OccurrenceAt(st.Hand, i);
             st.Hand.RemoveAt(i);
 
             // 虚无：进消耗堆，永不洗回
-            int ethereal = st.Ethereal.IndexOf(id);
-            if (ethereal >= 0)
+            if (TakeEtherealOccurrence(st, id, occurrence))
             {
-                st.Ethereal.RemoveAt(ethereal);
                 st.Exhaust.Add(id);
                 st.EtherealExhausted.Add(id);
                 ExhaustedThisTurn.Add(id);
@@ -1462,6 +1886,9 @@ public sealed class BattleState
 
             st.Discard.Add(id);
             DiscardedThisTurn.Add(id);
+
+            if (TakeOccurrence(st.ProducedExhaust, id, occurrence))
+                st.ProducedExhaustDiscarded.Add(id);
 
             // 导弹卡进弃牌堆后就不再跟发射井绑定了
             int pd = st.Produced.FindIndex(p => p.Card == id);

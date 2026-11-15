@@ -67,6 +67,9 @@ public partial class MapSelect : Control
         var right = new VBoxContainer { CustomMinimumSize = new Vector2(320, 0) };
         row.AddChild(right);
 
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--map-list") >= 0)
+            GD.Print("[Maps] " + string.Join(",", GameDatabase.Maps.Keys));
+
         _mapOption = new OptionButton();
         foreach (MapDef m in GameDatabase.Maps.Values)
         {

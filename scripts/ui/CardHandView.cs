@@ -26,6 +26,10 @@ public partial class CardHandView : Control
     public event Action<int, int> Reordered;
 
     private const float Spacing = 96f;
+    private readonly System.Collections.Generic.List<PanelContainer> _orderBadges = new();
+    private bool _orderHintEnabled;
+    private bool _orderHintReady = true;
+
     private const float AnglePerCard = 5.5f;
     private const float EdgeDrop = 4f;
     private const float HoverLift = 58f;
@@ -52,6 +56,10 @@ public partial class CardHandView : Control
 
     public void SetSelected(int index)
     {
+        // 选中另一张手牌时也给一声（和悬停同源，稍响一点）
+        if (index >= 0 && index != _selected && index < _cards.Count)
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/cardBattle_hover.ogg", -6f);
+
         _selected = index;
         for (int i = 0; i < _cards.Count; i++)
             _cards[i].SetChosen(i == index);
@@ -67,6 +75,100 @@ public partial class CardHandView : Control
         return true;
     }
 
+    /// <summary>是否显示「手牌顺序」编号（对应设置里的开关）。</summary>
+    public void SetOrderHintEnabled(bool enabled)
+    {
+        if (_orderHintEnabled == enabled)
+            return;
+
+        _orderHintEnabled = enabled;
+
+        foreach (PanelContainer badge in _orderBadges)
+            badge.Visible = enabled && _orderHintReady;
+
+        if (enabled)
+            Relayout(false);
+    }
+
+    /// <summary>抽牌/产卡动画播完之前先把编号藏起来。</summary>
+    public void SetOrderHintReady(bool ready)
+    {
+        _orderHintReady = ready;
+
+        foreach (PanelContainer badge in _orderBadges)
+            badge.Visible = _orderHintEnabled && ready;
+    }
+
+    /// <summary>保证编号牌数量与手牌一致（多删少补）。</summary>
+    private void SyncOrderBadges()
+    {
+        while (_orderBadges.Count > _cards.Count)
+        {
+            PanelContainer extra = _orderBadges[^1];
+            _orderBadges.RemoveAt(_orderBadges.Count - 1);
+            RemoveChild(extra);
+            extra.QueueFree();
+        }
+
+        while (_orderBadges.Count < _cards.Count)
+        {
+            var badge = new PanelContainer
+            {
+                MouseFilter = MouseFilterEnum.Ignore,
+                ZIndex = 20,
+                Visible = _orderHintEnabled && _orderHintReady,
+            };
+
+            var style = new StyleBoxFlat
+            {
+                BgColor = new Color("F4E7C6"),
+                BorderColor = new Color("3B2E16"),
+                BorderWidthLeft = 2, BorderWidthTop = 2,
+                BorderWidthRight = 2, BorderWidthBottom = 2,
+                CornerRadiusTopLeft = 11, CornerRadiusTopRight = 11,
+                CornerRadiusBottomLeft = 11, CornerRadiusBottomRight = 11,
+                ContentMarginLeft = 0, ContentMarginRight = 0,
+                ContentMarginTop = 0, ContentMarginBottom = 0,
+            };
+            badge.AddThemeStyleboxOverride("panel", style);
+            badge.CustomMinimumSize = new Vector2(24, 24);
+
+            var label = new Label
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                MouseFilter = MouseFilterEnum.Ignore,
+            };
+            label.AddThemeFontSizeOverride("font_size", 15);
+            label.AddThemeColorOverride("font_color", new Color("3B2E16"));
+            badge.AddChild(label);
+
+            AddChild(badge);
+            _orderBadges.Add(badge);
+        }
+    }
+
+    /// <summary>把手牌编号摆到每张卡的正上方。</summary>
+    private void LayoutOrderBadges()
+    {
+        for (int i = 0; i < _orderBadges.Count && i < _cards.Count; i++)
+        {
+            PanelContainer badge = _orderBadges[i];
+            badge.Visible = _orderHintEnabled && _orderHintReady && i < _cards.Count;
+
+            if (!badge.Visible)
+                continue;
+
+            if (badge.GetChildCount() > 0 && badge.GetChild(0) is Label label)
+                label.Text = (i + 1).ToString();
+
+            CardView card = _cards[i];
+            Vector2 size = badge.GetCombinedMinimumSize();
+            Vector2 center = card.Position + card.Size * 0.5f;
+            badge.Position = new Vector2(center.X - size.X * 0.5f, card.Position.Y - size.Y - 4f);
+            badge.MoveToFront();
+        }
+    }
     /// <summary>「选一张弃掉」阶段的提示：整排手牌轻轻抬一下再落回。</summary>
     public void PulseHint()
     {
@@ -175,11 +277,14 @@ public partial class CardHandView : Control
                 // 注意要恢复可见性：打出的那张可能被 SetCardVisible(false) 藏起来了，
                 // 复用它当下一张卡的话会“凭空少一张”。
                 card.Visible = true;
+                card.Modulate = Colors.White;
+                card.Scale = Vector2.One;
                 card.Setup(def, i, _state.Player.Gold >= def.Cost);
             }
 
             next.Add(card);
             card.SetEthereal(_state.IsEtherealAt(i));
+        card.SetProducedExhaust(_state.IsProducedExhaustAt(i));
         }
 
         // 没被复用的旧卡（确实离开了手牌）销毁
@@ -234,11 +339,24 @@ public partial class CardHandView : Control
                 OnDragEnded(idx, release, start);
         };
 
+        // 右键放大检视
+        card.InspectRequested += idx =>
+        {
+            if (idx >= 0 && idx < _cards.Count)
+                CardInspectOverlay.Show(_cards[idx].Def, _state != null && _state.IsEtherealAt(idx));
+        };
+
         card.MouseEntered += () =>
         {
             int idx = _cards.IndexOf(card);
-            if (idx >= 0)
-                SetHover(idx);
+            if (idx < 0)
+                return;
+
+            // 悬停到一张新手牌：轻响一下
+            if (_hovered != idx)
+                AudioManager.PlaySfx("res://gameAsset/audios/ui/cardBattle_hover.ogg", -8f);
+
+            SetHover(idx);
         };
 
         card.MouseExited += () =>
@@ -326,6 +444,8 @@ public partial class CardHandView : Control
     public void Relayout(bool animate)
     {
         int n = _cards.Count;
+        SyncOrderBadges();
+
         if (n == 0)
             return;
 
@@ -367,11 +487,37 @@ public partial class CardHandView : Control
 
     private void Animate(CardView card, int index, Vector2 pos, float rot, float scale, bool animate)
     {
+        PanelContainer badge = index >= 0 && index < _orderBadges.Count ? _orderBadges[index] : null;
+        Vector2 badgePos = default;
+        if (badge != null)
+        {
+            if (badge.GetChildCount() > 0 && badge.GetChild(0) is Label lbl)
+                lbl.Text = (index + 1).ToString();
+
+            badge.Visible = _orderHintEnabled && _orderHintReady;
+            Vector2 bsize = badge.GetCombinedMinimumSize();
+
+            // 卡牌是绕轴心旋转的，编号要贴「旋转后的上边中点」，否则会越往右越偏
+            Vector2 half = card.Size * 0.5f;
+            Vector2 pivot = card.PivotOffset;
+            Vector2 topLocal = (new Vector2(half.X, 0f) - pivot).Rotated(rot) * scale;
+            Vector2 top = pos + pivot + topLocal;
+
+            badgePos = new Vector2(top.X - bsize.X * 0.5f, top.Y - bsize.Y - 4f);
+        }
+
         if (!animate)
         {
             card.Position = pos;
             card.Rotation = rot;
             card.Scale = Vector2.One * scale;
+
+            if (badge != null)
+            {
+                badge.Position = badgePos;
+                badge.MoveToFront();
+            }
+
             return;
         }
 
@@ -386,6 +532,14 @@ public partial class CardHandView : Control
             .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
         tw.TweenProperty(card, "scale", Vector2.One * scale, 0.16f)
             .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+
+        if (badge != null)
+        {
+            tw.TweenProperty(badge, "position", badgePos, 0.16f)
+                .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+            badge.MoveToFront();
+        }
+
         _tweens[index] = tw;
     }
 

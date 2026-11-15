@@ -1,0 +1,47 @@
+{
+  "id": "map_02",
+  "nameZh": "全地形试验场",
+  "nameEn": "All-Terrain Grounds",
+  "width": 11,
+  "height": 9,
+  "startGold": 350,
+  "terrainRows": [
+    "ggddssrnggw",
+    "ggddssrrggw",
+    "gggggsssggg",
+    "srgggwwggsn",
+    "sddggwwgggg",
+    "sdddgggggnn",
+    "ggddggssrrg",
+    "gggggsssrrg",
+    "dggggsssggg"
+  ],
+  "playerHq": [-1, 4],
+  "enemyHq": [7, 4],
+  "playerDeck": [
+    "unit_infantry",
+    "unit_infantry",
+    "unit_infantry",
+    "unit_tank",
+    "unit_tank",
+    "unit_missile_launcher",
+    "unit_helicopter",
+    "unit_fighter",
+    "magic_airstrike",
+    "magic_repair",
+    "magic_boost"
+  ],
+  "enemyDeck": [
+    "unit_infantry",
+    "unit_infantry",
+    "unit_infantry",
+    "unit_tank",
+    "unit_tank",
+    "unit_missile_launcher",
+    "unit_helicopter",
+    "unit_fighter",
+    "magic_missile",
+    "magic_repair",
+    "magic_boost"
+  ]
+}

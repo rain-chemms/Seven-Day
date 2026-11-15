@@ -24,6 +24,7 @@ public partial class BattleHud : CanvasLayer
     public event Action UpgradeClicked;
     public event Action RepairClicked;
     public event Action DemolishClicked;
+    public event Action ProduceToggled;
     public event Action ExtraFireClicked;
 
     /// <summary>鼠标悬停建造项 / 升级按钮时触发，用于预览下一级外观。</summary>
@@ -55,6 +56,18 @@ public partial class BattleHud : CanvasLayer
     private Button _endTurnButton;
     private PanelContainer _infoPanel;
     private Button _extraFireBtn;
+    private CanvasLayer _spawnLayer;
+    private PanelContainer _spawnPanel;
+    private Label _spawnTitle;
+    private GridContainer _spawnList;
+    private string _spawnSignature = "";
+    private PanelContainer _terrainPanel;
+    private TextureRect _terrainImage;
+    private Label _terrainTitle;
+    private Label _terrainBody;
+    private Button _produceBtn;
+    private Label _produceName;
+    private Label _produceState;
     private Button _demolishBtn;
     private Label _demolishName;
     private Label _demolishGold;
@@ -155,6 +168,8 @@ public partial class BattleHud : CanvasLayer
         _infoPanel.OffsetTop = 72;
         _infoPanel.OffsetRight = -16;
         _root.AddChild(_infoPanel);
+        BuildTerrainPanel();
+        BuildSpawnPanel();
 
         var infoBox = new VBoxContainer();
         infoBox.AddThemeConstantOverride("separation", 8);
@@ -206,6 +221,36 @@ public partial class BattleHud : CanvasLayer
         infoButtons.AddChild(_repairBtn);
 
         // 「拆除」按钮：文字拆成两个 Label —— 名称保持墨色，金额用亮金色
+        // 产卡开关：只有会产卡的建筑才显示；「产卡：」保持墨色，只有「开/关」上色
+        _produceBtn = NewButton("");
+        _produceBtn.CustomMinimumSize = new Vector2(140, 44);   // 给「产卡：开/关」留足宽度
+        _produceBtn.ToggleMode = true;
+        _produceBtn.Pressed += () => ProduceToggled?.Invoke();
+
+        var produceRow = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+        produceRow.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        produceRow.Alignment = BoxContainer.AlignmentMode.Center;
+        produceRow.AddThemeConstantOverride("separation", 2);
+        _produceBtn.AddChild(produceRow);
+
+        _produceName = new Label
+        {
+            Text = Loc.T("info.produce_name"),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        produceRow.AddChild(_produceName);
+
+        _produceState = new Label
+        {
+            Text = "",
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        produceRow.AddChild(_produceState);
+
+        infoButtons.AddChild(_produceBtn);
+
         _demolishBtn = NewButton("");
         _demolishBtn.CustomMinimumSize = new Vector2(170, 44);   // 给「拆除 +金额」留足宽度
         _demolishBtn.Pressed += () => DemolishClicked?.Invoke();
@@ -422,6 +467,11 @@ public partial class BattleHud : CanvasLayer
     public void Setup(BattleState state)
     {
         _state = state;
+
+        // 手牌顺序编号（设置里的开关，默认开）
+        if (_hand != null)
+            _hand.SetOrderHintEnabled(Settings.GetBool("video", "hand_order", true));
+
         RefreshAll();
     }
 
@@ -464,8 +514,10 @@ public partial class BattleHud : CanvasLayer
 
     /// <summary>打开某个牌堆的查看器。</summary>
     public void ShowPile(string title, System.Collections.Generic.IEnumerable<string> cards,
-                         System.Collections.Generic.IReadOnlyList<int> etherealIndices = null) =>
-        _pileViewer.Open(title, cards, etherealIndices);
+                         System.Collections.Generic.IReadOnlyList<int> etherealIndices = null,
+                         System.Collections.Generic.IReadOnlyList<int> producedExhaustIndices = null,
+                         System.Action<int> onPick = null) =>
+        _pileViewer.Open(title, cards, etherealIndices, producedExhaustIndices, onPick);
 
     public void ClosePile() => _pileViewer.Close();
 
@@ -484,46 +536,135 @@ public partial class BattleHud : CanvasLayer
     public void PlayCardToss(CardDef def, Vector2 from, Vector2 to,
                              float duration = 0.42f, float endScale = 0.3f,
                              float arc = 120f, bool faceDown = false,
-                             System.Action onDone = null)
+                             System.Action onDone = null, float startScale = 0.55f)
     {
         var fx = new CardTossEffect();
         _effects.AddChild(fx);
-        fx.Play(def, from, to, duration, endScale, arc, faceDown, onDone);
+        fx.Play(def, from, to, duration, endScale, arc, faceDown, onDone, startScale);
     }
 
     /// <summary>抽牌动画：从抽牌堆飞到手上。</summary>
-    public void PlayDrawAnimation(int count)
-    {
-        if (count <= 0)
-            return;
+    public void PlayDrawAnimation(int count) => PlayDrawAnimation(null, count);
 
+    /// <summary>按手牌下标播抽牌动画（只动画真正从牌库抽到的那些）。</summary>
+    public void PlayDrawAnimation(System.Collections.Generic.IReadOnlyList<int> indices, int fallbackCount = 0)
+    {
         Vector2 from = PileCenter(PileView.PileKind.Deck);
         int total = _hand.Cards.Count;
-        int first = Mathf.Max(0, total - count);
 
-        for (int i = first; i < total; i++)
+        var list = new System.Collections.Generic.List<int>();
+        if (indices != null)
+            list.AddRange(indices);
+        else
+        {
+            int first = Mathf.Max(0, total - fallbackCount);
+            for (int i = first; i < total; i++)
+                list.Add(i);
+        }
+
+        if (list.Count == 0)
+            return;
+
+        int drawn = 0;
+        foreach (int i in list)
         {
             int index = i;
+            if (index < 0 || index >= total)
+                continue;
+
             if (!_hand.TryGetCardTransform(index, out Rect2 rect, out _))
                 continue;
 
             _hand.SetCardVisible(index, false);
 
-            float delay = (i - first) * 0.07f;
+            float delay = drawn++ * 0.07f;
             var timer = GetTree().CreateTimer(delay);
             timer.Timeout += () =>
             {
-                CardDef def = GameDatabase.Card(_state.Player.Hand.Count > index
-                    ? _state.Player.Hand[index] : null);
+                // 每张牌起飞的瞬间各播一次抽牌音效
+                AudioManager.PlayCardDrawn();
+
+                string handId = _state.Player.Hand.Count > index ? _state.Player.Hand[index] : null;
+                CardDef def = string.IsNullOrEmpty(handId) ? null : GameDatabase.Card(handId);
                 PlayCardToss(def, from, rect.Position + rect.Size * 0.5f, 0.34f, 0.72f, 90f,
                     faceDown: true, onDone: () => _hand.SetCardVisible(index, true));
             };
         }
     }
+    /// <summary>
+    /// 建筑产卡动画：这张手牌本身从建筑位置「长大」飞到自己现在的位置。
+    /// 直接用真实卡牌移动，飞行途中不会出现第二张同名牌。
+    /// </summary>
+    /// <summary>隐藏手牌编号（抽牌/产卡动画开始时）。</summary>
+    public void HideOrderHints() => _hand.SetOrderHintReady(false);
 
-    /// <summary>打出的卡飞向弃牌堆/消耗堆。</summary>
-    public void PlayToPileAnimation(CardDef def, Rect2 cardRect, bool exhaust)
+    /// <summary>等入场动画播完再显示手牌编号。</summary>
+    public void ShowOrderHintsAfter(float seconds)
     {
+        if (seconds <= 0f)
+        {
+            _hand.SetOrderHintReady(true);
+            return;
+        }
+
+        SceneTreeTimer timer = GetTree().CreateTimer(seconds);
+        timer.Timeout += () =>
+        {
+            _hand.SetOrderHintReady(true);
+            if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+                GD.Print($"[Speed] 编号出现 t={Time.GetTicksMsec()}");
+        };
+    }
+
+    public void PlayProduceAnimation(CardDef def, Vector2 fromScreen, int handIndex, float delay = 0f)
+    {
+        if (handIndex < 0 || handIndex >= _hand.Cards.Count)
+            return;
+
+        CardView card = _hand.Cards[handIndex];
+
+        SceneTreeTimer timer = GetTree().CreateTimer(Mathf.Max(0f, delay));
+        timer.Timeout += () =>
+        {
+            if (!IsInstanceValid(card))
+                return;
+
+            Vector2 to = card.Position + card.Size * 0.5f;   // 手牌里的最终位置（中心）
+            float finalRotation = card.Rotation;
+            Vector2 half = card.Size * 0.5f;
+
+            card.PivotOffset = half;
+            card.Position = fromScreen - half;
+            card.Rotation = 0f;
+            card.Scale = Vector2.Zero;
+            card.Modulate = new Color(1f, 1f, 1f, 0f);   // 透明度 0 → 1
+            card.Visible = true;
+
+            Vector2 from = fromScreen;
+            Vector2 dir = (to - from).Normalized();
+            Vector2 ctrl = (from + to) * 0.5f + new Vector2(-dir.Y, dir.X) * 120f;
+
+            Tween tw = CreateTween().SetParallel(true);
+            tw.TweenMethod(Callable.From<float>(k =>
+            {
+                if (!IsInstanceValid(card))
+                    return;
+
+                float u = 1f - k;
+                card.Position = u * u * from + 2f * u * k * ctrl + k * k * to - half;
+                card.Scale = Vector2.One * Mathf.Lerp(0f, 1f, Mathf.Min(1f, k * 1.15f));
+                card.Modulate = new Color(1f, 1f, 1f, Mathf.Min(1f, k * 1.8f));   // 前 55% 就完全不透明
+            }), 0f, 1f, 0.5f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+
+            tw.TweenProperty(card, "rotation", finalRotation, 0.5f);
+        };
+    }
+    /// <summary>打出的卡飞向弃牌堆/消耗堆。</summary>
+    public void PlayToPileAnimation(CardDef def, Rect2 cardRect, bool exhaust, bool playSound = true)
+    {
+        if (playSound)
+            AudioManager.PlayCardDiscarded();
+
         Vector2 from = cardRect.Position + cardRect.Size * 0.5f;
         Vector2 to = PileCenter(exhaust ? PileView.PileKind.Exhaust : PileView.PileKind.Discard);
         PlayCardToss(def, from, to, 0.4f, 0.22f, 60f,
@@ -533,6 +674,8 @@ public partial class BattleHud : CanvasLayer
     /// <summary>洗回牌库：几张卡从弃牌堆飞向抽牌堆。</summary>
     public void PlayReshuffleAnimation(int count = 4)
     {
+        AudioManager.PlayCardShuffled();
+
         Vector2 from = PileCenter(PileView.PileKind.Discard);
         Vector2 to = PileCenter(PileView.PileKind.Deck);
 
@@ -568,6 +711,407 @@ public partial class BattleHud : CanvasLayer
         _hand.SetSelected(_selectedCard);
     }
 
+    // ─────────────────────────── 建筑出兵面板 ───────────────────────────
+
+    public event Action<string> SpawnClicked;
+
+    /// <summary>
+    /// 显示「出兵」面板（右下角）：每个可用兵种一张带预览图的按钮。
+    /// options = (卡牌 id, 名称, 价格, 预览图路径, 是否可选/不可选原因)。
+    /// </summary>
+    public void ShowSpawnPanel(string title,
+                               System.Collections.Generic.List<(string CardId, string Name, int Cost, string Icon, bool Ready, string Tip)> options)
+    {
+        if (_spawnPanel == null)
+            return;
+
+        _spawnTitle.Text = title;
+
+        // 选项没变化就只显示，不重建（避免一次点击里刷新两次、按钮叠在一起）
+        string signature = title + "|" +
+                           string.Join(",", options.ConvertAll(o => $"{o.CardId}:{o.Cost}:{o.Ready}"));
+        if (signature == _spawnSignature && _spawnList.GetChildCount() > 0)
+        {
+            _spawnPanel.Visible = true;
+            Callable.From(PlaceSpawnPanel).CallDeferred();
+            return;
+        }
+
+        _spawnSignature = signature;
+
+        // 立刻把旧按钮从树上摘掉：QueueFree 是延迟的，不摘掉会在同一帧里叠在
+        // 新按钮上面吞掉点击 —— 表现就是「出兵选项点不动」
+        foreach (Node child in _spawnList.GetChildren())
+        {
+            _spawnList.RemoveChild(child);
+            child.QueueFree();
+        }
+
+        _spawnButtonTweens.Clear();
+
+        foreach ((string cardId, string name, int cost, string icon, bool ready, string tip) in options)
+        {
+            var button = new Button
+            {
+                CustomMinimumSize = new Vector2(92, 108),
+                Disabled = !ready,
+                TooltipText = tip,
+            };
+            button.SetMeta("juice", true);
+
+            var box = new VBoxContainer
+            {
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                Alignment = BoxContainer.AlignmentMode.Center,
+            };
+            box.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+            box.OffsetTop = 12;      // 预览图离按钮上沿留点空隙
+            box.OffsetBottom = -6;
+            button.AddChild(box);
+
+            var art = new TextureRect
+            {
+                CustomMinimumSize = new Vector2(0, 52),
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                Texture = ResourceLoader.Exists(icon) ? GD.Load<Texture2D>(icon) : null,
+            };
+            box.AddChild(art);
+
+            var label = new Label
+            {
+                Text = name,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+            };
+            label.AddThemeFontSizeOverride("font_size", 14);
+            label.AddThemeColorOverride("font_color", UiTheme.Ink);
+            box.AddChild(label);
+
+            var price = new Label
+            {
+                Text = $"{cost}$",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+            };
+            price.AddThemeFontSizeOverride("font_size", 14);
+            price.AddThemeColorOverride("font_color", new Color("C08A10"));   // 价格始终金黄，禁用状态交给按钮本身
+            box.AddChild(price);
+
+            // 悬停放大 / 按下回缩 / 松开回弹（ScrollContainer 会裁剪，幅度控制小一点）
+            button.MouseEntered += () => AnimateSpawnButton(button, 1.03f, 0.10f, Tween.TransitionType.Back);
+            button.MouseExited += () => AnimateSpawnButton(button, 1f, 0.12f, Tween.TransitionType.Cubic);
+            button.ButtonDown += () => AnimateSpawnButton(button, 0.94f, 0.06f, Tween.TransitionType.Sine);
+            button.ButtonUp += () => AnimateSpawnButton(button, 1.03f, 0.14f, Tween.TransitionType.Back);
+
+            // 音效：悬停轻响 + 点击确认（与其他 UI 按钮一致）
+            button.MouseEntered += () =>
+                AudioManager.PlaySfx("res://gameAsset/audios/ui/button_hover.ogg", -7f);
+
+            string id = cardId;
+            button.Pressed += () =>
+            {
+                AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_enterOrEnable.ogg", -3f);
+                SpawnClicked?.Invoke(id);
+            };
+            _spawnList.AddChild(button);
+        }
+
+        _spawnPanel.Visible = true;
+        SetSpawnBlocking(true);
+        Callable.From(PlaceSpawnPanel).CallDeferred();   // 等一帧布局后再贴位置
+    }
+
+    public bool SpawnVisible => _spawnPanel != null && _spawnPanel.Visible;
+
+    /// <summary>当前出兵按钮数量（调试用）。</summary>
+    public int SpawnButtonCount() => _spawnList?.GetChildCount() ?? 0;
+
+    /// <summary>第 index 个出兵按钮的屏幕矩形（调试用）。</summary>
+    public Rect2 SpawnButtonRect(int index)
+    {
+        if (_spawnList == null || index < 0 || index >= _spawnList.GetChildCount())
+            return new Rect2();
+
+        return (_spawnList.GetChild(index) as Control)?.GetGlobalRect() ?? new Rect2();
+    }
+
+    /// <summary>出兵面板的屏幕矩形（调试用）。</summary>
+    public Rect2 SpawnPanelRect() => _spawnPanel == null ? new Rect2() : _spawnPanel.GetGlobalRect();
+
+    /// <summary>出兵面板在屏幕上的中心点（调试用）。</summary>
+    public Vector2 SpawnPanelGlobalCenter() =>
+        _spawnPanel == null ? Vector2.Zero : _spawnPanel.GlobalPosition + _spawnPanel.Size * 0.5f;
+
+    /// <summary>把出兵面板贴到信息面板正下方（两者挨在一起）。</summary>
+    private void PlaceSpawnPanel()
+    {
+        if (_spawnPanel == null || _infoPanel == null)
+            return;
+
+        const float SpawnPanelHeight = 192f;
+        // 信息面板是「顶部右对齐」锚点，Size.Y 会被拉伸，用内容最小高度更准
+        float top = _infoPanel.Position.Y + _infoPanel.GetCombinedMinimumSize().Y + 8f;
+
+        // 屏幕放不下就贴到底部上方，别跑到屏幕外
+        float maxTop = GetViewport().GetVisibleRect().Size.Y - SpawnPanelHeight - 16f;
+        top = Mathf.Clamp(top, 72f, Mathf.Max(72f, maxTop));
+
+        _spawnPanel.OffsetTop = top;
+        _spawnPanel.OffsetBottom = top + SpawnPanelHeight;
+    }
+
+    public void HideSpawnPanel()
+    {
+        if (_spawnPanel != null)
+            _spawnPanel.Visible = false;
+
+        SetSpawnBlocking(false);
+    }
+
+    /// <summary>出兵面板打开时，把下面的手牌 / 牌堆控件设为不吃鼠标，避免点击穿透。</summary>
+    private void SetSpawnBlocking(bool blocked)
+    {
+        var filter = blocked ? Control.MouseFilterEnum.Ignore : Control.MouseFilterEnum.Pass;
+
+        if (_hand != null)
+            SetTreeMouseFilter(_hand, filter);
+
+        if (_deckPile != null)
+            SetTreeMouseFilter(_deckPile, filter);
+
+        if (_discardPile != null)
+            SetTreeMouseFilter(_discardPile, filter);
+
+        if (_exhaustPile != null)
+            SetTreeMouseFilter(_exhaustPile, filter);
+    }
+
+    private readonly System.Collections.Generic.Dictionary<Control, Tween> _spawnButtonTweens = new();
+
+    /// <summary>出兵按钮的缩放反馈（轴心在按钮中心）。</summary>
+    private void AnimateSpawnButton(Control button, float scale, float duration, Tween.TransitionType trans)
+    {
+        if (button == null || !IsInstanceValid(button) || button.Size.X <= 1f)
+            return;
+
+        if (_spawnButtonTweens.TryGetValue(button, out Tween old) && old != null && old.IsValid())
+            old.Kill();
+
+        button.PivotOffset = button.Size * 0.5f;
+
+        Tween tween = CreateTween();
+        _spawnButtonTweens[button] = tween;
+        tween.TweenProperty(button, "scale", Vector2.One * scale, duration)
+            .SetTrans(trans).SetEase(Tween.EaseType.Out);
+    }
+
+    private static void SetTreeMouseFilter(Node node, Control.MouseFilterEnum filter)
+    {
+        if (node is Control c)
+            c.MouseFilter = filter;
+
+        foreach (Node child in node.GetChildren())
+            SetTreeMouseFilter(child, filter);
+    }
+
+    private void BuildSpawnPanel()
+    {
+        _spawnPanel = new PanelContainer
+        {
+            Name = "SpawnPanel",
+            Visible = false,
+            CustomMinimumSize = new Vector2(320, 0),
+            ZIndex = 40,          // 盖住右下角的牌堆图标 / 手牌
+            MouseFilter = Control.MouseFilterEnum.Stop,   // 挡住下面的地图/手牌点击
+        };
+        _spawnPanel.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+        _spawnPanel.GuiInput += e =>
+        {
+            if (e is InputEventMouseButton)
+                _spawnPanel.AcceptEvent();
+        };
+        // 挂在信息面板正下方（位置在 ShowSpawnPanel 里按信息面板高度动态计算）
+        _spawnPanel.OffsetLeft = -346;
+        _spawnPanel.OffsetTop = 320;
+        _spawnPanel.OffsetRight = -16;
+        _spawnPanel.OffsetBottom = 496;
+        _root.AddChild(_spawnPanel);
+
+        var box = new VBoxContainer();
+        box.AddThemeConstantOverride("separation", 6);
+        _spawnPanel.AddChild(box);
+
+        _spawnTitle = new Label { Text = Loc.T("spawn.title") };
+        _spawnTitle.AddThemeFontSizeOverride("font_size", 18);
+        _spawnTitle.AddThemeColorOverride("font_color", UiTheme.Ink);
+        box.AddChild(_spawnTitle);
+
+        // 一行 3 个，多了纵向滚动
+        var scroll = new ScrollContainer
+        {
+            VerticalScrollMode = ScrollContainer.ScrollMode.Auto,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+        };
+        box.AddChild(scroll);
+
+        _spawnList = new GridContainer
+        {
+            Columns = 3,
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        _spawnList.AddThemeConstantOverride("h_separation", 4);
+        _spawnList.AddThemeConstantOverride("v_separation", 4);
+        scroll.AddChild(_spawnList);
+    }
+    // ─────────────────────────── 收入飘字 ───────────────────────────
+
+    /// <summary>在某建筑上方弹出「+N$」金色飘字：缩放 0→1 同时淡入，停留后 1→0 淡出。</summary>
+    public void ShowIncomePopup(Vector2 screenPos, int amount, float delay = 0f, float hold = 0.9f)
+    {
+        if (_root == null || amount <= 0)
+            return;
+
+        var holder = new Control
+        {
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            Size = new Vector2(190, 48),
+            PivotOffset = new Vector2(95, 24),
+            Position = screenPos - new Vector2(95, 24),
+        };
+        _root.AddChild(holder);
+
+        var label = new Label
+        {
+            Text = $"+{amount}",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        label.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        label.AddThemeFontSizeOverride("font_size", 24);
+        label.AddThemeColorOverride("font_color", new Color("FFD54A"));
+        label.AddThemeConstantOverride("outline_size", 5);
+        label.AddThemeColorOverride("font_outline_color", new Color("3B2E16"));
+        holder.AddChild(label);
+
+        holder.Scale = Vector2.Zero;
+        holder.Modulate = new Color(1f, 1f, 1f, 0f);
+
+        Tween tween = CreateTween();
+        if (delay > 0f)
+            tween.TweenInterval(delay);
+
+        // 冒出：缩放 0→1 与淡入同时进行
+        tween.TweenProperty(holder, "scale", Vector2.One, 0.18f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        tween.Parallel().TweenProperty(holder, "modulate:a", 1f, 0.16f);
+
+        // 停留
+        tween.TweenInterval(hold);
+
+        // 消失：缩放 1→0 与淡出同时进行
+        tween.TweenProperty(holder, "scale", Vector2.Zero, 0.35f)
+            .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+        tween.Parallel().TweenProperty(holder, "modulate:a", 0f, 0.35f);
+
+        tween.TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(holder))
+                holder.QueueFree();
+        }));
+    }
+    // ─────────────────────────── 地形检视 ───────────────────────────
+
+    /// <summary>左键点中任意格子时显示：格子预览图 + 地形效果描述（左上角）。</summary>
+    public void ShowTerrain(TerrainType terrain)
+    {
+        if (_terrainPanel == null)
+            return;
+
+        _terrainPanel.Visible = true;
+        _terrainTitle.Text = TerrainName(terrain);
+        _terrainBody.Text = TerrainDesc(terrain);
+
+        string path = "res://gameAsset/textures/hexTilePreview/preview_" + TerrainKey(terrain) + ".png";
+        _terrainImage.Texture = ResourceLoader.Exists(path) ? GD.Load<Texture2D>(path) : null;
+    }
+
+    public void HideTerrain()
+    {
+        if (_terrainPanel != null)
+            _terrainPanel.Visible = false;
+    }
+
+    public bool TerrainVisible => _terrainPanel != null && _terrainPanel.Visible;
+
+    private static string TerrainKey(TerrainType t) => t switch
+    {
+        TerrainType.Grass => "grass",
+        TerrainType.Sand => "sand",
+        TerrainType.Rock => "rock",
+        TerrainType.Snow => "snow",
+        TerrainType.Water => "water",
+        _ => "dirt",
+    };
+
+    private static string TerrainName(TerrainType t) => Loc.T("terrain." + TerrainKey(t));
+
+    private static string TerrainDesc(TerrainType t) => Loc.T("terrain." + TerrainKey(t) + ".desc");
+
+    private void BuildTerrainPanel()
+    {
+        _terrainPanel = new PanelContainer
+        {
+            Name = "TerrainPanel",
+            Visible = false,
+            CustomMinimumSize = new Vector2(238, 0),
+        };
+        _terrainPanel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.TopLeft);
+        _terrainPanel.OffsetLeft = 16;
+        _terrainPanel.OffsetTop = 78;
+        _terrainPanel.OffsetRight = 254;
+        _root.AddChild(_terrainPanel);
+
+        var box = new VBoxContainer();
+        box.AddThemeConstantOverride("separation", 6);
+        _terrainPanel.AddChild(box);
+
+        _terrainTitle = new Label { Text = "" };
+        _terrainTitle.AddThemeFontSizeOverride("font_size", 20);
+        _terrainTitle.AddThemeColorOverride("font_color", UiTheme.Ink);
+        box.AddChild(_terrainTitle);
+
+        _terrainImage = new TextureRect
+        {
+            CustomMinimumSize = new Vector2(0, 150),
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        box.AddChild(_terrainImage);
+
+        _terrainBody = new Label
+        {
+            Text = "",
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _terrainBody.AddThemeFontSizeOverride("font_size", 15);
+        _terrainBody.AddThemeColorOverride("font_color", UiTheme.Ink);
+        box.AddChild(_terrainBody);
+
+        var hint = new Label
+        {
+            Text = Loc.T("terrain.hint"),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        hint.AddThemeFontSizeOverride("font_size", 13);
+        hint.AddThemeColorOverride("font_color", new Color(UiTheme.Grey, 0.9f));
+        box.AddChild(hint);
+    }
     /// <summary>进场遮罩：挡住从上一场景带过来的按下/松开，0.36s 内淡出。</summary>
     public void ShowTransitionMask()
     {
@@ -778,10 +1322,24 @@ public partial class BattleHud : CanvasLayer
     /// <summary>调试：血条当前显示值 / 残影值。</summary>
     public string DebugHealth(bool building, int id) => _bars?.DebugShown(building, id) ?? "n/a";
 
+    /// <summary>调试：手牌节点数与可见数。</summary>
+    public int HandCardCount() => _hand.Cards.Count;
+
+    public int VisibleHandCards()
+    {
+        int n = 0;
+        foreach (CardView c in _hand.Cards)
+            if (c.Visible)
+                n++;
+        return n;
+    }
+    /// <summary>调试：当前产卡开关按钮的文案。</summary>
+    public string DebugProduceText() => (_produceName?.Text ?? "") + (_produceState?.Text ?? "");
+
     public void ShowInfo(string title, string body, string imagePath = null, bool showButtons = false,
         int extraFireCost = 0, bool extraFireReady = false, bool showDemolish = true,
         bool canUpgrade = true, int repairCost = 0, bool repairAffordable = true,
-        int demolishRefund = 0)
+        int demolishRefund = 0, bool showProduce = false, bool produceOn = true)
     {
         _infoPanel.Visible = true;
         _infoTitle.Text = title;
@@ -829,6 +1387,22 @@ public partial class BattleHud : CanvasLayer
             {
                 _repairBtn.Text = $"维修 {repairCost}$";
                 _repairBtn.Disabled = !repairAffordable;
+            }
+        }
+
+        if (_produceBtn != null)
+        {
+            _produceBtn.Visible = showButtons && showProduce;
+            _produceBtn.ButtonPressed = produceOn;
+
+            if (_produceName != null)
+                _produceName.Text = Loc.T("info.produce_name");
+
+            if (_produceState != null)
+            {
+                _produceState.Text = produceOn ? Loc.T("info.produce_on_word") : Loc.T("info.produce_off_word");
+                _produceState.AddThemeColorOverride("font_color",
+                    produceOn ? new Color("2E7D32") : new Color("C0392B"));
             }
         }
 

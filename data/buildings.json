@@ -1,6 +1,8 @@
 [
   {
     "id": "hq",
+    "descZh": "核心建筑，被摧毁即战败；每回合产金，并自带射程 2 的对空/对地火力。",
+    "descEn": "Core building: losing it means defeat. Generates gold and has range-2 anti-air/anti-ground fire.",
     "nameZh": "指挥部",
     "nameEn": "HQ",
     "hp": [1000, 1200, 1500],
@@ -16,6 +18,8 @@
   },
   {
     "id": "city",
+    "descZh": "经济建筑，每回合产出金币，没有攻击能力。",
+    "descEn": "Economy building: generates gold every turn, cannot attack.",
     "nameZh": "城市",
     "nameEn": "City",
     "hp": [200, 250, 300],
@@ -31,6 +35,13 @@
   },
   {
     "id": "barracks",
+    "spawnByLevel": [
+      ["unit_infantry"],
+      ["unit_infantry", "unit_fpv_drone", "unit_tank"],
+      ["unit_infantry", "unit_fpv_drone", "unit_tank", "unit_missile_launcher"]
+    ],
+    "descZh": "提供控制区、扩展前线；自身不产出金币。",
+    "descEn": "Extends your control zone; no gold income.",
     "nameZh": "兵营",
     "nameEn": "Barracks",
     "hp": [300, 450, 600],
@@ -46,6 +57,13 @@
   },
   {
     "id": "helipad",
+    "spawnByLevel": [
+      ["unit_fpv_drone"],
+      ["unit_fpv_drone", "unit_helicopter"],
+      ["unit_fpv_drone", "unit_helicopter", "unit_fighter"]
+    ],
+    "descZh": "提供控制区、扩展前线；空中部队的集结地。",
+    "descEn": "Extends your control zone; staging ground for air units.",
     "nameZh": "直升机坪",
     "nameEn": "Helipad",
     "hp": [300, 450, 600],
@@ -61,6 +79,8 @@
   },
   {
     "id": "gunTurret",
+    "descZh": "防御建筑，射程 1，只能攻击地面单位；可花 50$ 追加一次攻击。",
+    "descEn": "Defense building, range 1, ground targets only. Pay 50$ for one extra shot per turn.",
     "nameZh": "炮台",
     "nameEn": "Gun Turret",
     "extraFireCost": 50,
@@ -77,6 +97,8 @@
   },
   {
     "id": "aaGun",
+    "descZh": "防空建筑，射程 2，只能攻击空中单位；可花 50$ 追加一次攻击。",
+    "descEn": "Anti-air building, range 2, air targets only. Pay 50$ for one extra shot per turn.",
     "nameZh": "防空炮",
     "nameEn": "AA Gun",
     "extraFireCost": 50,
@@ -93,6 +115,8 @@
   },
   {
     "id": "missileSilo",
+    "descZh": "每回合产出一张「导弹袭击」加入手牌；本体不参与攻击。",
+    "descEn": "Produces one Missile Strike card each turn; does not attack itself.",
     "nameZh": "巡航导弹井",
     "hiddenParts": ["Silo_Missile", "Silo_Flame"],
     "nameEn": "Missile Silo",

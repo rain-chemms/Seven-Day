@@ -31,7 +31,7 @@ public partial class CardTossEffect : Control
 
     public void Play(CardDef def, Vector2 from, Vector2 to, float duration,
                      float endScale = 0.28f, float arc = 120f, bool faceDown = false,
-                     System.Action onDone = null)
+                     System.Action onDone = null, float startScale = 0.55f)
     {
         _title = def?.NameZh ?? "";
         _cost = def?.Cost ?? 0;
@@ -40,6 +40,7 @@ public partial class CardTossEffect : Control
         _to = to;
         _duration = Mathf.Max(0.1f, duration);
         _endScale = endScale;
+        _startScale = startScale;
         _arc = arc;
         _spin = (float)GD.RandRange(-1.0, 1.0) * 10f;
         _onDone = onDone;

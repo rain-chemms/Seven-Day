@@ -45,6 +45,17 @@ public sealed class BuildingDef
     public string Model { get; set; } = "";
     public string Preview { get; set; } = "";
 
+    /// <summary>总览页展示的功能描述。</summary>
+    public string DescZh { get; set; } = "";
+    public string DescEn { get; set; } = "";
+
+    /// <summary>
+    /// 出兵表：索引 = 游戏等级-1，**每个等级单独一份列表**（不累加）。
+    /// 例如 Lv1 ["unit_infantry"]、Lv2 [...,"unit_tank"]。
+    /// 空数组表示这座建筑不能出兵。
+    /// </summary>
+    public string[][] SpawnByLevel { get; set; } = System.Array.Empty<string[]>();
+
     /// <summary>花多少钱可以让这座防御建筑在当回合多开一次炮；0 = 不支持。</summary>
     public int ExtraFireCost { get; set; }
 
@@ -166,6 +177,9 @@ public static class GameDatabase
 
     public static CardDef Card(string id)
     {
+        if (string.IsNullOrEmpty(id))
+            return null;
+
         EnsureLoaded();
         return Cards.TryGetValue(id, out CardDef d) ? d : null;
     }

@@ -406,8 +406,11 @@ public partial class HexMapView : Node3D
                             tween.Finished += () =>
                             {
                                 // 只有真的到地方了才回 Idle（防止中途又有新目标）
-                                if (movingView.Position.IsEqualApprox(target))
+                                // 单位可能在移动途中阵亡，节点已释放，必须判有效
+                                if (IsInstanceValid(movingView) && IsInstanceValid(mover) &&
+                                    movingView.Position.IsEqualApprox(target))
                                     mover.PlayIdle();
+
                                 _unitMoveTweens.Remove(u.Id);
                             };
                         }

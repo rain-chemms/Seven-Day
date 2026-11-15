@@ -110,12 +110,14 @@ public partial class PileViewer : Control
     private Vector2 ContentArea =>
         new(PanelWidth - ContentMargin * 2f, PanelHeight - ContentMargin * 2f - HeaderHeight - HeaderGap);
 
-    public void Open(string title, IEnumerable<string> cardIds, IReadOnlyList<int> etherealIndices = null)
+    public void Open(string title, IEnumerable<string> cardIds, IReadOnlyList<int> etherealIndices = null,
+        IReadOnlyList<int> producedExhaustIndices = null, System.Action<int> onPick = null)
     {
         List<string> list = cardIds.ToList();
-        _title.Text = $"{title}（{list.Count}）";
+        _title.Text = onPick != null ? $"{title}（{list.Count}）· 点击选择一张" : $"{title}（{list.Count}）";
 
         var ethereal = new HashSet<int>(etherealIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
+        var pexhaust = new HashSet<int>(producedExhaustIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
 
         foreach (Control cell in _cells)
             cell.QueueFree();
@@ -149,9 +151,10 @@ public partial class PileViewer : Control
                 MouseFilter = MouseFilterEnum.Ignore,
                 PivotOffset = Vector2.Zero,     // 从左上角缩放，避免内容被推到格子外
             };
-            card.Theme = MsdfTheme();      // 放大后文字不糊
+            card.Theme = UiTheme.MsdfTheme();   // 放大后文字不糊
             card.Setup(def, 0, affordable: true);
             card.SetEthereal(ethereal.Contains(i));
+            card.SetProducedExhaust(pexhaust.Contains(i));
             need = need.Max(card.GetCombinedMinimumSize());
             pending.Add((def, card, ethereal.Contains(i)));
         }
@@ -162,13 +165,36 @@ public partial class PileViewer : Control
         // 放大上限压到 1.3：再往上字体/卡图会被拉糊（卡牌是按 128×196 排版的）
         float scale = Mathf.Clamp(Mathf.Min(fitW, fitH), 0.35f, 1.3f);
 
-        foreach ((CardDef def, CardView card, bool _) in pending)
+        int order = 0;
+        foreach ((CardDef def, CardView card, bool isEthereal) in pending)
         {
             var cell = new Control
             {
                 CustomMinimumSize = need * scale,
-                MouseFilter = MouseFilterEnum.Ignore,
+                MouseFilter = MouseFilterEnum.Stop,
                 ClipContents = true,
+            };
+
+            int pickedIndex = order++;
+
+            // 右键放大检视；选择模式下左键直接选中
+            cell.GuiInput += e =>
+            {
+                if (e is not InputEventMouseButton { Pressed: true } mb)
+                    return;
+
+                if (mb.ButtonIndex == MouseButton.Right)
+                {
+                    CardInspectOverlay.Show(def, isEthereal);
+                    cell.AcceptEvent();
+                    return;
+                }
+
+                if (mb.ButtonIndex == MouseButton.Left && onPick != null)
+                {
+                    onPick(pickedIndex);
+                    cell.AcceptEvent();
+                }
             };
 
             card.Position = Vector2.Zero;

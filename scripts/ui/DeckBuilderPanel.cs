@@ -35,7 +35,8 @@ public partial class DeckBuilderPanel : PanelContainer
     private readonly List<string> _deck = new();
     private string _filter = "all";
 
-    private GridContainer _poolGrid;
+    private VBoxContainer _poolList;
+    private ScrollContainer _poolScroll;
     private readonly Dictionary<string, Control> _poolCells = new();
     private readonly Dictionary<string, Control> _deckCells = new();
 
@@ -80,6 +81,17 @@ public partial class DeckBuilderPanel : PanelContainer
         SetProcessInput(true);
     }
 
+    /// <summary>预热：提前把面板骨架建好（卡面子图另行预载），首次打开就不卡。</summary>
+    public void Prewarm()
+    {
+        EnsureBuilt();
+        UiTheme.PreloadCardFaces();
+        RebuildPool();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--pool-bottom") >= 0)
+            CallDeferred(nameof(ScrollPoolToBottom));      // 牌库卡一次建好，打开时直接复用
+    }
+
     public void Open()
     {
         List<string> seed = Session.PlayerDeck.Count >= Session.DeckMin
@@ -89,18 +101,31 @@ public partial class DeckBuilderPanel : PanelContainer
         _deck.Clear();
         _deck.AddRange(seed);
 
+        ulong t0 = Time.GetTicksMsec();
         EnsureBuilt();
 
         // 先显示再重建：否则第一次打开时容器还没布局，宽度是 0，列数会算错
         Visible = true;
 
+        ulong tp = Time.GetTicksMsec();
         RebuildPool();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--pool-bottom") >= 0)
+            CallDeferred(nameof(ScrollPoolToBottom));
+        ulong tpool = Time.GetTicksMsec();
         RebuildDeck();
+        ulong tdeck = Time.GetTicksMsec();
         UpdateCount();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[Deck] 分段 pool={tpool - tp}ms deck={tdeck - tpool}ms 计数={Time.GetTicksMsec() - tdeck}ms");
 
         // 布局落定后再算一次（Container 的排版是延迟的）
         CallDeferred(nameof(DeferredRebuildDeck));
         PlayOpenAnimation();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[Deck] 打开耗时 {Time.GetTicksMsec() - t0}ms");
         var settle = GetTree().CreateTimer(0.05);
         settle.Timeout += DeferredRebuildDeck;
     }
@@ -127,7 +152,7 @@ public partial class DeckBuilderPanel : PanelContainer
 
     private void EnsureBuilt()
     {
-        if (_poolGrid != null)
+        if (_poolList != null)
             return;
 
         var root = new VBoxContainer();
@@ -257,7 +282,7 @@ public partial class DeckBuilderPanel : PanelContainer
         _openTween.TweenProperty(this, "scale", Vector2.One, 0.22f)
             .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
 
-        StaggerChildren(_poolGrid, 0.012f, slide: false);
+        StaggerChildren(_poolList, 0.012f, slide: false);
         StaggerChildren(_deckCanvas, 0.012f, slide: true);
     }
 
@@ -344,6 +369,9 @@ public partial class DeckBuilderPanel : PanelContainer
         {
             _filter = i switch { 1 => "unit", 2 => "strike", 3 => "global", _ => "all" };
             RebuildPool();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--pool-bottom") >= 0)
+            CallDeferred(nameof(ScrollPoolToBottom));
         };
         head.AddChild(_filterButton);
 
@@ -356,10 +384,11 @@ public partial class DeckBuilderPanel : PanelContainer
         col.AddChild(scroll);
         HideScrollbar(scroll);
 
-        _poolGrid = new GridContainer { Columns = PoolColumns, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _poolGrid.AddThemeConstantOverride("h_separation", 8);
-        _poolGrid.AddThemeConstantOverride("v_separation", 8);
-        scroll.AddChild(_poolGrid);
+        // 每种卡牌类型一个独立网格：类型切换时自然会另起一行
+        _poolList = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _poolList.AddThemeConstantOverride("separation", 10);
+        scroll.AddChild(_poolList);
+        _poolScroll = scroll;
 
         return col;
     }
@@ -659,25 +688,67 @@ public partial class DeckBuilderPanel : PanelContainer
 
     // ─────────────────────────── 牌库（左） ───────────────────────────
 
+    private string _poolKey = "";
+
     private void RebuildPool()
     {
+        // 牌库内容/筛选没变就复用已有卡片，避免每次打开都重建 11 张卡（约 30ms）
+        string key = _filter + "|" + string.Join(",", AllCards().Select(d => d.Id));
+        if (key == _poolKey && _poolCells.Count > 0)
+            return;
+
+        _poolKey = key;
+
         // 立刻从树上摘掉：QueueFree 是延迟的，紧接着 GetChildCount 会把旧卡也算进去
-        foreach (Node child in _poolGrid.GetChildren().ToList())
+        foreach (Node child in _poolList.GetChildren().ToList())
         {
-            _poolGrid.RemoveChild(child);
+            _poolList.RemoveChild(child);
             child.QueueFree();
         }
 
         _poolCells.Clear();
 
-        foreach (CardDef def in AllCards())
+        // 按「单位 / 打击 / 全局」分段，每段一个网格（类型变化就换行）
+        string[] order = { "unit", "strike", "global" };
+        string[] titles = { "单位", "打击", "全局" };
+
+        bool firstGroup = true;
+
+        for (int k = 0; k < order.Length; k++)
         {
-            if (_filter != "all" && KindKey(def) != _filter)
+            string kind = order[k];
+            if (_filter != "all" && _filter != kind)
                 continue;
 
-            Control cell = BuildPoolCell(def);
-            _poolGrid.AddChild(cell);
-            _poolCells[def.Id] = cell;
+            List<CardDef> group = AllCards().Where(d => KindKey(d) == kind).ToList();
+            if (group.Count == 0)
+                continue;
+
+            // 类别之间加一条横线（第一段前面不加）
+            if (!firstGroup)
+                _poolList.AddChild(SeparatorLine());
+
+            firstGroup = false;
+
+            if (_filter == "all")
+            {
+                var label = new Label { Text = titles[k] };
+                label.AddThemeFontSizeOverride("font_size", 15);
+                label.AddThemeColorOverride("font_color", UiTheme.SandDark);
+                _poolList.AddChild(label);
+            }
+
+            var grid = new GridContainer { Columns = PoolColumns, SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            grid.AddThemeConstantOverride("h_separation", 8);
+            grid.AddThemeConstantOverride("v_separation", 8);
+            _poolList.AddChild(grid);
+
+            foreach (CardDef def in group)
+            {
+                Control cell = BuildPoolCell(def);
+                grid.AddChild(cell);
+                _poolCells[def.Id] = cell;
+            }
         }
     }
 
@@ -701,6 +772,22 @@ public partial class DeckBuilderPanel : PanelContainer
             .ThenBy(d => d.NameZh);
     }
 
+    /// <summary>牌库分区之间的横线。</summary>
+    private static Control SeparatorLine()
+    {
+        var wrap = new MarginContainer();
+        wrap.AddThemeConstantOverride("margin_top", 2);
+        wrap.AddThemeConstantOverride("margin_bottom", 2);
+
+        var line = new ColorRect
+        {
+            Color = new Color(0.72f, 0.62f, 0.38f, 0.55f),
+            CustomMinimumSize = new Vector2(0, 2),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        wrap.AddChild(line);
+        return wrap;
+    }
     private Control BuildPoolCell(CardDef def)
     {
         var holder = new Control
@@ -721,6 +808,14 @@ public partial class DeckBuilderPanel : PanelContainer
 
         holder.GuiInput += e =>
         {
+            // 右键：放大检视
+            if (e is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right })
+            {
+                CardInspectOverlay.Show(def);
+                AcceptEvent();
+                return;
+            }
+
             if (e is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb)
             {
                 PlayCardChoiceSound();
@@ -868,6 +963,14 @@ public partial class DeckBuilderPanel : PanelContainer
 
         holder.GuiInput += e =>
         {
+            // 右键：放大检视
+            if (e is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right })
+            {
+                CardInspectOverlay.Show(def);
+                AcceptEvent();
+                return;
+            }
+
             if (e is not InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb)
                 return;
 
@@ -1390,8 +1493,8 @@ public partial class DeckBuilderPanel : PanelContainer
         if (_poolCells.TryGetValue(id, out Control cell) && IsInstanceValid(cell))
             return CellCenter(cell);
 
-        return _poolGrid != null
-            ? _poolGrid.GlobalPosition + new Vector2(_poolGrid.Size.X * 0.5f, 120f)
+        return _poolList != null
+            ? _poolList.GlobalPosition + new Vector2(_poolList.Size.X * 0.5f, 120f)
             : new Vector2(300f, 300f);
     }
 
@@ -1904,16 +2007,38 @@ public partial class DeckBuilderPanel : PanelContainer
 
     // ─────────────────────────── 调试 ───────────────────────────
 
+    /// <summary>调试/设置联动：重建牌库与出战区（卡牌字号变化时刷新预览）。</summary>
+    public void DebugRebuild()
+    {
+        ulong tp = Time.GetTicksMsec();
+        RebuildPool();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--pool-bottom") >= 0)
+            CallDeferred(nameof(ScrollPoolToBottom));
+        ulong tpool = Time.GetTicksMsec();
+        RebuildDeck();
+        ulong tdeck = Time.GetTicksMsec();
+        UpdateCount();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[Deck] 分段 pool={tpool - tp}ms deck={tdeck - tpool}ms 计数={Time.GetTicksMsec() - tdeck}ms");
+    }
+
+    /// <summary>调试：把牌库列表滚到底。</summary>
+    private void ScrollPoolToBottom()
+    {
+        if (_poolScroll != null)
+            _poolScroll.ScrollVertical = 99999;
+    }
+
     public int DebugTotal() => Total;
 
-    public int DebugPoolCount() => _poolGrid?.GetChildCount() ?? 0;
+    public int DebugPoolCount() => _poolCells.Count;
 
     public string DebugDeckIds() => string.Join(",", _deck);
 
     public Control DebugPoolCell(int index) =>
-        _poolGrid != null && index >= 0 && index < _poolGrid.GetChildCount()
-            ? _poolGrid.GetChild(index) as Control
-            : null;
+        _poolCells.Values.ElementAtOrDefault(index);
 
     public void DebugAdd(string id) => AddCard(id);
 
@@ -1929,6 +2054,9 @@ public partial class DeckBuilderPanel : PanelContainer
     {
         _filter = filter;
         RebuildPool();
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--pool-bottom") >= 0)
+            CallDeferred(nameof(ScrollPoolToBottom));
     }
 
     public void OnDebugClear() => OnClear();

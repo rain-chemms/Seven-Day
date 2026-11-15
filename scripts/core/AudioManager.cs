@@ -195,6 +195,23 @@ public partial class AudioManager : Node
         return own;      // 不存在时 PlaySfx 会静默跳过
     }
 
+    // ── 战斗卡牌音效（audios/ui） ──
+
+    /// <summary>卡牌被打出。</summary>
+    public static void PlayCardUsed() =>
+        PlaySfx("res://gameAsset/audios/ui/cardBattle_used.ogg", -3f);
+
+    /// <summary>抽牌。</summary>
+    public static void PlayCardDrawn() =>
+        PlaySfx("res://gameAsset/audios/ui/cardBattle_drawed.ogg", -2.5f);
+
+    /// <summary>洗牌。</summary>
+    public static void PlayCardShuffled() =>
+        PlaySfx("res://gameAsset/audios/ui/cardBattle_shuffle.ogg", -4f);
+
+    /// <summary>卡牌进弃牌堆 / 消耗堆。</summary>
+    public static void PlayCardDiscarded() =>
+        PlaySfx("res://gameAsset/audios/ui/cardBattle_discard.ogg", -3f);
     public static void PlaySelect(string defId) =>
         PlaySfx(SfxPath("select", defId));
 

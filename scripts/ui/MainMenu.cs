@@ -17,6 +17,7 @@ public partial class MainMenu : Node3D
     private Label _toast;
     private PanelContainer _settingsPanel;
     private PanelContainer _galleryPanel;
+    private ScrollContainer _galleryScroll;
     private readonly List<Button> _tabButtons = new();
     private readonly List<Control> _tabPages = new();
     private int _currentTab;
@@ -28,6 +29,7 @@ public partial class MainMenu : Node3D
     {
         Loc.EnsureLoaded();
         AudioBuses.Ensure();
+        AnimSpeed.ApplyFromSettings();
 
         AddChild(new MainMenuBackdrop { Name = "Backdrop" });
         BuildUi();
@@ -39,6 +41,17 @@ public partial class MainMenu : Node3D
         // 开发调试：--demo-button 模拟悬停第一个按钮、按下第二个按钮，检查动效
         if (OS.GetCmdlineUserArgs().Contains("--demo-button"))
             CallDeferred(nameof(DemoButtonFlow));
+
+        // 开发调试：--settings-bottom 视频设置滚到底（截图用）
+        if (OS.GetCmdlineUserArgs().Contains("--settings-bottom"))
+        {
+            var bt = GetTree().CreateTimer(0.5);
+            bt.Timeout += () =>
+            {
+                if (_settingsPageScroll != null)
+                    _settingsPageScroll.ScrollVertical = 9999;
+            };
+        }
 
         // 开发调试：--demo-settings 打开设置面板并切到摄像机页
         if (OS.GetCmdlineUserArgs().Contains("--demo-settings"))
@@ -595,12 +608,46 @@ public partial class MainMenu : Node3D
         RefreshHistory();
         OpenGallery();
 
+        SceneTreeTimer g = GetTree().CreateTimer(0.35);
+        g.Timeout += () =>
+        {
+            if (_galleryScroll == null)
+                return;
+
+            GD.Print($"[Gallery] 内容高={_galleryScroll.GetVScrollBar().MaxValue} 视口高={_galleryScroll.Size.Y} " +
+                     $"可滚动={_galleryScroll.GetVScrollBar().MaxValue > _galleryScroll.Size.Y}");
+
+            if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--scroll-gallery") >= 0)
+                ScrollGalleryDemo();
+        };
+
         if (!OS.GetCmdlineUserArgs().Contains("--anim-log"))
             return;
 
         CallDeferred(nameof(LogGalleryAnim));
     }
 
+    /// <summary>演示用：向下滚三次，验证滚动与历史战绩区。</summary>
+    private async void ScrollGalleryDemo()
+    {
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        Vector2 p = _galleryPanel.GlobalPosition + _galleryPanel.Size * 0.5f;
+        Input.WarpMouse(p);
+        for (int i = 0; i < 3; i++)
+        {
+            Input.ParseInputEvent(new InputEventMouseButton
+            {
+                ButtonIndex = MouseButton.WheelDown,
+                Pressed = true,
+                Position = p,
+                GlobalPosition = p,
+            });
+            await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+        }
+
+        GD.Print($"[Gallery] 滚动后 offset={_galleryScroll.ScrollVertical}");
+    }
     private async void LogGalleryAnim()
     {
         GD.Print($"[Anim] gallery t=0 alpha={_galleryPanel.Modulate.A:F2} scale={_galleryPanel.Scale.X:F3} dim={_galleryDim.Color.A:F2}");
@@ -747,6 +794,8 @@ public partial class MainMenu : Node3D
         // 切场景瞬间的输入遮罩：从地图选择点「返回」时鼠标还按着，
         // 不挡住的话这一下会穿透到菜单的「出战卡组」上
         BuildTransitionMask();
+        Callable.From(CardInspectOverlay.Prewarm).CallDeferred();
+        Callable.From(() => _deckPanel.Prewarm()).CallDeferred();
     }
 
     private ColorRect _transitionMask;
@@ -755,67 +804,6 @@ public partial class MainMenu : Node3D
     /// 进场遮罩：铺满屏幕、吃掉所有鼠标事件，约 0.35s 内淡出。
     /// 主要防「上一个场景按下的键在这里被当成点击」。
     /// </summary>
-    private void BuildTransitionMask()
-    {
-        _transitionMask = new ColorRect
-        {
-            Name = "TransitionMask",
-            Color = new Color(0.05f, 0.04f, 0.02f, 0.5f),
-            MouseFilter = Control.MouseFilterEnum.Stop,
-            ZIndex = 60,
-        };
-        _transitionMask.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
-        _root.AddChild(_transitionMask);
-
-        Tween tween = CreateTween();
-        tween.TweenInterval(0.12f);
-        tween.TweenProperty(_transitionMask, "color:a", 0f, 0.24f);
-        tween.TweenCallback(Callable.From(() =>
-        {
-            if (_transitionMask != null && IsInstanceValid(_transitionMask))
-                _transitionMask.QueueFree();
-            _transitionMask = null;
-        }));
-    }
-    private void BuildTitleCard()
-    {
-        var panel = new PanelContainer { Name = "TitleCard" };
-        panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
-        panel.OffsetLeft = 48;
-        panel.OffsetTop = 40;
-        panel.OffsetRight = 448;
-        panel.OffsetBottom = 200;
-        _root.AddChild(panel);
-
-        var box = new VBoxContainer();
-        box.AddThemeConstantOverride("separation", 2);
-        panel.AddChild(box);
-
-        var title = new Label { Name = "Title", Text = Loc.T("game.title") };
-        title.AddThemeFontSizeOverride("font_size", 46);
-        title.AddThemeColorOverride("font_color", UiTheme.Ink);
-        box.AddChild(title);
-        _locBindings.Add(("game.title", () => title.Text = Loc.T("game.title")));
-
-        var tagline = new Label { Name = "Tagline", Text = Loc.T("game.tagline") };
-        tagline.AddThemeFontSizeOverride("font_size", 20);
-        tagline.AddThemeColorOverride("font_color", UiTheme.SandDark);
-        box.AddChild(tagline);
-        _locBindings.Add(("game.tagline", () => tagline.Text = Loc.T("game.tagline")));
-
-        var author = new Label { Name = "Author", Text = Loc.T("game.author") };
-        author.AddThemeFontSizeOverride("font_size", 15);
-        author.AddThemeColorOverride("font_color", UiTheme.Grey);
-        box.AddChild(author);
-        _locBindings.Add(("game.author", () => author.Text = Loc.T("game.author")));
-
-        var hint = new Label { Name = "Hint", Text = Loc.T("menu.hint") };
-        hint.AddThemeFontSizeOverride("font_size", 13);
-        hint.AddThemeColorOverride("font_color", new Color(UiTheme.Grey, 0.8f));
-        box.AddChild(hint);
-        _locBindings.Add(("menu.hint", () => hint.Text = Loc.T("menu.hint")));
-    }
-
     private void BuildMenuButtons()
     {
         var col = new VBoxContainer { Name = "MenuButtons" };
@@ -1002,6 +990,7 @@ public partial class MainMenu : Node3D
     }
 
     private ScrollContainer _settingsScroll;
+    private ScrollContainer _settingsPageScroll;
     private ScrollContainer _tabScroll;
 
     /// <summary>面板定宽（窗口太窄时才收窄），内容宽度固定，超出就靠横向滚动看。</summary>
@@ -1051,7 +1040,7 @@ public partial class MainMenu : Node3D
 
         _tabScroll.AcceptEvent();
     }
-    /// <summary>滚轮：内容放不下时左右滚动（放得下就交回默认行为）。</summary>
+    /// <summary>滚轮：内容超高时纵向滚动；只有宽度不够（无纵向溢出）时才转成左右滚动。</summary>
     private void OnSettingsScrollInput(InputEvent @event)
     {
         if (_settingsScroll == null)
@@ -1061,6 +1050,11 @@ public partial class MainMenu : Node3D
             return;
 
         if (mb.ButtonIndex != MouseButton.WheelUp && mb.ButtonIndex != MouseButton.WheelDown)
+            return;
+
+        // 有纵向溢出 → 交给 ScrollContainer 自己纵向滚
+        float vOverflow = (float)_settingsScroll.GetVScrollBar().MaxValue - _settingsScroll.Size.Y;
+        if (vOverflow > 0f)
             return;
 
         float overflow = (float)_settingsScroll.GetHScrollBar().MaxValue - _settingsScroll.Size.X;
@@ -1083,6 +1077,9 @@ public partial class MainMenu : Node3D
 
         for (int i = 0; i < _tabPages.Count; i++)
             _tabPages[i].Visible = i == _currentTab;
+
+        if (_settingsPageScroll != null)
+            _settingsPageScroll.ScrollVertical = 0;
     }
 
     /// <summary>单个控件的缩放反馈（轴心在中心）。</summary>
@@ -1098,6 +1095,67 @@ public partial class MainMenu : Node3D
         tween.TweenProperty(control, "scale", Vector2.One * scale, duration)
             .SetTrans(trans).SetEase(ease);
     }
+    private void BuildTransitionMask()
+    {
+        _transitionMask = new ColorRect
+        {
+            Name = "TransitionMask",
+            Color = new Color(0.05f, 0.04f, 0.02f, 0.5f),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            ZIndex = 60,
+        };
+        _transitionMask.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_transitionMask);
+
+        Tween tween = CreateTween();
+        tween.TweenInterval(0.12f);
+        tween.TweenProperty(_transitionMask, "color:a", 0f, 0.24f);
+        tween.TweenCallback(Callable.From(() =>
+        {
+            if (_transitionMask != null && IsInstanceValid(_transitionMask))
+                _transitionMask.QueueFree();
+            _transitionMask = null;
+        }));
+    }
+    private void BuildTitleCard()
+    {
+        var panel = new PanelContainer { Name = "TitleCard" };
+        panel.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+        panel.OffsetLeft = 48;
+        panel.OffsetTop = 40;
+        panel.OffsetRight = 448;
+        panel.OffsetBottom = 200;
+        _root.AddChild(panel);
+
+        var box = new VBoxContainer();
+        box.AddThemeConstantOverride("separation", 2);
+        panel.AddChild(box);
+
+        var title = new Label { Name = "Title", Text = Loc.T("game.title") };
+        title.AddThemeFontSizeOverride("font_size", 46);
+        title.AddThemeColorOverride("font_color", UiTheme.Ink);
+        box.AddChild(title);
+        _locBindings.Add(("game.title", () => title.Text = Loc.T("game.title")));
+
+        var tagline = new Label { Name = "Tagline", Text = Loc.T("game.tagline") };
+        tagline.AddThemeFontSizeOverride("font_size", 20);
+        tagline.AddThemeColorOverride("font_color", UiTheme.SandDark);
+        box.AddChild(tagline);
+        _locBindings.Add(("game.tagline", () => tagline.Text = Loc.T("game.tagline")));
+
+        var author = new Label { Name = "Author", Text = Loc.T("game.author") };
+        author.AddThemeFontSizeOverride("font_size", 15);
+        author.AddThemeColorOverride("font_color", UiTheme.Grey);
+        box.AddChild(author);
+        _locBindings.Add(("game.author", () => author.Text = Loc.T("game.author")));
+
+        var hint = new Label { Name = "Hint", Text = Loc.T("menu.hint") };
+        hint.AddThemeFontSizeOverride("font_size", 13);
+        hint.AddThemeColorOverride("font_color", new Color(UiTheme.Grey, 0.8f));
+        box.AddChild(hint);
+        _locBindings.Add(("menu.hint", () => hint.Text = Loc.T("menu.hint")));
+    }
+
     private void BuildSettingsPanel()
     {
         _settingsDim = new ColorRect
@@ -1120,8 +1178,8 @@ public partial class MainMenu : Node3D
         // 内容定宽 + 靠左；窗口比面板窄时用滚轮左右滚动
         _settingsScroll = new ScrollContainer
         {
-            HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever,
-            VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Auto,
+            VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,   // 纵向滚动交给内层面板
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
         };
@@ -1160,8 +1218,8 @@ public partial class MainMenu : Node3D
         _tabScroll = new ScrollContainer
         {
             CustomMinimumSize = new Vector2(0, 40),
-            HorizontalScrollMode = ScrollContainer.ScrollMode.ShowNever,
-            VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Auto,
+            VerticalScrollMode = ScrollContainer.ScrollMode.Disabled,   // 纵向滚动交给内层面板
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
         };
         _tabScroll.GuiInput += OnTabScrollInput;
@@ -1196,15 +1254,26 @@ public partial class MainMenu : Node3D
             _tabButtons.Add(button);
         }
 
-        // 页面容器：三页都放进去，只显示当前那页
+        // 页面容器：滚动条放在这层「内容面板」里，只显示当前那页
         var pages = new PanelContainer
         {
-            SizeFlagsVertical = Control.SizeFlags.ShrinkBegin,
-            CustomMinimumSize = new Vector2(0, 300),
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 260),
         };
         pages.AddThemeStyleboxOverride("panel",
-            UiTheme.Box("res://gameAsset/textures/ui/panel/panel_light.png", 18, 14, 14, 14, 14));
+            // 右边距小一些：滚动条贴到面板内边缘，避免和勾选框挤在一起
+            UiTheme.Box("res://gameAsset/textures/ui/panel/panel_light.png", 18, 14, 6, 14, 14));
         outer.AddChild(pages);
+
+        _settingsPageScroll = new ScrollContainer
+        {
+            VerticalScrollMode = ScrollContainer.ScrollMode.Auto,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+        };
+        pages.AddChild(_settingsPageScroll);
+
+        var pageHost = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        _settingsPageScroll.AddChild(pageHost);
 
         _tabPages.Clear();
         _tabPages.Add(BuildVideoTab());
@@ -1213,7 +1282,13 @@ public partial class MainMenu : Node3D
         foreach (Control page in _tabPages)
         {
             page.Visible = false;
-            pages.AddChild(page);
+            page.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+
+            // 外面再包一层右边距，内容不会顶到滚动条
+            var wrap = new MarginContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+            wrap.AddThemeConstantOverride("margin_right", 10);
+            wrap.AddChild(page);
+            pageHost.AddChild(wrap);
         }
 
         SelectSettingsTab(OS.GetCmdlineUserArgs().Contains("--video-tab") ? 0 : 2);
@@ -1223,11 +1298,14 @@ public partial class MainMenu : Node3D
         bottom.AddThemeConstantOverride("separation", 0);
         layout.AddChild(bottom);
 
-        bottom.AddChild(new Control { SizeFlagsVertical = Control.SizeFlags.ExpandFill });
+        // 底部不参与拉伸：空间全给上面的滚动区，按钮贴底
+        bottom.SizeFlagsVertical = Control.SizeFlags.ShrinkEnd;
+        bottom.AddChild(new Control { CustomMinimumSize = new Vector2(0, 8) });
 
         var closePad = new MarginContainer();
         closePad.AddThemeConstantOverride("margin_left", 16);
         closePad.AddThemeConstantOverride("margin_right", 16);
+        closePad.AddThemeConstantOverride("margin_bottom", 10);
         bottom.AddChild(closePad);
 
         // 关闭按钮：自己做一套「轻微放大 + 按下回缩」，幅度比 ButtonJuice 小，
@@ -1281,6 +1359,56 @@ public partial class MainMenu : Node3D
             DisplayServer.WindowSetMode(on ? DisplayServer.WindowMode.Fullscreen : DisplayServer.WindowMode.Windowed);
         };
         tab.AddChild(BoolRow("settings.fullscreen", full));
+
+        // 卡牌字体大小
+        var cardFontRow = new HBoxContainer();
+        cardFontRow.AddThemeConstantOverride("separation", 10);
+
+        Label cardFontLabel = NewRowLabel("settings.card_font");
+        cardFontLabel.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        cardFontLabel.VerticalAlignment = VerticalAlignment.Center;
+        cardFontRow.AddChild(cardFontLabel);
+
+        var cardFontValue = new Label { Text = "", VerticalAlignment = VerticalAlignment.Center };
+        cardFontValue.AddThemeColorOverride("font_color", UiTheme.SandDark);
+        cardFontRow.AddChild(cardFontValue);
+
+        tab.AddChild(cardFontRow);
+
+        var cardFont = new HSlider
+        {
+            MinValue = 0.8,
+            MaxValue = 1.35,
+            Step = 0.05,
+            CustomMinimumSize = new Vector2(0, 28),
+        };
+        cardFont.Value = Mathf.Clamp(Settings.GetFloat("video", "card_font_scale", 1f), 0.8, 1.35);
+        cardFontValue.Text = $"{cardFont.Value * 100f:F0}%";
+
+        cardFont.ValueChanged += v =>
+        {
+            CardView.FontScale = (float)v;
+            cardFontValue.Text = $"{v * 100f:F0}%";
+
+            // 卡组编辑器若开着（正常不会），重建一次让预览立刻生效
+            if (_deckPanel is { Visible: true })
+                _deckPanel.DebugRebuild();
+        };
+        tab.AddChild(cardFont);
+
+        // 手牌顺序编号开关
+        var handOrder = new CheckButton { ButtonPressed = Settings.GetBool("video", "hand_order", true) };
+        handOrder.Toggled += on =>
+        {
+            Settings.SetBool("video", "hand_order", on);
+            Settings.Save();
+        };
+        tab.AddChild(BoolRow("settings.hand_order", handOrder));
+
+        // 加速模式：所有动画（卡牌 / 单位移动与攻击）播放速度 x2
+        var fastMode = new CheckButton { ButtonPressed = AnimSpeed.Fast };
+        fastMode.Toggled += on => AnimSpeed.Apply(on);
+        tab.AddChild(BoolRow("settings.fast_mode", fastMode));
 
         tab.AddChild(NewRowLabel("settings.language"));
         var lang = new OptionButton();
@@ -1427,6 +1555,7 @@ public partial class MainMenu : Node3D
             return;
 
         _galleryPanel.Visible = true;
+        ResetGalleryScroll();
         _galleryPanel.PivotOffset = _galleryPanel.Size * 0.5f;
         _galleryPanel.Modulate = new Color(1f, 1f, 1f, 0f);
         _galleryPanel.Scale = Vector2.One * 0.955f;
@@ -1445,6 +1574,13 @@ public partial class MainMenu : Node3D
     }
 
     /// <summary>总览面板：缩小 + 淡出后再隐藏，遮罩同步。</summary>
+    /// <summary>等一帧布局完成后再把滚动条复位到顶部。</summary>
+    private async void ResetGalleryScroll()
+    {
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        if (_galleryScroll != null && IsInstanceValid(_galleryScroll))
+            _galleryScroll.ScrollVertical = 0;
+    }
     private void CloseGallery()
     {
         if (_galleryPanel == null || !_galleryPanel.Visible)
@@ -1477,6 +1613,70 @@ public partial class MainMenu : Node3D
         if (_galleryTween != null && _galleryTween.IsValid())
             _galleryTween.Kill();
     }
+    /// <summary>总览页的分区隔线（细线 + 上下留白）。</summary>
+    private static Control SectionDivider()
+    {
+        var box = new MarginContainer();
+        box.AddThemeConstantOverride("margin_top", 6);
+        box.AddThemeConstantOverride("margin_bottom", 6);
+
+        var line = new ColorRect
+        {
+            Color = new Color(UiTheme.Ink, 0.35f),
+            CustomMinimumSize = new Vector2(0, 2),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        box.AddChild(line);
+        return box;
+    }
+    /// <summary>总览页：六种地形的预览图 + 名称 + 效果说明。</summary>
+    private void AddTerrainEntries(GridContainer grid)
+    {
+        (string Key, string Zh, string En)[] tiles =
+        {
+            ("dirt", "泥土", "Dirt"),
+            ("grass", "草地", "Grass"),
+            ("sand", "沙地", "Sand"),
+            ("rock", "岩地", "Rock"),
+            ("snow", "雪地", "Snow"),
+            ("water", "水面", "Water"),
+        };
+
+        foreach ((string key, string zh, string en) in tiles)
+        {
+            var cell = new HBoxContainer();
+            cell.AddThemeConstantOverride("separation", 8);
+
+            var tex = new TextureRect
+            {
+                CustomMinimumSize = new Vector2(84, 84),
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+                Texture = GD.Load<Texture2D>("res://gameAsset/textures/hexTilePreview/preview_" + key + ".png"),
+            };
+            cell.AddChild(tex);
+
+            var text = new VBoxContainer();
+            text.AddThemeConstantOverride("separation", 2);
+            var name = new Label { Text = Loc.T("terrain." + key) };
+            name.AddThemeFontSizeOverride("font_size", 17);
+            name.AddThemeColorOverride("font_color", UiTheme.Ink);
+            text.AddChild(name);
+
+            var desc = new Label
+            {
+                Text = Loc.T("terrain." + key + ".desc"),
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                CustomMinimumSize = new Vector2(200, 0),
+            };
+            desc.AddThemeFontSizeOverride("font_size", 13);
+            desc.AddThemeColorOverride("font_color", UiTheme.Ink);
+            text.AddChild(desc);
+
+            cell.AddChild(text);
+            grid.AddChild(cell);
+        }
+    }
     private void BuildGalleryPanel()
     {
         _galleryDim = new ColorRect
@@ -1498,48 +1698,101 @@ public partial class MainMenu : Node3D
         _galleryPanel.OffsetBottom = 330;
         _root.AddChild(_galleryPanel);
 
-        var outer = new VBoxContainer();
-        outer.AddThemeConstantOverride("separation", 10);
-        _galleryPanel.AddChild(outer);
+        var layout = new VBoxContainer();
+        layout.AddThemeConstantOverride("separation", 8);
+        _galleryPanel.AddChild(layout);
 
+        // 标题固定（不随内容滚动）
         var title = new Label { Text = Loc.T("gallery.title") };
         title.AddThemeFontSizeOverride("font_size", 26);
-        outer.AddChild(title);
+        layout.AddChild(title);
         _locBindings.Add(("gallery.title", () => title.Text = Loc.T("gallery.title")));
 
-        var grid = new GridContainer { Columns = 4 };
-        grid.AddThemeConstantOverride("h_separation", 10);
-        grid.AddThemeConstantOverride("v_separation", 10);
+        // 内容放进滚动区，避免条目过多撑破面板
+        _galleryScroll = new ScrollContainer
+        {
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+        };
+        layout.AddChild(_galleryScroll);
+
+        var outer = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        outer.AddThemeConstantOverride("separation", 10);
+        _galleryScroll.AddChild(outer);
+
+        // 每个建筑一行：缩略图 + 名称 + 功能描述
+        var grid = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        grid.AddThemeConstantOverride("separation", 8);
         outer.AddChild(grid);
 
         string[] ids = { "hq", "city", "barracks", "gunTurret", "aaGun", "missileSilo", "helipad" };
         foreach (string id in ids)
         {
-            var cell = new VBoxContainer();
+            Data.BuildingDef def = Data.GameDatabase.Building(id);
+
+            var row = new HBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+            row.AddThemeConstantOverride("separation", 12);
+
             var tex = new TextureRect
             {
-                CustomMinimumSize = new Vector2(220, 120),
+                CustomMinimumSize = new Vector2(150, 74),
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
                 StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
                 Texture = GD.Load<Texture2D>("res://gameAsset/textures/buildingsPreview/preview_" + id + ".png"),
             };
-            cell.AddChild(tex);
+            row.AddChild(tex);
 
-            Data.BuildingDef def = Data.GameDatabase.Building(id);
-            var label = new Label
+            var text = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+            text.AddThemeConstantOverride("separation", 2);
+
+            var name = new Label
             {
                 Text = def != null ? Loc.Name(def.NameZh, def.NameEn) : id,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
             };
-            cell.AddChild(label);
-            grid.AddChild(cell);
+            name.AddThemeFontSizeOverride("font_size", 18);
+            name.AddThemeColorOverride("font_color", UiTheme.Ink);
+            text.AddChild(name);
+
+            var desc = new Label
+            {
+                Text = def != null ? Loc.Name(def.DescZh, def.DescEn) : "",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                VerticalAlignment = VerticalAlignment.Top,
+            };
+            desc.AddThemeFontSizeOverride("font_size", 13);
+            desc.AddThemeColorOverride("font_color", UiTheme.Ink);
+            text.AddChild(desc);
+
+            row.AddChild(text);
+            grid.AddChild(row);
         }
+
+        outer.AddChild(SectionDivider());
+
+        // 地形总览
+        var terrainTitle = new Label { Text = Loc.T("gallery.terrain") };
+        terrainTitle.AddThemeFontSizeOverride("font_size", 20);
+        outer.AddChild(terrainTitle);
+        _locBindings.Add(("gallery.terrain", () => terrainTitle.Text = Loc.T("gallery.terrain")));
+
+        var terrainGrid = new GridContainer { Columns = 3 };
+        terrainGrid.AddThemeConstantOverride("h_separation", 10);
+        terrainGrid.AddThemeConstantOverride("v_separation", 8);
+        outer.AddChild(terrainGrid);
+
+        AddTerrainEntries(terrainGrid);
 
         var hint = new Label { Text = Loc.T("gallery.hint") };
         hint.AddThemeFontSizeOverride("font_size", 14);
         hint.AddThemeColorOverride("font_color", UiTheme.Grey);
         outer.AddChild(hint);
         _locBindings.Add(("gallery.hint", () => hint.Text = Loc.T("gallery.hint")));
+
+        outer.AddChild(SectionDivider());
 
         // 历史战绩
         var histTitle = new Label { Text = Loc.T("gallery.history") };
@@ -1551,12 +1804,10 @@ public partial class MainMenu : Node3D
         _historyBox.AddThemeConstantOverride("separation", 3);
         outer.AddChild(_historyBox);
 
-        // 撑开中间，把「返回」压到面板最底部
-        outer.AddChild(new Control { SizeFlagsVertical = Control.SizeFlags.ExpandFill });
-
+        // 返回按钮固定在面板底部（不随内容滚动）
         var back = new Button { Text = Loc.T("common.back"), CustomMinimumSize = new Vector2(0, 46) };
         back.Pressed += CloseGallery;
-        outer.AddChild(back);
+        layout.AddChild(back);
         _locBindings.Add(("common.back", () => back.Text = Loc.T("common.back")));
     }
 

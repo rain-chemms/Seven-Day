@@ -51,12 +51,22 @@ public partial class BattleScene : Node3D
 
     public override void _Ready()
     {
+        AnimSpeed.ApplyFromSettings();      // 加速模式（全局 TimeScale）
+        if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
+            GD.Print($"[Speed] 加速模式={AnimSpeed.Fast} TimeScale={Engine.TimeScale}");
+
         AudioManager.StopStinger();      // 重开一局时清掉上一局的结算音效
         GameDatabase.EnsureLoaded();
         ToonMaterial.Disabled = OS.GetCmdlineUserArgs().Contains("--nomats");
         _mouseScreen = GetViewport().GetVisibleRect().Size * 0.5f;
         BuildEnvironment();
         _inputGateUntil = Time.GetTicksMsec() + 400;
+
+        // 调试：--map map_02 直接指定地图
+        string[] args = OS.GetCmdlineUserArgs();
+        int mapFlag = System.Array.IndexOf(args, "--map");
+        if (mapFlag >= 0 && mapFlag + 1 < args.Length)
+            Session.MapId = args[mapFlag + 1];
 
         string mapId = string.IsNullOrEmpty(Session.MapId) ? MapId : Session.MapId;
         MapDef map = GameDatabase.Map(mapId);
@@ -86,6 +96,8 @@ public partial class BattleScene : Node3D
         _hud.SetHealthCamera(_rig.Camera);
         WireHud();
         _hud.ShowTransitionMask();
+        // 延迟到场景初始化完成再预热（_Ready 里 root 正忙于挂子节点）
+        Callable.From(SevenDay.UI.CardInspectOverlay.Prewarm).CallDeferred();
 
         _vfx = Vfx.Create(this);
         _vfx.Shake = (amount, duration) => _rig.Shake(amount, duration);
@@ -112,7 +124,17 @@ public partial class BattleScene : Node3D
         AudioManager.SetIntensity(0);
 
         // 开局抽牌动画
-        _hud.PlayDrawAnimation(_state.DrawnThisTurn);
+        int drawCount = _state.DrawnIndicesThisTurn.Count;
+        int producedCount = _state.ProducedThisTurn.Count;
+
+        // 编号等入场动画播完再出，避免「牌还没飞到、数字先出现」
+        float drawEnd = drawCount > 0 ? (drawCount - 1) * 0.07f + 0.34f : 0f;
+        float produceEnd = producedCount > 0 ? 0.14f + 0.5f + (producedCount - 1) * 0.12f : 0f;
+
+        _hud.HideOrderHints();
+        _hud.PlayDrawAnimation(_state.DrawnIndicesThisTurn);
+        PlayProduceAnimations(0.15f);
+        _hud.ShowOrderHintsAfter(Mathf.Max(drawEnd, produceEnd) + 0.05f);
 
         // 开发调试：--autoplay 让 AI 替双方轮流走，用来跑通整局逻辑
         if (OS.GetCmdlineUserArgs().Contains("--autoplay"))
@@ -127,6 +149,105 @@ public partial class BattleScene : Node3D
 
         if (OS.GetCmdlineUserArgs().Contains("--demo-defeat"))
             CallDeferred(nameof(DemoForceEnd), false);
+
+
+        // 开发调试：--demo-inspect 打开第一张手牌的放大查看器
+        if (OS.GetCmdlineUserArgs().Contains("--demo-inspect"))
+            CallDeferred(nameof(DemoInspect));
+
+        // 开发调试：--demo-cardsound 依次触发打出/弃牌/抽牌音效
+        if (OS.GetCmdlineUserArgs().Contains("--demo-cardsound"))
+            CallDeferred(nameof(DemoCardSounds));
+
+        // 开发调试：--demo-missile-badge 看发射井产出卡的「消耗」角标
+        if (OS.GetCmdlineUserArgs().Contains("--demo-missile-badge"))
+            CallDeferred(nameof(DemoMissileBadge));
+
+        // 开发调试：--demo-missile-exhaust 验证导弹袭击进消耗堆
+        if (OS.GetCmdlineUserArgs().Contains("--demo-missile-exhaust"))
+            CallDeferred(nameof(DemoMissileExhaust));
+
+        // 开发调试：--demo-pile-layers 验证牌堆查看器在飞牌之上
+        if (OS.GetCmdlineUserArgs().Contains("--demo-pile-layers"))
+            CallDeferred(nameof(DemoPileLayers));
+
+        // 开发调试：--demo-reclaim 验证战场扫荡
+        if (OS.GetCmdlineUserArgs().Contains("--demo-reclaim"))
+            CallDeferred(nameof(DemoReclaim));
+
+        // 开发调试：--demo-exchange-rate 验证汇率调节卡
+        if (OS.GetCmdlineUserArgs().Contains("--demo-exchange-rate"))
+            CallDeferred(nameof(DemoExchangeRate));
+
+        // 开发调试：--demo-keyword-cycle 验证所有实例关键字跨牌堆
+        if (OS.GetCmdlineUserArgs().Contains("--demo-keyword-cycle"))
+            CallDeferred(nameof(DemoKeywordCycle));
+
+        // 开发调试：--demo-ethereal-cycle 验证虚无标记跨牌堆传递
+        if (OS.GetCmdlineUserArgs().Contains("--demo-ethereal-cycle"))
+            CallDeferred(nameof(DemoEtherealCycle));
+
+        // 开发调试：--demo-ethereal-play 验证虚无卡打出后关键字保留
+        if (OS.GetCmdlineUserArgs().Contains("--demo-ethereal-play"))
+            CallDeferred(nameof(DemoEtherealPlayKeep));
+
+        // 开发调试：--demo-keybinds 验证数字键选牌 / E 键结束回合
+        if (OS.GetCmdlineUserArgs().Contains("--demo-keybinds"))
+            CallDeferred(nameof(DemoKeybinds));
+
+        // 开发调试：--demo-play-ethereal 验证同名牌里打出正确的那张
+        if (OS.GetCmdlineUserArgs().Contains("--demo-play-ethereal"))
+            CallDeferred(nameof(DemoPlayEthereal));
+
+        // 开发调试：--demo-play-dup / --demo-produce-full
+        if (OS.GetCmdlineUserArgs().Contains("--demo-play-dup"))
+            CallDeferred(nameof(DemoPlayDuplicate));
+        if (OS.GetCmdlineUserArgs().Contains("--demo-produce-full"))
+            CallDeferred(nameof(DemoProduceFull));
+
+        // 开发调试：--demo-produce-fly 验证建筑产卡飞行动画
+        if (OS.GetCmdlineUserArgs().Contains("--demo-produce-fly"))
+            CallDeferred(nameof(DemoProduceFly));
+
+        // 开发调试：--demo-produce-toggle 验证建筑产卡开关
+        if (OS.GetCmdlineUserArgs().Contains("--demo-produce-toggle"))
+            CallDeferred(nameof(DemoProduceToggle));
+
+        // 开发调试：--demo-spawn-rightclick 验证右键收起出兵面板
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-rightclick"))
+            CallDeferred(nameof(DemoSpawnRightClick));
+
+        // 开发调试：--demo-spawn-table 验证各等级出兵表
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-table"))
+            CallDeferred(nameof(DemoSpawnTable));
+
+        // 开发调试：--demo-spawn-overflow 验证面板纵向滚动
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-overflow"))
+            CallDeferred(nameof(DemoSpawnOverflow));
+
+        // 开发调试：--demo-spawn-view 看出兵面板外观（一行三个）
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-view"))
+            CallDeferred(nameof(DemoSpawnView));
+
+        // 开发调试：--demo-spawn-lv1 复现 Lv1 出兵面板点击问题
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-lv1"))
+            CallDeferred(nameof(DemoSpawnLv1));
+
+        // 开发调试：--demo-spawn-upgrade 验证升级后出兵面板刷新
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-upgrade"))
+            CallDeferred(nameof(DemoSpawnUpgrade));
+
+        // 开发调试：--demo-spawn 验证兵营/机坪出兵
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn"))
+            CallDeferred(nameof(DemoSpawn));
+
+        // 开发调试：--demo-income 验证收入飘字
+        if (OS.GetCmdlineUserArgs().Contains("--demo-income"))
+            CallDeferred(nameof(DemoIncome));
+
+        // 开发调试：--demo-terrain 验证各地形的移动/射程/收入/控制半径
+        if (OS.GetCmdlineUserArgs().Contains("--demo-terrain"))
+            CallDeferred(nameof(DemoTerrain));
 
         // 开发调试：--demo-demolish 验证拆除返还 65% 本金
         if (OS.GetCmdlineUserArgs().Contains("--demo-demolish"))
@@ -1463,6 +1584,7 @@ public partial class BattleScene : Node3D
         _state.Player.Exhaust.Clear();
 
         _state.BeginTurn(PlayerId.Player);
+        CallDeferred(nameof(ShowOpeningIncome));
         _map.SyncEntities();
         _map.RefreshZones();
         RefreshAll();
@@ -3346,6 +3468,797 @@ public partial class BattleScene : Node3D
 
         GD.Print($"[Demolish] 金币 {before} → {_state.Player.Gold}（+{_state.Player.Gold - before}）");
     }
+    /// <summary>验证四张卡牌音效：打出 / 抽牌 / 弃牌 / 洗牌。</summary>
+    private async void DemoCardSounds()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        // 1) 打出一张不需要地块的卡（全局卡最容易自动打出）
+        int idx = _state.Player.Hand.FindIndex(id => GameDatabase.Card(id)?.KindEnum == CardKind.Global);
+        if (idx < 0)
+        {
+            _state.Player.Gold = 999;
+            _state.Player.Hand.Insert(0, "magic_boost");
+            RefreshAll();
+            idx = 0;
+        }
+
+        _state.Player.Gold = Mathf.Max(_state.Player.Gold, 999);
+        OnCardClicked(idx);
+        OnCardClicked(idx);
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        GD.Print("[CardSound] 已尝试打出一张卡");
+
+        // 2) 结束回合 → 弃牌音效
+        OnEndTurn();
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print("[CardSound] 已结束回合（弃牌 + 敌方行动 + 抽牌）");
+    }
+    /// <summary>打开手牌第一张的放大查看器，用于截图/验证。</summary>
+    private async void DemoInspect()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        if (_state.Player.Hand.Count == 0)
+            return;
+
+        SevenDay.UI.CardInspectOverlay.Show(
+            GameDatabase.Card(_state.Player.Hand[0]), _state.IsEtherealAt(0));
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--close-inspect") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+            SevenDay.UI.CardInspectOverlay.Close();
+            GD.Print("[Inspect] 已触发关闭动画");
+        }
+    }
+    /// <summary>验证地形效果：在各类地形上放单位/建筑，打印生效数值。</summary>
+    private async void DemoTerrain()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        var counts = new Dictionary<TerrainType, int>();
+        foreach (Cell cc in _state.Cells.Values)
+            counts[cc.Terrain] = counts.TryGetValue(cc.Terrain, out int n) ? n + 1 : 1;
+
+        GD.Print($"[Map] {_state.Map.Id} 地形统计：" +
+                 string.Join("，", counts.Select(kv => $"{kv.Key}={kv.Value}")));
+
+        (TerrainType Terrain, string Name)[] kinds =
+        {
+            (TerrainType.Dirt, "泥土"),
+            (TerrainType.Grass, "草地"),
+            (TerrainType.Sand, "沙地"),
+            (TerrainType.Rock, "岩地"),
+            (TerrainType.Snow, "雪地"),
+        };
+
+        int guard = 0;
+        foreach ((TerrainType terrain, string name) in kinds)
+        {
+            HexCoord? spot = null;
+            foreach (Cell c in _state.Cells.Values)
+            {
+                if (c.Terrain == terrain && c.Building == null && c.Units.Count == 0 &&
+                    c.Terrain != TerrainType.Water)
+                {
+                    spot = c.Coord;
+                    break;
+                }
+            }
+
+            if (spot == null)
+            {
+                // 地图上没有这种地形：临时把一块空地改成它来测
+                foreach (Cell c in _state.Cells.Values)
+                {
+                    if (c.Building == null && c.Units.Count == 0 && c.Terrain != TerrainType.Water)
+                    {
+                        c.Terrain = terrain;
+                        spot = c.Coord;
+                        break;
+                    }
+                }
+            }
+
+            if (spot == null)
+            {
+                GD.Print($"[Terrain] {name}: 找不到可用格子");
+                continue;
+            }
+
+            UnitInst u = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+            int move = _state.MoveStepsOf(u);
+            int range = _state.AttackRangeOf(u);
+            GD.Print($"[Terrain] {name}: 步兵 移动={move}（基础 {u.Def.Move}） 射程={range}（基础 {u.Def.Range}）");
+
+            if (true)
+            {
+                // 同一格再放一座城市，检查收入 / 控制半径
+                BuildingInst b = _state.SpawnBuilding("city", PlayerId.Player, spot.Value);
+                if (b != null)
+                {
+                    GD.Print($"[Terrain] {name}: 城市 收入={_state.IncomeOf(b)} 控制半径={b.ControlRadius}");
+                }
+            }
+
+            _map.SyncEntities();
+            _map.RefreshZones();
+            RefreshAll();
+        }
+
+        GD.Print("[Terrain] 完成");
+    }
+    /// <summary>验证收入飘字：造两座城市后立即触发一轮玩家收入。</summary>
+    private async void DemoIncome()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (hq != null)
+        {
+            int made = 0;
+            foreach (HexCoord c in HexCoord.Spiral(hq.Coord, 2))
+            {
+                if (c == hq.Coord || _state.Cell(c)?.Building != null)
+                    continue;
+
+                _state.SpawnBuilding("city", PlayerId.Player, c);
+                if (++made >= 2)
+                    break;
+            }
+        }
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        ShowIncomePopups(PlayerId.Player);
+        GD.Print("[Income] 已触发收入飘字");
+    }
+    /// <summary>验证出兵：造 Lv3 兵营/机坪，选中兵营并在本格出兵。</summary>
+    private async void DemoSpawn()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (hq == null)
+            return;
+
+        var spots = HexCoord.Spiral(hq.Coord, 2)
+            .Where(c => _state.Cell(c)?.Building == null && c != hq.Coord)
+            .Take(2)
+            .ToList();
+        if (spots.Count < 2)
+            return;
+
+        _state.Player.Gold = 2000;
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spots[0]);
+        BuildingInst helipad = _state.SpawnBuilding("helipad", PlayerId.Player, spots[1]);
+        barracks.Level = 3;
+        barracks.Hp = barracks.MaxHp;
+        helipad.Level = 3;
+        helipad.Hp = helipad.MaxHp;
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        SelectBuilding(barracks);
+        GD.Print($"[Spawn] 兵营可出：{string.Join(",", BattleState.SpawnOptions(barracks))}");
+        GD.Print($"[Spawn] 机坪可出：{string.Join(",", BattleState.SpawnOptions(helipad))}");
+
+        int before = _state.Player.Gold;
+        OnSpawnClicked("unit_tank");
+        GD.Print($"[Spawn] 出兵后金币 {before} → {_state.Player.Gold}；本格单位数={_state.Cell(barracks.Coord).Units.Count}");
+        GD.Print($"[Spawn] 再出一次：" + (_state.CanSpawnFrom(barracks, "unit_tank", out string why) ? "允许" : why));
+
+        UnitInst fresh = _state.Cell(barracks.Coord).Units.LastOrDefault();
+        if (fresh != null)
+        {
+            GD.Print($"[Spawn] 新兵状态 moved={fresh.Moved} attacked={fresh.Attacked} 可移动格数={_state.MoveRange(fresh).Count}");
+        }
+
+        RefreshAll();
+        RefreshSpawnPanel(barracks);
+        GD.Print($"[Spawn] 选中兵营后 面板可见={_hud.SpawnVisible}");
+
+        // 在出兵面板范围内点一下，验证点击不会穿透到地图格子
+        if (_hud.SpawnVisible)
+        {
+            Vector2 panelCenter = _hud.SpawnPanelGlobalCenter();
+            SendClick(panelCenter);
+            await ToSignal(GetTree().CreateTimer(0.15), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[Spawn] 面板内点击后 选中建筑={( _selBuilding != null ? _selBuilding.DefId : "无")}（应仍为 barracks）");
+        }
+
+        // 点一个没有建筑的格子，面板应自动收起
+        _selBuilding = null;
+        RefreshSpawnPanel(_selBuilding);
+        GD.Print($"[Spawn] 取消选中后面板可见={_hud.SpawnVisible}");
+    }
+    /// <summary>验证升级后出兵面板立即刷新：兵营从 Lv1 升到 Lv3。</summary>
+    private async void DemoSpawnUpgrade()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (hq == null)
+            return;
+
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2)
+            .FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+        if (spot == null)
+            return;
+
+        _state.Player.Gold = 5000;
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+
+        GD.Print($"[Upgrade] Lv{barracks.Level} 可出：{string.Join(",", BattleState.SpawnOptions(barracks))}");
+
+        OnUpgradeClicked();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Upgrade] Lv{barracks.Level} 可出：{string.Join(",", BattleState.SpawnOptions(barracks))} 面板可见={_hud.SpawnVisible}");
+
+        OnUpgradeClicked();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Upgrade] Lv{barracks.Level} 可出：{string.Join(",", BattleState.SpawnOptions(barracks))} 面板可见={_hud.SpawnVisible}");
+    }
+    /// <summary>复现：Lv1 兵营只有一个出兵项，检查是否可点、点击是否穿透。</summary>
+    private async void DemoSpawnLv1()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2)
+            .FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+
+        _state.Player.Gold = 320;
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+
+        foreach (string cardId in BattleState.SpawnOptions(barracks))
+        {
+            bool ok = _state.CanSpawnFrom(barracks, cardId, out string why);
+            GD.Print($"[Lv1] {cardId} ready={ok} 原因={(ok ? "-" : why)} 金币={_state.Player.Gold} 花费={BattleState.UnitCost(cardId)}");
+        }
+
+        GD.Print($"[Lv1] 面板可见={_hud.SpawnVisible} 面板矩形={_hud.SpawnPanelRect()}");
+
+        GD.Print($"[Lv1] 按钮数量={_hud.SpawnButtonCount()}（应为 1）");
+
+        // 点第一个出兵按钮：应扣费并原地生成
+        Rect2 btnRect = _hud.SpawnButtonRect(0);
+        SendClick(btnRect.Position + btnRect.Size * 0.5f);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Lv1] 点击后：金币={_state.Player.Gold} 本格单位={_state.Cell(barracks.Coord).Units.Count} " +
+                 $"选中建筑={(_selBuilding != null ? _selBuilding.DefId : "无")} 面板可见={_hud.SpawnVisible}");
+    }
+    /// <summary>出兵面板外观验证：Lv3 兵营，一行三个，并点击面板空白处验证不穿透。</summary>
+    private async void DemoSpawnView()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2)
+            .FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+
+        _state.Player.Gold = 2000;
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        barracks.Level = 3;
+        barracks.Hp = barracks.MaxHp;
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+
+        GD.Print($"[View] 面板可见={_hud.SpawnVisible} 按钮数={_hud.SpawnButtonCount()} 矩形={_hud.SpawnPanelRect()}");
+
+        // 悬停到第二个按钮上，验证放大动画
+        Rect2 hoverRect = _hud.SpawnButtonRect(1);
+        Input.WarpMouse(hoverRect.Position + hoverRect.Size * 0.5f);
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--no-click") >= 0)
+        {
+            Input.WarpMouse(new Vector2(640f, 40f));   // 移开鼠标，避免 tooltip 挡住截图
+            return;
+        }
+
+        // 面板中心点一下（这块区域原本会被牌堆图标吃掉）
+        SendClick(_hud.SpawnPanelGlobalCenter());
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[View] 中心点击后：面板={_hud.SpawnVisible} 选中={(_selBuilding != null ? _selBuilding.DefId : "无")}");
+    }
+    /// <summary>验证出兵面板一行三个 + 纵向滚动（塞 6 项）。</summary>
+    private async void DemoSpawnOverflow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        var options = new List<(string CardId, string Name, int Cost, string Icon, bool Ready, string Tip)>();
+        string[] cards = { "unit_infantry", "unit_fpv_drone", "unit_tank", "unit_helicopter", "unit_fighter", "unit_missile_launcher" };
+        foreach (string cardId in cards)
+        {
+            CardDef card = GameDatabase.Card(cardId);
+            if (card == null)
+                continue;
+
+            options.Add((cardId, Loc.Name(card.NameZh, card.NameEn), card.Cost,
+                "res://gameAsset/textures/cardface/cardface_" + card.Unit + ".png", true, ""));
+        }
+
+        _hud.ShowSpawnPanel("出兵（溢出测试 6 项）", options);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Overflow] 按钮数={_hud.SpawnButtonCount()} 矩形={_hud.SpawnPanelRect()}");
+    }
+    /// <summary>验证新出兵表：兵营 Lv1-Lv3、机坪 Lv1-Lv3。</summary>
+    private async void DemoSpawnTable()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        var spots = HexCoord.Spiral(hq.Coord, 2)
+            .Where(c => c != hq.Coord && _state.Cell(c)?.Building == null)
+            .Take(2)
+            .ToList();
+
+        _state.Player.Gold = 5000;
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spots[0]);
+        BuildingInst helipad = _state.SpawnBuilding("helipad", PlayerId.Player, spots[1]);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        for (int lv = 1; lv <= 3; lv++)
+        {
+            barracks.Level = lv;
+            GD.Print($"[Table] 兵营 Lv{lv}: {string.Join(",", BattleState.SpawnOptions(barracks))}");
+        }
+
+        for (int lv = 1; lv <= 3; lv++)
+        {
+            helipad.Level = lv;
+            GD.Print($"[Table] 机坪 Lv{lv}: {string.Join(",", BattleState.SpawnOptions(helipad))}");
+        }
+
+        barracks.Level = 3;
+        SelectBuilding(barracks);
+        GD.Print($"[Table] 满级兵营按钮数={_hud.SpawnButtonCount()}");
+
+        foreach (string cardId in BattleState.SpawnOptions(barracks))
+        {
+            bool ok = _state.CanSpawnFrom(barracks, cardId, out string why);
+            GD.Print($"[Table] {cardId} 可出兵={ok} {(ok ? "" : "原因=" + why)} 花费={BattleState.UnitCost(cardId)} 金币={_state.Player.Gold}");
+        }
+    }
+    /// <summary>验证导弹袭击打出后进消耗堆（而不是弃牌堆）。</summary>
+    private async void DemoMissileExhaust()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        CardDef card = GameDatabase.Card("magic_missile");
+        GD.Print($"[Missile] 卡牌定义 Exhaust={card?.Exhaust} Retain={card?.Retain}");
+
+        _state.Player.Gold = 2000;   // 保证两张都打得起
+
+        // 模拟发射井产出一张，验证「只有产出的那张消耗」
+        _state.Player.ProducedExhaust.Add("magic_missile");
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Enemy && b.IsHq);
+        HexCoord target = hq.Coord.Neighbor(1);
+        if (_state.Cell(target)?.Building != null)
+            target = hq.Coord.Neighbor(3);
+
+        _state.SpawnUnit("infantry", PlayerId.Enemy, target);
+        _map.SyncEntities();
+
+        _state.Player.Hand.Add("magic_missile");
+        RefreshAll();
+
+        int handCount = _state.Player.Hand.Count;
+        int exhaustBefore = _state.Player.Exhaust.Count;
+        int discardBefore = _state.Player.Discard.Count;
+
+        bool played = TryPlayCardAt(handCount - 1, target);
+        GD.Print($"[Missile] 尝试打出={played}");
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Missile] 打出后 LastPlayedExhaust={_state.LastPlayedExhaust}");
+        GD.Print($"[Missile] 消耗堆 {exhaustBefore} → {_state.Player.Exhaust.Count}；弃牌堆 {discardBefore} → {_state.Player.Discard.Count}");
+
+        // 再打一张「卡组里的」同名牌，应该进弃牌堆
+        int exhaust2 = _state.Player.Exhaust.Count;
+        int discard2 = _state.Player.Discard.Count;
+        _state.SpawnUnit("infantry", PlayerId.Enemy, target);   // 换一个新的靶子
+        _map.SyncEntities();
+        _state.Player.Hand.Add("magic_missile");
+        RefreshAll();
+        bool played2 = TryPlayCardAt(_state.Player.Hand.Count - 1, target);
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Missile] 普通同名卡 打出={played2} LastPlayedExhaust={_state.LastPlayedExhaust} " +
+                 $"消耗堆 {exhaust2} → {_state.Player.Exhaust.Count}，弃牌堆 {discard2} → {_state.Player.Discard.Count}");
+    }
+    /// <summary>只把「发射井产出的导弹卡」放进手牌，用来截图看角标。</summary>
+    private async void DemoMissileBadge()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Hand.Add("magic_missile");
+        _state.Player.ProducedExhaust.Add("magic_missile");
+        RefreshAll();
+        GD.Print($"[Badge] 手牌末张是否产出消耗={_state.IsProducedExhaustAt(_state.Player.Hand.Count - 1)}");
+    }
+    /// <summary>验证右键关闭出兵面板。</summary>
+    private async void DemoSpawnRightClick()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2)
+            .FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+
+        GD.Print($"[RightClick] 选中后 面板={_hud.SpawnVisible} 建筑={(_selBuilding != null ? _selBuilding.DefId : "无")}");
+
+        Vector2 pos = new(640f, 300f);
+        Input.WarpMouse(pos);
+        SendButton(pos, true, MouseButton.Right);
+        SendButton(pos, false, MouseButton.Right);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[RightClick] 右键后 面板={_hud.SpawnVisible} 建筑={(_selBuilding != null ? _selBuilding.DefId : "无")}");
+    }
+    private void CaptureProduceButton(string expected)
+    {
+        GD.Print($"[Produce] 按钮文案={_hud.DebugProduceText()}（期望含 {expected}）");
+    }
+    /// <summary>验证建筑产卡开关：导弹井关掉后不再发导弹卡。</summary>
+    private async void DemoProduceToggle()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2)
+            .FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+
+        _state.Player.Gold = 3000;
+        BuildingInst silo = _state.SpawnBuilding("missileSilo", PlayerId.Player, spot.Value);
+        silo.Level = 3;                       // 每回合都产
+        silo.Hp = silo.MaxHp;
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        int Before() => _state.Player.Hand.Count(x => x == "magic_missile");
+
+        // 开：产卡（先清手牌，避免手牌上限挡住产卡）
+        silo.ProduceEnabled = true;
+        _state.Player.Hand.Clear();
+        _state.BeginTurn(PlayerId.Player);
+        GD.Print($"[Produce] 开启时导弹卡={Before()}");
+
+        // 关：不产卡
+        silo.ProduceEnabled = false;
+        _state.Player.Hand.Clear();
+        _state.BeginTurn(PlayerId.Player);
+        GD.Print($"[Produce] 关闭时导弹卡={Before()}");
+
+        // 界面：先看「关」，再打开看「开」
+        SelectBuilding(silo);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        CaptureProduceButton("关");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--keep-off") >= 0)
+            return;
+
+        silo.ProduceEnabled = true;
+        ShowBuildingInfo(silo);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        CaptureProduceButton("开");
+    }
+    /// <summary>验证建筑产卡飞行动画：兵营发一张兵种卡，从建筑飞到手牌。</summary>
+    private async void DemoProduceFly()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2)
+            .FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _state.Player.Hand.Clear();
+        _state.BeginTurn(PlayerId.Player);
+        RefreshAll();
+
+        GD.Print($"[Fly] 产出记录={_state.ProducedThisTurn.Count} 手牌={_state.Player.Hand.Count}");
+        PlayProduceAnimations(0.1f);
+    }
+    /// <summary>验证打出一张牌后，同名牌不会少、手牌不留空位。</summary>
+    private async void DemoPlayDuplicate()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        // 手里放三张同名步兵，再放一张坦克
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Hand.Add("unit_tank");
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Gold = 2000;
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Dup] 打出前 手牌={string.Join(",", _state.Player.Hand)} 可见卡={_hud.VisibleHandCards()}/{_hud.HandCardCount()}");
+
+        HexCoord? spot = HexCoord.Spiral(_state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord, 2)
+            .FirstOrDefault(c => c != _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord);
+        TryPlayCardAt(0, spot.Value);
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Dup] 打出后 手牌={string.Join(",", _state.Player.Hand)} 可见卡={_hud.VisibleHandCards()}/{_hud.HandCardCount()}");
+    }
+
+    /// <summary>验证手牌满时建筑不再产卡。</summary>
+    private async void DemoProduceFull()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2).FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+
+        _state.Player.Hand.Clear();
+        for (int i = 0; i < 10; i++)
+            _state.Player.Hand.Add("unit_infantry");   // 顶满 10 张
+
+        _state.BeginTurn(PlayerId.Player);
+        GD.Print($"[Full] 手牌满时产卡后手牌数={_state.Player.Hand.Count} 产出记录={_state.ProducedThisTurn.Count}");
+    }
+    /// <summary>验证同名牌里「打出普通的那张，不会误删虚无那张」。</summary>
+    private async void DemoPlayEthereal()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord hqCoord = _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord;
+        HexCoord? spot = HexCoord.Spiral(hqCoord, 2).FirstOrDefault(c => c != hqCoord && _state.Cell(c)?.Building == null);
+
+        _state.Player.Gold = 3000;
+        _state.Player.Hand.Clear();
+        _state.Player.Ethereal.Clear();
+        _state.Player.Hand.Add("unit_infantry");      // 0：虚无那张
+        _state.Player.Ethereal.Add("unit_infantry");
+        _state.Player.Hand.Add("unit_infantry");      // 1：普通那张
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Eth] 打出前 0是虚无={_state.IsEtherealAt(0)} 1是虚无={_state.IsEtherealAt(1)}");
+
+        // 打出普通那张（下标 1）
+        TryPlayCardAt(1, spot.Value);
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Eth] 打出(普通)后 手牌={string.Join(",", _state.Player.Hand)} 虚无数={_state.Player.Ethereal.Count} " +
+                 $"剩余是虚无={(_state.Player.Hand.Count > 0 && _state.IsEtherealAt(0))}");
+
+        // 再来一次：这次打出虚无那张（下标 0）
+        _state.Player.Hand.Clear();
+        _state.Player.Ethereal.Clear();
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Ethereal.Add("unit_infantry");
+        _state.Player.Hand.Add("unit_infantry");
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        TryPlayCardAt(0, spot.Value);
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Eth] 打出(虚无)后 手牌={string.Join(",", _state.Player.Hand)} 虚无数={_state.Player.Ethereal.Count} " +
+                 $"剩余是虚无={(_state.Player.Hand.Count > 0 && _state.IsEtherealAt(0))}");
+    }
+    /// <summary>验证数字键选牌与 E 键结束回合。</summary>
+    private async void DemoKeybinds()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Key] 手牌数={_state.Player.Hand.Count} 选中={_selCard}");
+
+        PressKey(Key.Key3);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Key] 按 3 后 选中={_selCard}（期望 2）");
+
+        PressKey(Key.Key0);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Key] 按 0 后 选中={_selCard}（手牌不足 10 张应保持 2）");
+
+        int before = _state.TurnNumber;
+        PressKey(Key.E);
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Key] 按 E 后 阶段={_state.Phase} 回合 {before}→{_state.TurnNumber}");
+    }
+
+    private static void PressKey(Key key)
+    {
+        Input.ParseInputEvent(new InputEventKey { Keycode = key, PhysicalKeycode = key, Pressed = true });
+        Input.ParseInputEvent(new InputEventKey { Keycode = key, PhysicalKeycode = key, Pressed = false });
+    }
+    /// <summary>验证虚无卡打出后，弃牌堆里仍然带「虚无」关键字。</summary>
+    private async void DemoEtherealPlayKeep()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord hq = _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord;
+        HexCoord? spot = HexCoord.Spiral(hq, 2).FirstOrDefault(c => c != hq && _state.Cell(c)?.Building == null);
+
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Clear();
+        _state.Player.Ethereal.Clear();
+        _state.Player.Hand.Add("unit_infantry");
+        _state.Player.Ethereal.Add("unit_infantry");    // 这张是建筑发的虚无卡
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        TryPlayCardAt(0, spot.Value);
+        await ToSignal(GetTree().CreateTimer(0.9), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[EthKeep] 弃牌堆={string.Join(",", _state.Player.Discard)} " +
+                 $"虚无标记={string.Join(",", _state.Player.EtherealDiscarded)} " +
+                 $"LastPlayedEthereal={_state.LastPlayedEthereal}");
+
+        OnPileClicked((int)PileView.PileKind.Discard);
+    }
+    /// <summary>验证虚无标记跨牌堆传递：弃牌堆 → 抽牌堆 → 手牌。</summary>
+    private async void DemoEtherealCycle()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        PlayerState me = _state.Player;
+        me.Hand.Clear();
+        me.Ethereal.Clear();
+        me.Deck.Clear();
+        me.Discard.Clear();
+        me.EtherealDiscarded.Clear();
+        me.EtherealDeck.Clear();
+
+        // 弃牌堆里有一张「虚无」步兵
+        me.Discard.Add("unit_infantry");
+        me.EtherealDiscarded.Add("unit_infantry");
+
+        GD.Print($"[Cycle] 洗牌前 弃牌={me.Discard.Count} 虚无标记(弃)={me.EtherealDiscarded.Count}");
+
+        // 牌库空 → 触发洗回 → 再抽一张
+        _state.DrawCard(me, 1);
+        RefreshAll();
+
+        GD.Print($"[Cycle] 抽牌后 手牌={string.Join(",", me.Hand)} 手牌虚无={me.Ethereal.Count} " +
+                 $"牌库虚无={me.EtherealDeck.Count} 是虚无={me.Hand.Count > 0 && _state.IsEtherealAt(0)}");
+
+        // 再验证：手牌这张丢回弃牌堆
+        _state.DiscardOne(me, 0);
+        GD.Print($"[Cycle] 弃掉后 弃牌={string.Join(",", me.Discard)} 虚无标记(弃)={me.EtherealDiscarded.Count}");
+    }
+    /// <summary>验证「产出消耗」标记也跨堆保留：手牌→弃牌→洗回→手牌。</summary>
+    private async void DemoKeywordCycle()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        PlayerState me = _state.Player;
+        me.Hand.Clear();
+        me.Ethereal.Clear();
+        me.ProducedExhaust.Clear();
+        me.Deck.Clear();
+        me.Discard.Clear();
+        me.EtherealDiscarded.Clear();
+        me.EtherealDeck.Clear();
+        me.ProducedExhaustDiscarded.Clear();
+        me.ProducedExhaustDeck.Clear();
+
+        me.Hand.Add("magic_missile");
+        me.ProducedExhaust.Add("magic_missile");    // 发射井产出的那张
+
+        _state.DiscardOne(me, 0);
+        GD.Print($"[Kw] 弃掉后 弃牌={string.Join(",", me.Discard)} 产出消耗标记(弃)={me.ProducedExhaustDiscarded.Count}");
+
+        _state.DrawCard(me, 1);
+        RefreshAll();
+        GD.Print($"[Kw] 洗回并抽到 手牌={string.Join(",", me.Hand)} 产出消耗标记(手)={me.ProducedExhaust.Count} " +
+                 $"是产出消耗={(_state.Player.Hand.Count > 0 && _state.IsProducedExhaustAt(0))}");
+    }
+    /// <summary>验证「汇率调节」：花费 0，获得现有资金 5%。</summary>
+    private async void DemoExchangeRate()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("magic_exchange_rate");
+        _state.Player.Gold = 1000;
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        int before = _state.Player.Gold;
+        string result = _state.PlayGlobalCard(_state.Player, "magic_exchange_rate", null, out string error);
+        RefreshAll();
+
+        GD.Print($"[Exchange] 结果={result} 错误={error} 金币 {before} → {_state.Player.Gold}");
+    }
+    /// <summary>验证「战场扫荡」：从消耗堆取回一张。</summary>
+    private async void DemoReclaim()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        PlayerState me = _state.Player;
+        me.Hand.Clear();
+        me.Exhaust.Clear();
+        me.EtherealExhausted.Clear();
+        me.Ethereal.Clear();
+
+        me.Hand.Add("magic_reclaim");
+        me.Gold = 1000;
+        me.Exhaust.Add("magic_airstrike");
+        me.Exhaust.Add("unit_tank");
+        me.EtherealExhausted.Add("unit_tank");    // 这张在消耗堆里带虚无
+        me.Ethereal.Add("unit_tank");
+        me.Ethereal.RemoveAt(me.Ethereal.Count - 1);   // 只是历史标记，手牌里没有
+
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        string result = _state.PlayGlobalCard(me, "magic_reclaim", null, out string error);
+        GD.Print($"[Reclaim] 打出={result} 错误={error} 待选={_state.PendingReclaimExhaust} 金币={me.Gold}");
+
+        if (_state.PendingReclaimExhaust)
+            OpenReclaimPicker();
+
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+
+        int handIndex = _state.ReclaimFromExhaust(me, 1);   // 取回坦克（带虚无标记的那张）
+        _hud.ClosePile();
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Reclaim] 取回后 手牌={string.Join(",", me.Hand)} 消耗堆={string.Join(",", me.Exhaust)} " +
+                 $"虚无={string.Join(",", me.Ethereal)} 手牌下标={handIndex}");
+    }
+    /// <summary>验证牌堆查看器层级：打开选择面板时飞牌不能盖在它上面。</summary>
+    private async void DemoPileLayers()
+    {
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        PlayerState me = _state.Player;
+        me.Hand.Clear();
+        me.Exhaust.Clear();
+        me.Hand.Add("magic_reclaim");
+        me.Gold = 1000;
+        me.Exhaust.Add("magic_airstrike");
+        me.Exhaust.Add("unit_tank");
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        _state.PlayGlobalCard(me, "magic_reclaim", null, out _);
+        if (_state.PendingReclaimExhaust)
+            OpenReclaimPicker();
+
+        // 面板开着的同时让一张卡从消耗堆位置飞出来，检查层级
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        _hud.PlayProduceAnimation(GameDatabase.Card("unit_tank"),
+            _hud.PileCenter(PileView.PileKind.Exhaust), 0, 0f);
+    }
     private void DemoDeploy()
     {
         BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
@@ -3640,6 +4553,8 @@ public partial class BattleScene : Node3D
         _hud.UpgradeClicked += OnUpgradeClicked;
         _hud.RepairClicked += OnRepairClicked;
         _hud.DemolishClicked += OnDemolishClicked;
+        _hud.SpawnClicked += OnSpawnClicked;
+        _hud.ProduceToggled += OnProduceToggled;
         _hud.ExtraFireClicked += OnExtraFireClicked;
         _hud.BuildHovered += OnBuildHovered;
         _hud.UpgradeHovered += OnUpgradeHovered;
@@ -3654,8 +4569,25 @@ public partial class BattleScene : Node3D
         switch (kind)
         {
             case (int)PileView.PileKind.Discard:
-                _hud.ShowPile("弃牌堆", _state.Player.Discard);
+            {
+                // 打出后进弃牌堆的虚无卡，查看器里也要显示关键字
+                List<string> ids = _state.Player.Discard;
+                var etherealIndices = new List<int>();
+                var pool = new List<string>(_state.Player.EtherealDiscarded);
+
+                for (int i = 0; i < ids.Count; i++)
+                {
+                    int k = pool.IndexOf(ids[i]);
+                    if (k < 0)
+                        continue;
+
+                    etherealIndices.Add(i);
+                    pool.RemoveAt(k);
+                }
+
+                _hud.ShowPile("弃牌堆", ids, etherealIndices, BuildPileFlagIndices(ids, _state.Player.ProducedExhaustDiscarded));
                 break;
+            }
             case (int)PileView.PileKind.Exhaust:
             {
                 // 消耗堆里被「虚无」耗掉的卡，查看器里也要显示关键字
@@ -3677,11 +4609,70 @@ public partial class BattleScene : Node3D
                 break;
             }
             default:
-                _hud.ShowPile("抽牌堆", _state.Player.Deck);
+            {
+                List<string> ids = _state.Player.Deck;
+                var etherealIndices = new List<int>();
+                var pool = new List<string>(_state.Player.EtherealDeck);
+
+                for (int i = 0; i < ids.Count; i++)
+                {
+                    int k = pool.IndexOf(ids[i]);
+                    if (k < 0)
+                        continue;
+
+                    etherealIndices.Add(i);
+                    pool.RemoveAt(k);
+                }
+
+                _hud.ShowPile("抽牌堆", ids, etherealIndices, BuildPileFlagIndices(ids, _state.Player.ProducedExhaustDeck));
                 break;
+            }
         }
     }
 
+    /// <summary>把「标记列表」映射成牌堆里对应的下标（按出现次数配对）。</summary>
+    private static List<int> BuildPileFlagIndices(List<string> ids, List<string> flags)
+    {
+        var indices = new List<int>();
+        var pool = new List<string>(flags);
+
+        for (int i = 0; i < ids.Count; i++)
+        {
+            int k = pool.IndexOf(ids[i]);
+            if (k < 0)
+                continue;
+
+            indices.Add(i);
+            pool.RemoveAt(k);
+        }
+
+        return indices;
+    }
+    /// <summary>「战场扫荡」：从消耗堆里选一张拿回手牌。</summary>
+    private void OpenReclaimPicker()
+    {
+        List<string> ids = _state.Player.Exhaust;
+        if (ids.Count == 0)
+        {
+            _state.PendingReclaimExhaust = false;
+            _hud.Toast("消耗堆是空的");
+            return;
+        }
+
+        _hud.ShowPile("消耗堆", ids, null, null, index =>
+        {
+            int handIndex = _state.ReclaimFromExhaust(_state.Player, index);
+            _hud.ClosePile();
+
+            if (handIndex >= 0)
+            {
+                RefreshAll();
+                CardDef def = GameDatabase.Card(_state.Player.Hand[handIndex]);
+                _hud.PlayProduceAnimation(def, _hud.PileCenter(PileView.PileKind.Exhaust), handIndex, 0.05f);
+                _hud.Toast($"取回 {def?.NameZh}");
+            }
+        });
+    }
     /// <summary>选中这张导弹袭击卡对应的发射井（优先用产出它的那座）。</summary>
     private void SelectRelatedMissileSilo(string cardId)
     {
@@ -3750,6 +4741,7 @@ public partial class BattleScene : Node3D
         _selUnit = null;
         _selBuilding = null;
         _hud.HideInfo();
+        _hud.HideSpawnPanel();
         CloseBuildMenu();
         _map.ClearHints();
 
@@ -4084,7 +5076,9 @@ public partial class BattleScene : Node3D
             return false;
         }
 
+        _state.PlayIndex = indexBeforePlay;
         _state.PlayUnitCard(_state.Player, card.Id, coord, out _);
+        _state.PlayIndex = -1;
         _selCard = -1;
         _hud.SetSelectedCard(-1);
         _map.ClearHints();
@@ -4103,6 +5097,8 @@ public partial class BattleScene : Node3D
     /// <summary>从手牌打出一张「不需要地块」的卡：先记下卡面位置，消耗卡才能播烧卡特效。</summary>
     private void PlayGlobalFromHand(int index, CardDef card)
     {
+        _pendingCardIndex = index;          // 记住打的是第几张，同名卡才能打出正确的那张
+
         if (_hud.TryGetHandCardRect(index, out Rect2 rect))
             _pendingPlayedRect = rect;
 
@@ -4208,6 +5204,7 @@ public partial class BattleScene : Node3D
 
     /// <summary>等待特效命中的这张卡。</summary>
     private (string CardId, HexCoord Target)? _pendingCard;
+    private int _pendingCardIndex = -1;
 
     /// <summary>出牌时记下手牌矩形，结算后从那里飞向牌堆。</summary>
     private Rect2 _pendingPlayedRect;
@@ -4225,14 +5222,17 @@ public partial class BattleScene : Node3D
         if (rect.Size.X <= 0 || rect.Size.Y <= 0)
             return;
 
-        if (card.Exhaust)
+        AudioManager.PlayCardUsed();
+
+        // 消耗判定看状态层的结果：定义里的 exhaust 关键字，或「发射井产出的这一张」
+        if (_state.LastPlayedExhaust)
         {
             // 消耗：原地烧掉 → 烧完再算进消耗堆
             _hud.BurnCardAt(card, rect, 0f, () => _hud.BumpPile(PileView.PileKind.Exhaust));
         }
         else
         {
-            _hud.PlayToPileAnimation(card, rect, false);
+            _hud.PlayToPileAnimation(card, rect, false, playSound: false);
         }
 
         _pendingPlayedRect = default;
@@ -4251,7 +5251,12 @@ public partial class BattleScene : Node3D
     /// <summary>真正结算这张卡（命中之后才调用）。</summary>
     private void ResolveCardNow(string cardId, HexCoord? target)
     {
+        _state.PlayIndex = _pendingCardIndex;
         string result = _state.PlayGlobalCard(_state.Player, cardId, target, out string error);
+
+        if (_state.PendingReclaimExhaust)
+            OpenReclaimPicker();
+        _state.PlayIndex = -1;
         if (!string.IsNullOrEmpty(error))
         {
             _hud.Toast(error);
@@ -4308,7 +5313,11 @@ public partial class BattleScene : Node3D
             CardDef def = GameDatabase.Card(id);
             float delay = stagger++ * 0.05f;
             var timer = GetTree().CreateTimer(delay);
-            timer.Timeout += () => _hud.BurnCardAt(def, rect);
+            timer.Timeout += () =>
+            {
+                AudioManager.PlayCardDiscarded();
+                _hud.BurnCardAt(def, rect);
+            };
         }
 
         // 普通弃牌：飞向弃牌堆
@@ -4376,6 +5385,7 @@ public partial class BattleScene : Node3D
 
     private void OnEndTurn()
     {
+        _hud.HideSpawnPanel();
         if (_state.Phase != BattlePhase.PlayerTurn || _enemyBusy)
             return;
 
@@ -4435,6 +5445,7 @@ public partial class BattleScene : Node3D
         }
 
         _state.EndTurn();
+        ShowIncomePopups(_state.CurrentPlayer);
         PlayVolleys();
         _enemyBusy = false;
         RefreshAll();
@@ -4442,7 +5453,17 @@ public partial class BattleScene : Node3D
         // 新回合抽牌：洗回提示 + 从抽牌堆飞进手牌
         if (_state.LastDrawReshuffled)
             _hud.PlayReshuffleAnimation();
-        _hud.PlayDrawAnimation(_state.DrawnThisTurn);
+        int drawCount = _state.DrawnIndicesThisTurn.Count;
+        int producedCount = _state.ProducedThisTurn.Count;
+
+        // 编号等入场动画播完再出，避免「牌还没飞到、数字先出现」
+        float drawEnd = drawCount > 0 ? (drawCount - 1) * 0.07f + 0.34f : 0f;
+        float produceEnd = producedCount > 0 ? 0.14f + 0.5f + (producedCount - 1) * 0.12f : 0f;
+
+        _hud.HideOrderHints();
+        _hud.PlayDrawAnimation(_state.DrawnIndicesThisTurn);
+        PlayProduceAnimations(0.15f);
+        _hud.ShowOrderHintsAfter(Mathf.Max(drawEnd, produceEnd) + 0.05f);
 
         CheckGameOver();
     }
@@ -4584,6 +5605,7 @@ public partial class BattleScene : Node3D
         _map.RefreshZones();
         ShowBuildingInfo(_selBuilding);
         RefreshAll();
+        RefreshSpawnPanel(_selBuilding);   // 升级后立刻刷新出兵面板（新等级解锁的兵种马上出现）
         _hud.Toast("升级完成");
     }
 
@@ -4596,6 +5618,7 @@ public partial class BattleScene : Node3D
         _state.Demolish(_selBuilding);
         _selBuilding = null;
         _hud.HideInfo();
+        _hud.HideSpawnPanel();
         _map.SyncEntities();
         _map.RefreshZones();
         RefreshAll();
@@ -4608,6 +5631,34 @@ public partial class BattleScene : Node3D
     {
         if (_state == null)
             return;
+
+        if (@event is InputEventKey { Pressed: true, Echo: false } numKey)
+        {
+            // 数字键 1~9 / 0 → 选中对应位置的手牌（0 对应第 10 张）
+            int slot = numKey.Keycode switch
+            {
+                Key.Key1 => 0, Key.Key2 => 1, Key.Key3 => 2, Key.Key4 => 3, Key.Key5 => 4,
+                Key.Key6 => 5, Key.Key7 => 6, Key.Key8 => 7, Key.Key9 => 8, Key.Key0 => 9,
+                Key.Kp1 => 0, Key.Kp2 => 1, Key.Kp3 => 2, Key.Kp4 => 3, Key.Kp5 => 4,
+                Key.Kp6 => 5, Key.Kp7 => 6, Key.Kp8 => 7, Key.Kp9 => 8, Key.Kp0 => 9,
+                _ => -1,
+            };
+
+            if (slot >= 0)
+            {
+                OnCardClicked(slot);
+                GetViewport().SetInputAsHandled();
+                return;
+            }
+
+            // E 键结束回合
+            if (numKey.Keycode == Key.E)
+            {
+                OnEndTurn();
+                GetViewport().SetInputAsHandled();
+                return;
+            }
+        }
 
         if (@event is InputEventMouseButton mb)
         {
@@ -4623,6 +5674,21 @@ public partial class BattleScene : Node3D
                     OnLeftClick(mb.Position);
                     return;
                 case MouseButton.Right:
+                    if (mb.Pressed && _hud.TerrainVisible)
+                    {
+                        // 右键先关掉左上角的地形检视面板
+                        _hud.HideTerrain();
+                    }
+
+                    if (mb.Pressed && _hud.SpawnVisible)
+                    {
+                        // 出兵面板开着：右键直接收起面板并取消建筑选中
+                        _hud.HideSpawnPanel();
+                        ClearSelection();
+                        RefreshAll();
+                        return;
+                    }
+
                     if (mb.Pressed)
                     {
                         _rightDragging = true;
@@ -4689,8 +5755,8 @@ public partial class BattleScene : Node3D
                 case Key.Q:
                     _rig.Rotate(-22.5f);
                     break;
-                case Key.E:
-                    _rig.Rotate(22.5f);
+                case Key.R:
+                    _rig.Rotate(22.5f);      // E 键改作「结束回合」
                     break;
                 case Key.Escape:
                     OnRightClick();
@@ -4753,6 +5819,14 @@ public partial class BattleScene : Node3D
 
     private void OnLeftClick(Vector2 screenPos)
     {
+        OnLeftClickCore(screenPos);
+
+        // 点击后同步出兵面板：只有「选中了能出兵的己方建筑」才显示，其余一律收起
+        RefreshSpawnPanel(_selBuilding);
+    }
+
+    private void OnLeftClickCore(Vector2 screenPos)
+    {
         if (Time.GetTicksMsec() < _inputGateUntil)
             return;
 
@@ -4771,6 +5845,7 @@ public partial class BattleScene : Node3D
         if (_state.Phase != BattlePhase.PlayerTurn)
             return;
 
+        _hud.ShowTerrain(cell.Terrain);      // 选中任意格子：左上角显示地形预览与效果
         PlayHexTileSound(-3f, coord);
 
         // 1) 正在选卡
@@ -4918,6 +5993,8 @@ public partial class BattleScene : Node3D
     {
         _selUnit = u;
         _selBuilding = null;
+        _hud.HideSpawnPanel();
+        _hud.ShowTerrain(_state.TerrainAt(u.Coord));
         CloseBuildMenu();
         _map.ClearHints();
         _map.SetSelectedBuilding(-1);
@@ -4956,14 +6033,143 @@ public partial class BattleScene : Node3D
 
         _infoUnitHp = u.Hp;
 
+        int move = _state.MoveStepsOf(u);
+        int range = _state.AttackRangeOf(u);
+
+        string moveText = move == u.Def.Move ? $"{move}" : $"{move}（地形 {u.Def.Move}）";
+        string rangeText = range == u.Def.Range ? $"{range}" : $"{range}（地形 {u.Def.Range}）";
+        string terrainLine = TerrainEffectLine(_state.TerrainAt(u.Coord));
+
         _hud.ShowInfo(
             $"{u.Def.NameZh}  {u.Hp}/{u.MaxHp}",
-            $"攻击 {atkText}　移动 {u.Def.Move}　射程 {u.Def.Range}\n" +
+            $"攻击 {atkText}　移动 {moveText}　射程 {rangeText}\n" +
             $"{(u.IsAir ? "空中单位，可越过地形" : "地面单位")}" +
             $"{(u.Def.CanHitAir ? "，可对空" : "")}\n" +
-            $"{(u.Moved ? "已移动" : "可移动")}　{(u.Attacked ? "已攻击" : "可攻击")}");
+            (string.IsNullOrEmpty(terrainLine) ? "" : terrainLine + "\n") +
+            (u.SpawnedThisTurn
+                ? "本回合刚登场，下回合才能行动"
+                : $"{(u.Moved ? "已移动" : "可移动")}　{(u.Attacked ? "已攻击" : "可攻击")}"));
     }
 
+    /// <summary>在每座产出金币的建筑上方弹出「+N」金色飘字（逐个错开）。</summary>
+    /// <summary>播放本回合建筑产出的卡：从建筑格飞到各自的手牌位置。</summary>
+    private void PlayProduceAnimations(float baseDelay = 0f)
+    {
+        if (_state.ProducedThisTurn.Count == 0)
+            return;
+
+        // 等手牌扇形重新排布完成（新卡会先出现在占位位置），再算目标格并起飞
+        SceneTreeTimer wait = GetTree().CreateTimer(0.14f);
+        wait.Timeout += () =>
+        {
+            int i = 0;
+            foreach ((string card, HexCoord from, int handIndex) in _state.ProducedThisTurn)
+            {
+                Vector3 world = HexLayout.ToWorld(from, HexMapView.TileTop) + new Vector3(0f, 0.9f, 0f);
+                Vector2 screen = _rig.Camera.UnprojectPosition(world);
+                _hud.PlayProduceAnimation(GameDatabase.Card(card), screen, handIndex, baseDelay + i * 0.12f);
+                i++;
+            }
+        };
+    }
+    private void ShowOpeningIncome() => ShowIncomePopups(PlayerId.Player);
+    private void ShowIncomePopups(PlayerId who)
+    {
+        int i = 0;
+        foreach ((BuildingInst building, int amount) in _state.IncomeSources(who))
+        {
+            Vector3 world = HexLayout.ToWorld(building.Coord, HexMapView.TileTop) +
+                           new Vector3(i * 0.30f, 1.35f + i * 0.72f, 0f);
+            Vector2 screen = _rig.Camera.UnprojectPosition(world);
+            _hud.ShowIncomePopup(screen, amount, i * 0.12f);
+            i++;
+        }
+    }
+    /// <summary>地形效果一句话说明（泥土无效果时返回空串）。</summary>
+    private static string TerrainEffectLine(TerrainType terrain) => terrain switch
+    {
+        TerrainType.Grass => "草地：本格建筑收入 +20%",
+        TerrainType.Sand => "沙地：本格陆军移动 -1（至少 1）",
+        TerrainType.Rock => "岩地：本格陆军移动 +1",
+        TerrainType.Snow => "雪地：本格单位射程 +1 / 建筑控制半径 +1",
+        TerrainType.Water => "水面：陆军无法进入",
+        _ => "",
+    };
+    /// <summary>调试用：在指定屏幕坐标模拟一次左键点击。</summary>
+    private void SendClick(Vector2 pos)
+    {
+        Input.WarpMouse(pos);
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = pos, GlobalPosition = pos,
+        });
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = pos, GlobalPosition = pos,
+        });
+    }
+    /// <summary>切换建筑是否产卡。</summary>
+    private void OnProduceToggled()
+    {
+        if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player)
+            return;
+
+        _selBuilding.ProduceEnabled = !_selBuilding.ProduceEnabled;
+        ShowBuildingInfo(_selBuilding);
+        RefreshAll();
+        _hud.Toast(_selBuilding.ProduceEnabled ? "已开启产卡" : "已关闭产卡");
+    }
+    /// <summary>点击出兵面板上的兵种：扣费并在建筑本格召唤。</summary>
+    private void OnSpawnClicked(string cardId)
+    {
+        if (_selBuilding == null || _state.Phase != BattlePhase.PlayerTurn)
+            return;
+
+        UnitInst spawned = _state.TrySpawnFromBuilding(_selBuilding, cardId, out string reason);
+        if (spawned == null)
+        {
+            _hud.Toast(string.IsNullOrEmpty(reason) ? "无法出兵" : reason);
+            return;
+        }
+
+        AudioManager.PlayDeploy(spawned.DefId);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        RefreshSpawnPanel(_selBuilding);
+        _hud.Toast($"已出兵：{Loc.Name(spawned.Def.NameZh, spawned.Def.NameEn)}");
+    }
+    /// <summary>选中兵营 / 直升机坪时显示出兵面板，其余情况隐藏。</summary>
+    private void RefreshSpawnPanel(BuildingInst b)
+    {
+        if (b == null || b.Owner != PlayerId.Player || _state.Phase != BattlePhase.PlayerTurn ||
+            b.Def?.SpawnByLevel == null || b.Def.SpawnByLevel.Length == 0)
+        {
+            _hud.HideSpawnPanel();
+            return;
+        }
+
+        var options = new List<(string CardId, string Name, int Cost, string Icon, bool Ready, string Tip)>();
+        foreach (string cardId in BattleState.SpawnOptions(b))
+        {
+            CardDef card = GameDatabase.Card(cardId);
+            if (card == null)
+                continue;
+
+            bool ready = _state.CanSpawnFrom(b, cardId, out string reason);
+            string icon = "res://gameAsset/textures/cardface/cardface_" + card.Unit + ".png";
+            string name = Loc.Name(card.NameZh, card.NameEn);
+            string tip = ready ? $"{name}  {card.Cost}$" : $"{name}：{reason}";
+
+            options.Add((cardId, name, card.Cost, icon, ready, tip));
+        }
+
+        string title = $"{Loc.Name(b.Def.NameZh, b.Def.NameEn)}  Lv.{b.Level}";
+        if (b.SpawnUsed)
+            title += "（本回合已出兵）";
+
+        _hud.ShowSpawnPanel(title, options);
+    }
     /// <summary>选中一座建筑：信息面板 + 控制区高亮 + （有攻击力时）红色可攻击范围。</summary>
     private void SelectBuilding(BuildingInst b)
     {
@@ -4972,6 +6178,8 @@ public partial class BattleScene : Node3D
 
         _selUnit = null;
         _selBuilding = b;
+        _hud.ShowTerrain(_state.TerrainAt(b.Coord));
+        RefreshSpawnPanel(b);
         AudioManager.PlaySelect(b.DefId);
         _map.ClearHints();
         _map.SetSelectedUnit(-1);
@@ -5009,7 +6217,8 @@ public partial class BattleScene : Node3D
         bool canUp = level < b.Def.MaxLevel;
 
         // 只有悬停「升级」按钮时才显示「=> 新值」，平时只显示当前数值
-        var lines = new List<string>(BuildStatLines(b.Def, level, next, canUp && showDelta));
+        var lines = new List<string>(BuildStatLines(b.Def, level, next, canUp && showDelta,
+            _state.TerrainAt(b.Coord)));
 
         string upgrade = canUp
             ? $"升级到 Lv.{next} 需要 {b.Def.UpgradeCostAt(level)}$"
@@ -5035,7 +6244,9 @@ public partial class BattleScene : Node3D
             repairAffordable: _state.Player.Gold >= repairCost,
             demolishRefund: b.Owner == PlayerId.Player && !b.IsHq
                 ? BattleState.DemolishRefund(b)
-                : 0);
+                : 0,
+            showProduce: b.Owner == PlayerId.Player && BattleState.IsCardProducer(b.DefId),
+            produceOn: b.ProduceEnabled);
     }
 
     /// <summary>建造前的信息预览：右侧面板显示一级的数值（没有按钮）。</summary>
@@ -5047,7 +6258,8 @@ public partial class BattleScene : Node3D
 
         var lines = new List<string> { $"建造花费 {def.UpgradeCostAt(0)}$" };
         // 建造预览不显示「=> 新值」，保持和平时一致
-        lines.AddRange(BuildStatLines(def, 1, Mathf.Min(2, def.MaxLevel), false));
+        lines.AddRange(BuildStatLines(def, 1, Mathf.Min(2, def.MaxLevel), false,
+            _state.TerrainAt(_buildTarget ?? HexCoord.Zero)));
 
         if (def.MaxLevel > 1)
             lines.Add($"升级到 Lv.2 需要 {def.UpgradeCostAt(1)}$");
@@ -5057,7 +6269,8 @@ public partial class BattleScene : Node3D
     }
 
     /// <summary>生成「每回合金币 / 攻击 / 控制半径」这几行，有下一级时带绿色新值。</summary>
-    private static IEnumerable<string> BuildStatLines(BuildingDef def, int level, int next, bool canUp)
+    private static IEnumerable<string> BuildStatLines(BuildingDef def, int level, int next, bool canUp,
+                                                      TerrainType terrain = TerrainType.Dirt)
     {
         const string Green = "5FBF5A";
 
@@ -5072,6 +6285,11 @@ public partial class BattleScene : Node3D
 
         int income = def.IncomeAt(level);
         int incomeNext = canUp ? def.IncomeAt(next) : income;
+        if (terrain == TerrainType.Grass)
+        {
+            income = Mathf.RoundToInt(income * 1.2f);
+            incomeNext = Mathf.RoundToInt(incomeNext * 1.2f);
+        }
         if (income > 0 || incomeNext > 0)
             yield return Stat("每回合金币", income, incomeNext, "+");
 
@@ -5082,8 +6300,9 @@ public partial class BattleScene : Node3D
             yield return $"{Stat("攻击", dmg, dmgNext)}　射程 {def.AttackRange}";
         }
 
-        int radius = def.ControlAt(level);
-        int radiusNext = canUp ? def.ControlAt(next) : radius;
+        int radiusBonus = terrain == TerrainType.Snow ? 1 : 0;
+        int radius = def.ControlAt(level) + radiusBonus;
+        int radiusNext = (canUp ? def.ControlAt(next) : def.ControlAt(level)) + radiusBonus;
         yield return Stat("控制半径", radius, radiusNext);
     }
 
@@ -5150,10 +6369,13 @@ public partial class BattleScene : Node3D
         _map.SetSelectedUnit(-1);
         _map.SetSelectedBuilding(-1);
         _hud.HideInfo();
+        _hud.HideSpawnPanel();   // 取消选中建筑 → 出兵面板一起收起
     }
 
     private void RefreshAll()
     {
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[Refresh] t={Time.GetTicksMsec()}");
         // 手牌要重建之前，先把「因为失去发射井而被移除的卡」烧掉（需要旧布局的卡面位置）
         FlushBurnedCards();
 

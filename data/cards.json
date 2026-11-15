@@ -13,8 +13,8 @@
     "id": "unit_tank",
     "nameZh": "坦克",
     "nameEn": "Tank",
-    "descriptionZh": "高血量地面单位，无法攻击空中。",
-    "descriptionEn": "Tanky ground unit. Cannot hit air.",
+    "descriptionZh": "高血量地面单位。",
+    "descriptionEn": "Tanky ground unit.",
     "kind": "unit",
     "unit": "tank",
     "cost": 250
@@ -23,8 +23,8 @@
     "id": "unit_missile_launcher",
     "nameZh": "导弹车",
     "nameEn": "Missile Launcher",
-    "descriptionZh": "射程 3，可对地对空。",
-    "descriptionEn": "Range 3. Hits air and ground.",
+    "descriptionZh": "远程压制单位。",
+    "descriptionEn": "Long-range support unit.",
     "kind": "unit",
     "unit": "missileLauncher",
     "cost": 300
@@ -43,8 +43,8 @@
     "id": "unit_fighter",
     "nameZh": "战斗机",
     "nameEn": "Fighter",
-    "descriptionZh": "移动 4，可对空，火力最猛。",
-    "descriptionEn": "Move 4. Hits air.",
+    "descriptionZh": "火力最猛。",
+    "descriptionEn": "Strongest firepower.",
     "kind": "unit",
     "unit": "fighter",
     "cost": 450
@@ -114,6 +114,29 @@
     "kind": "global",
     "cost": 100,
     "effect": "boost",
+    "power": 1
+  },  {
+    "id": "magic_exchange_rate",
+    "keywords": [],
+    "nameZh": "汇率调节",
+    "nameEn": "Exchange Adjustment",
+    "descriptionZh": "获得现有总资金 5% 的资金。",
+    "descriptionEn": "Gain 5% of your current gold.",
+    "kind": "global",
+    "cost": 0,
+    "effect": "gold_percent",
+    "power": 5,
+    "unit": "exchange_rate"
+  },  {
+    "id": "magic_reclaim",
+    "keywords": [],
+    "nameZh": "战场扫荡",
+    "nameEn": "Battlefield Sweep",
+    "descriptionZh": "从消耗牌堆中选择一张卡牌加入手牌。",
+    "descriptionEn": "Choose a card from the exhaust pile and add it to your hand.",
+    "kind": "global",
+    "cost": 150,
+    "effect": "reclaim_exhaust",
     "power": 1
   }
 ]
