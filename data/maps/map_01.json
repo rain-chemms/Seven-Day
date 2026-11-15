@@ -2,6 +2,8 @@
   "id": "map_01",
   "nameZh": "沙海隘口",
   "nameEn": "Sand Pass",
+  "descZh": "两侧岩壁夹出一条沙质通道，中央水洼挡住直冲的路线。适合先稳住两翼、再从中路推进。",
+  "descEn": "A sandy pass between rock walls; the central water blocks a direct rush. Hold both flanks, then push the middle.",
   "width": 11,
   "height": 9,
   "startGold": 300,

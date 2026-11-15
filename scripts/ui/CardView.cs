@@ -297,8 +297,8 @@ public partial class CardView : Control
         statsLeft.AddThemeConstantOverride("separation", -1);
         _stats.AddChild(statsLeft);
 
-        _statsHpValue = AddStatRow(statsLeft, "生命", new Color("C0392B"));   // 血量红字
-        _statsAtkValue = AddStatRow(statsLeft, "攻击", new Color("2F6FB5"));  // 攻击蓝字
+        _statsHpValue = AddStatRow(statsLeft, Loc.T("card.hp"), new Color("C0392B"));   // 血量红字
+        _statsAtkValue = AddStatRow(statsLeft, Loc.T("card.atk"), new Color("2F6FB5"));  // 攻击蓝字
 
         var statsRight = new VBoxContainer
         {
@@ -308,8 +308,8 @@ public partial class CardView : Control
         statsRight.AddThemeConstantOverride("separation", -1);
         _stats.AddChild(statsRight);
 
-        _statsRangeValue = AddStatRow(statsRight, "射程", new Color("7B4FB5"), alignEnd: true);   // 射程紫字
-        _statsMoveValue = AddStatRow(statsRight, "移动", new Color("3E8E4A"), alignEnd: true);    // 移动绿字
+        _statsRangeValue = AddStatRow(statsRight, Loc.T("card.range"), new Color("7B4FB5"), alignEnd: true);   // 射程紫字
+        _statsMoveValue = AddStatRow(statsRight, Loc.T("card.move"), new Color("3E8E4A"), alignEnd: true);    // 移动绿字
     }
 
     /// <summary>这张牌是「发射井产出、打出即消耗」的实例（卡牌定义本身没有消耗关键字）。</summary>
@@ -380,12 +380,12 @@ public partial class CardView : Control
     {
         string baseText = UiText.KeywordsOf(Def);
         if (_producedExhaust)
-            baseText = string.IsNullOrEmpty(baseText) ? "消耗" : baseText + " · 消耗";
+            baseText = string.IsNullOrEmpty(baseText) ? Loc.T("keyword.exhaust") : baseText + " · " + Loc.T("keyword.exhaust");
 
         if (!_ethereal)
             return baseText;
 
-        return string.IsNullOrEmpty(baseText) ? "虚无" : baseText + " · 虚无";
+        return string.IsNullOrEmpty(baseText) ? Loc.T("keyword.ethereal") : baseText + " · " + Loc.T("keyword.ethereal");
     }
 
     public void Refresh(bool affordable)
@@ -428,9 +428,9 @@ public partial class CardView : Control
 
                 var modes = new System.Collections.Generic.List<string>();
                 if (unitDef.CanHitGround)
-                    modes.Add("可对陆");
+                    modes.Add(Loc.T("card.target_ground"));
                 if (unitDef.CanHitAir)
-                    modes.Add("可对空");
+                    modes.Add(Loc.T("card.target_air"));
 
                 if (_targets != null)
                 {

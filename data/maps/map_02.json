@@ -2,6 +2,8 @@
   "id": "map_02",
   "nameZh": "全地形试验场",
   "nameEn": "All-Terrain Grounds",
+  "descZh": "全地形试验场：草地、沙地、岩石、雪地、水面各占一片，用来验证地形加成与限制。",
+  "descEn": "All-terrain proving ground: grass, sand, rock, snow and water each claim a patch — good for testing terrain bonuses and limits.",
   "width": 11,
   "height": 9,
   "startGold": 350,

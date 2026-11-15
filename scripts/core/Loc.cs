@@ -66,6 +66,11 @@ public static class Loc
         EnsureLoaded();
         if (Table.TryGetValue(_lang, out Dictionary<string, string> map) && map.TryGetValue(key, out string v))
             return v;
+
+        // 缺键时给个显式警告（只报中文表里也没有的，避免英文没翻全就刷屏）
+        if (Table.TryGetValue("zh", out Dictionary<string, string> zh) && !zh.ContainsKey(key))
+            GD.PushWarning($"[Loc] 缺少本地化键：{key}");
+
         return key;
     }
 

@@ -55,6 +55,7 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
             GD.Print($"[Speed] 加速模式={AnimSpeed.Fast} TimeScale={Engine.TimeScale}");
 
+
         AudioManager.StopStinger();      // 重开一局时清掉上一局的结算音效
         GameDatabase.EnsureLoaded();
         ToonMaterial.Disabled = OS.GetCmdlineUserArgs().Contains("--nomats");
@@ -116,10 +117,19 @@ public partial class BattleScene : Node3D
         }
 
         _state.BeginTurn(PlayerId.Player);
-        // 每回合抽 5 张，开局不再额外补牌（否则直接顶到上限）
+        // 开局等同一次正常回合开始（基础抽牌 3 张 + 建筑发牌），不再额外补牌
         _map.SyncEntities();
         _map.RefreshZones();
         _hud.Setup(_state);
+
+        if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
+        {
+            BuildingInst startHq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+            if (startHq != null)
+                GD.Print($"[HQ] 起始等级={startHq.Level} Hp={startHq.Hp}/{startHq.MaxHp}");
+
+            GD.Print($"[Draw] 每回合基础 {BattleState.DrawPerTurn} 张，开局手牌 {_state.Player.Hand.Count} 张");
+        }
         _hud.Toast(Loc.T("battle.intro"));
         AudioManager.SetIntensity(0);
 

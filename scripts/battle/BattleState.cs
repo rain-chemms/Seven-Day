@@ -131,6 +131,9 @@ public sealed class PlayerState
 /// <summary>一局战斗的全部状态。纯数据，不依赖节点，方便后面接 AI 与存档。</summary>
 public sealed class BattleState
 {
+    /// <summary>每回合的基础抽牌数（不含指挥部/兵营等建筑的额外发牌）。</summary>
+    public const int DrawPerTurn = 3;
+
     public const int HandLimit = 10;
 
     public MapDef Map;
@@ -184,7 +187,7 @@ public sealed class BattleState
 
         HexCoord playerHq = new(map.PlayerHq[0], map.PlayerHq[1]);
         HexCoord enemyHq = new(map.EnemyHq[0], map.EnemyHq[1]);
-        s.SpawnBuilding("hq", PlayerId.Player, playerHq, free: true);
+        s.SpawnBuilding("hq", PlayerId.Player, playerHq, level: Session.StartHqLevel, free: true);
         s.SpawnBuilding("hq", PlayerId.Enemy, enemyHq, free: true);
 
         s.RecalculateZones();
@@ -1212,8 +1215,8 @@ public sealed class BattleState
             income += IncomeOf(b);
         st.Gold += income;
 
-        // 每回合抽五张
-        DrawCard(st, 5);
+        // 每回合基础抽牌数
+        DrawCard(st, DrawPerTurn);
 
         // 重置建筑出兵次数
         foreach (BuildingInst b in Buildings.Where(b => b.Owner == who))

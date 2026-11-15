@@ -288,9 +288,9 @@ public static class UiText
 
         var parts = new List<string>();
         if (def.Retain)
-            parts.Add("保留");
+            parts.Add(Core.Loc.T("keyword.retain"));
         if (def.Exhaust)
-            parts.Add("消耗");
+            parts.Add(Core.Loc.T("keyword.exhaust"));
         return string.Join(" · ", parts);
     }
 }

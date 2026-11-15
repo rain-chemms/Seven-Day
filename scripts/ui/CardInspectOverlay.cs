@@ -255,11 +255,11 @@ public partial class CardInspectOverlay : CanvasLayer
 
         string keywords = "";
         if (ethereal)
-            keywords = "虚无";
+            keywords = Loc.T("keyword.ethereal");
         if (def.Retain)
-            keywords = string.IsNullOrEmpty(keywords) ? "保留" : keywords + " · 保留";
+            keywords = string.IsNullOrEmpty(keywords) ? Loc.T("keyword.retain") : keywords + " · " + Loc.T("keyword.retain");
         if (def.Exhaust)
-            keywords = string.IsNullOrEmpty(keywords) ? "消耗" : keywords + " · 消耗";
+            keywords = string.IsNullOrEmpty(keywords) ? Loc.T("keyword.exhaust") : keywords + " · " + Loc.T("keyword.exhaust");
 
         _body.Text = string.IsNullOrEmpty(keywords)
             ? $"{kind} · {def.Cost}$"

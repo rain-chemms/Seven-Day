@@ -92,6 +92,39 @@ public partial class DeckBuilderPanel : PanelContainer
             CallDeferred(nameof(ScrollPoolToBottom));      // 牌库卡一次建好，打开时直接复用
     }
 
+    /// <summary>切换语言后重建整块界面（静态文案 + 卡片名都要重来）。</summary>
+    public void RefreshLanguage()
+    {
+        if (_poolList == null)
+            return;                  // 还没构建过，下次 Open 会用新语言建
+
+        bool wasVisible = Visible;
+
+        foreach (Node child in GetChildren())
+        {
+            RemoveChild(child);
+            child.QueueFree();
+        }
+
+        _poolList = null;
+        _poolScroll = null;
+        _poolKey = "";
+        _poolCells.Clear();
+        _countLabel = null;
+
+        EnsureBuilt();
+        RebuildPool();
+
+        // 隐藏状态下不重建出战区：容器宽度是 0，RebuildDeck 会无限排 deferred 递归
+        if (wasVisible)
+        {
+            RebuildDeck();
+            UpdateCount();
+            CallDeferred(nameof(DeferredRebuildDeck));
+        }
+
+        Visible = wasVisible;
+    }
     public void Open()
     {
         List<string> seed = Session.PlayerDeck.Count >= Session.DeckMin
@@ -710,7 +743,12 @@ public partial class DeckBuilderPanel : PanelContainer
 
         // 按「单位 / 打击 / 全局」分段，每段一个网格（类型变化就换行）
         string[] order = { "unit", "strike", "global" };
-        string[] titles = { "单位", "打击", "全局" };
+        string[] titles =
+        {
+            Loc.T("deck.filter_unit"),
+            Loc.T("deck.filter_strike"),
+            Loc.T("deck.filter_global"),
+        };
 
         bool firstGroup = true;
 

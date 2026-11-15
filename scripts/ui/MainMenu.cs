@@ -18,6 +18,7 @@ public partial class MainMenu : Node3D
     private PanelContainer _settingsPanel;
     private PanelContainer _galleryPanel;
     private ScrollContainer _galleryScroll;
+    private VBoxContainer _galleryContent;
     private readonly List<Button> _tabButtons = new();
     private readonly List<Control> _tabPages = new();
     private int _currentTab;
@@ -63,6 +64,14 @@ public partial class MainMenu : Node3D
         // 开发调试：--demo-deck 打开出战卡组编辑器
         if (OS.GetCmdlineUserArgs().Contains("--demo-deck"))
             CallDeferred(nameof(DemoDeck));
+
+        // 开发调试：--demo-lang-gallery 验证总览面板语言刷新
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lang-gallery"))
+            CallDeferred(nameof(DemoLangGallery));
+
+        // 开发调试：--demo-lang 验证切换语言后卡组界面文本刷新
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lang"))
+            CallDeferred(nameof(DemoLangSwitch));
 
         // 开发调试：保存 / 清空卡组（验证对局是否用自定义卡组）
         if (OS.GetCmdlineUserArgs().Contains("--demo-deck-features"))
@@ -561,6 +570,29 @@ public partial class MainMenu : Node3D
         CallDeferred(nameof(DemoDeckLayout));
     }
 
+    /// <summary>验证切换语言后卡组界面文本会刷新。</summary>
+    private async void DemoLangSwitch()
+    {
+        _deckPanel.Open();
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Lang] 切换前 语言={Loc.Language} 标题={(VisibleLabel("出战卡组") ? "中文" : "非中文")}");
+
+        Loc.SetLanguage("en");
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Lang] 切换后 语言={Loc.Language}");
+    }
+
+    /// <summary>面板里是否存在指定文本的 Label。</summary>
+    private bool VisibleLabel(string text)
+    {
+        foreach (Node n in _deckPanel.FindChildren("*", "Label", true, false))
+        {
+            if (n is Label l && l.Text.Contains(text))
+                return true;
+        }
+
+        return false;
+    }
     /// <summary>打印首次打开时的排版信息（列数 / 宽度）。</summary>
     private async void DemoDeckLayout()
     {
@@ -603,6 +635,18 @@ public partial class MainMenu : Node3D
         GD.Print($"[Deck] 点击池中卡牌：{before} → {_deckPanel.DebugTotal()} 张");
     }
 
+    /// <summary>验证总览面板切换语言后文本刷新。</summary>
+    private async void DemoLangGallery()
+    {
+        RefreshHistory();
+        OpenGallery();
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Lang] 总览切换前 语言={Loc.Language}");
+
+        Loc.SetLanguage("en");
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Lang] 总览切换后 语言={Loc.Language}");
+    }
     private void DemoGallery()
     {
         RefreshHistory();
@@ -619,6 +663,9 @@ public partial class MainMenu : Node3D
 
             if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--scroll-gallery") >= 0)
                 ScrollGalleryDemo();
+
+            if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--gallery-bottom") >= 0)
+                _galleryScroll.ScrollVertical = 99999;
         };
 
         if (!OS.GetCmdlineUserArgs().Contains("--anim-log"))
@@ -1677,53 +1724,9 @@ public partial class MainMenu : Node3D
             grid.AddChild(cell);
         }
     }
-    private void BuildGalleryPanel()
+    /// <summary>总览面板里会随语言变化的部分：建筑列表 + 地形。</summary>
+    private void BuildGalleryContent(VBoxContainer outer)
     {
-        _galleryDim = new ColorRect
-        {
-            Name = "GalleryDim",
-            Visible = false,
-            Color = new Color(0f, 0f, 0f, 0f),
-            MouseFilter = Control.MouseFilterEnum.Stop,
-            ZIndex = 6,
-        };
-        _galleryDim.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
-        _root.AddChild(_galleryDim);
-
-        _galleryPanel = new PanelContainer { Name = "Gallery", Visible = false, ZIndex = 12 };
-        _galleryPanel.SetAnchorsPreset(Control.LayoutPreset.Center);
-        _galleryPanel.OffsetLeft = -520;
-        _galleryPanel.OffsetRight = 520;
-        _galleryPanel.OffsetTop = -330;
-        _galleryPanel.OffsetBottom = 330;
-        _root.AddChild(_galleryPanel);
-
-        var layout = new VBoxContainer();
-        layout.AddThemeConstantOverride("separation", 8);
-        _galleryPanel.AddChild(layout);
-
-        // 标题固定（不随内容滚动）
-        var title = new Label { Text = Loc.T("gallery.title") };
-        title.AddThemeFontSizeOverride("font_size", 26);
-        layout.AddChild(title);
-        _locBindings.Add(("gallery.title", () => title.Text = Loc.T("gallery.title")));
-
-        // 内容放进滚动区，避免条目过多撑破面板
-        _galleryScroll = new ScrollContainer
-        {
-            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
-            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-        };
-        layout.AddChild(_galleryScroll);
-
-        var outer = new VBoxContainer
-        {
-            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
-        };
-        outer.AddThemeConstantOverride("separation", 10);
-        _galleryScroll.AddChild(outer);
-
-        // 每个建筑一行：缩略图 + 名称 + 功能描述
         var grid = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         grid.AddThemeConstantOverride("separation", 8);
         outer.AddChild(grid);
@@ -1771,13 +1774,18 @@ public partial class MainMenu : Node3D
             grid.AddChild(row);
         }
 
+        // 建筑三档等级的说明：紧跟在建筑列表下方（原来跑到地形下面去了）
+        var hint = new Label { Text = Loc.T("gallery.hint") };
+        hint.AddThemeFontSizeOverride("font_size", 14);
+        hint.AddThemeColorOverride("font_color", UiTheme.Grey);
+        outer.AddChild(hint);
+
         outer.AddChild(SectionDivider());
 
         // 地形总览
         var terrainTitle = new Label { Text = Loc.T("gallery.terrain") };
         terrainTitle.AddThemeFontSizeOverride("font_size", 20);
         outer.AddChild(terrainTitle);
-        _locBindings.Add(("gallery.terrain", () => terrainTitle.Text = Loc.T("gallery.terrain")));
 
         var terrainGrid = new GridContainer { Columns = 3 };
         terrainGrid.AddThemeConstantOverride("h_separation", 10);
@@ -1785,12 +1793,73 @@ public partial class MainMenu : Node3D
         outer.AddChild(terrainGrid);
 
         AddTerrainEntries(terrainGrid);
+    }
 
-        var hint = new Label { Text = Loc.T("gallery.hint") };
-        hint.AddThemeFontSizeOverride("font_size", 14);
-        hint.AddThemeColorOverride("font_color", UiTheme.Grey);
-        outer.AddChild(hint);
-        _locBindings.Add(("gallery.hint", () => hint.Text = Loc.T("gallery.hint")));
+    /// <summary>切换语言后重建总览内容（建筑名/描述、地形、提示语）。</summary>
+    private void RefreshGallery()
+    {
+        if (_galleryContent == null || !IsInstanceValid(_galleryContent))
+            return;
+
+        foreach (Node child in _galleryContent.GetChildren())
+        {
+            _galleryContent.RemoveChild(child);
+            child.QueueFree();
+        }
+
+        BuildGalleryContent(_galleryContent);
+    }
+    private void BuildGalleryPanel()
+    {
+        _galleryDim = new ColorRect
+        {
+            Name = "GalleryDim",
+            Visible = false,
+            Color = new Color(0f, 0f, 0f, 0f),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            ZIndex = 6,
+        };
+        _galleryDim.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_galleryDim);
+
+        _galleryPanel = new PanelContainer { Name = "Gallery", Visible = false, ZIndex = 12 };
+        _galleryPanel.SetAnchorsPreset(Control.LayoutPreset.Center);
+        _galleryPanel.OffsetLeft = -520;
+        _galleryPanel.OffsetRight = 520;
+        _galleryPanel.OffsetTop = -330;
+        _galleryPanel.OffsetBottom = 330;
+        _root.AddChild(_galleryPanel);
+
+        var layout = new VBoxContainer();
+        layout.AddThemeConstantOverride("separation", 8);
+        _galleryPanel.AddChild(layout);
+
+        // 标题固定（不随内容滚动）
+        var title = new Label { Text = Loc.T("gallery.title") };
+        title.AddThemeFontSizeOverride("font_size", 26);
+        layout.AddChild(title);
+        _locBindings.Add(("gallery.title", () => title.Text = Loc.T("gallery.title")));
+
+        // 内容放进滚动区，避免条目过多撑破面板
+        _galleryScroll = new ScrollContainer
+        {
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+        };
+        layout.AddChild(_galleryScroll);
+
+        var outer = new VBoxContainer
+        {
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+        };
+        outer.AddThemeConstantOverride("separation", 10);
+        _galleryScroll.AddChild(outer);
+
+        // 内容放进单独容器：切语言时只重建它，历史战绩/返回按钮保持不变
+        _galleryContent = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        _galleryContent.AddThemeConstantOverride("separation", 10);
+        outer.AddChild(_galleryContent);
+        BuildGalleryContent(_galleryContent);
 
         outer.AddChild(SectionDivider());
 
@@ -1870,6 +1939,10 @@ public partial class MainMenu : Node3D
     {
         foreach ((string _, Action onChanged) in _locBindings)
             onChanged();
+
+        // 卡组编辑器是独立构建的面板，文本不会跟着 _locBindings 走，切语言要重建
+        _deckPanel?.RefreshLanguage();
+        RefreshGallery();
 
         string[] tabKeys = { "settings.video", "settings.audio", "settings.camera" };
         for (int i = 0; i < _tabButtons.Count && i < tabKeys.Length; i++)

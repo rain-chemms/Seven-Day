@@ -113,6 +113,11 @@ public sealed class MapDef
     public string Id { get; set; } = "";
     public string NameZh { get; set; } = "";
     public string NameEn { get; set; } = "";
+
+    /// <summary>地图简介（显示在开始界面的信息区）。</summary>
+    public string DescZh { get; set; } = "";
+    public string DescEn { get; set; } = "";
+
     public int Width { get; set; } = 11;
     public int Height { get; set; } = 9;
     public string[] TerrainRows { get; set; } = Array.Empty<string>();

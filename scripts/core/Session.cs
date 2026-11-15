@@ -11,6 +11,13 @@ public static class Session
     public static string MapId = "map_01";
     public static AIDifficulty Difficulty = AIDifficulty.Normal;
 
+    /// <summary>玩家起始基地等级（1~3，来自地图选择界面）。</summary>
+    public static int StartHqLevel
+    {
+        get => Mathf.Clamp(Settings.GetInt("battle", "hq_level", 1), 1, 3);
+        set => Settings.SetInt("battle", "hq_level", Mathf.Clamp(value, 1, 3));
+    }
+
     /// <summary>一局结束后回填，用于结算画面与历史记录。</summary>
     public static int LastTurns;
     public static bool LastWin;

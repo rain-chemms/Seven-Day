@@ -3,15 +3,15 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cgllmeib0svhd"
-path="res://.godot/imported/cardface_missile_launcher.png-6677a3d1ff68cfb0c15005056d938856.ctex"
+path="res://.godot/imported/cardface_missileLauncher.png-70b34d5023220f3f6470b17ddbdcaf87.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://gameAsset/textures/cardface/cardface_missile_launcher.png"
-dest_files=["res://.godot/imported/cardface_missile_launcher.png-6677a3d1ff68cfb0c15005056d938856.ctex"]
+source_file="res://gameAsset/textures/cardface/cardface_missileLauncher.png"
+dest_files=["res://.godot/imported/cardface_missileLauncher.png-70b34d5023220f3f6470b17ddbdcaf87.ctex"]
 
 [params]
 
