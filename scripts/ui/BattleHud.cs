@@ -36,10 +36,20 @@ public partial class BattleHud : CanvasLayer
     /// <summary>点了底部某个牌堆（0=抽牌堆 1=弃牌堆 2=消耗堆）。</summary>
     public event Action<int> PileClicked;
 
+    /// <summary>点击「投降」：提前结束本局并返回主界面。</summary>
+    public event Action SurrenderClicked;
     private PileView _deckPile;
     private PileView _discardPile;
     private PileView _exhaustPile;
     private PileViewer _pileViewer;
+
+    // ── 战斗内设置 ──
+    private TextureButton _gearButton;
+    private Control _settingsRoot;
+    private ColorRect _settingsDim;
+    private PanelContainer _settingsPanel;
+    private bool _settingsOpen;
+    private bool _settingsBuilt;
     private Control _effects;
 
     private Label _turnLabel;
@@ -156,6 +166,60 @@ public partial class BattleHud : CanvasLayer
         _enemyGoldLabel = NewLabel("敌方 0", 18);
         enemyBox.AddChild(_enemyGoldLabel);
         topRow.AddChild(enemyBox);
+
+        // ── 顶部正中的设置齿轮（圆盘贴图，按下旋转）──
+        // PanelContainer 会把直接子节点拉伸铺满，所以套一层全屏 Control 再按锚点摆
+        var topOverlay = new Control
+        {
+            Name = "TopOverlay",
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        top.AddChild(topOverlay);
+
+        _gearButton = new TextureButton
+        {
+            Name = "GearButton",
+            CustomMinimumSize = new Vector2(40, 40),
+            TextureNormal = GD.Load<Texture2D>(UiTheme.Btn + "btn_gear_normal.png"),
+            TextureHover = GD.Load<Texture2D>(UiTheme.Btn + "btn_gear_hover.png"),
+            TexturePressed = GD.Load<Texture2D>(UiTheme.Btn + "btn_gear_pressed.png"),
+            StretchMode = TextureButton.StretchModeEnum.KeepAspectCentered,
+            IgnoreTextureSize = true,
+            TooltipText = Loc.T("battle.settings_open"),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            AnchorLeft = 0.5f,
+            AnchorRight = 0.5f,
+            AnchorTop = 0.5f,
+            AnchorBottom = 0.5f,
+            OffsetLeft = -20,
+            OffsetRight = 20,
+            OffsetTop = -20,
+            OffsetBottom = 20,
+        };
+        _gearButton.MouseEntered += () =>
+        {
+            AnimateSpawnButton(_gearButton, 1.08f, 0.10f, Tween.TransitionType.Back);
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/button_hover.ogg", -8f);
+        };
+        _gearButton.MouseExited += () => AnimateSpawnButton(_gearButton, 1f, 0.12f, Tween.TransitionType.Cubic);
+        // 按下：齿轮转 90°；松开：再转 90°（八齿对称，视觉上等于回正）
+        _gearButton.ButtonDown += () => SpinGear(90f, 0.16f, Tween.TransitionType.Cubic);
+        _gearButton.ButtonUp += () => SpinGear(90f, 0.20f, Tween.TransitionType.Back);
+        _gearButton.Pressed += () =>
+        {
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_enterOrEnable.ogg", -6f);
+            if (SettingsOpen)
+                HideBattleSettings();
+            else
+                ShowBattleSettings();
+        };
+        topOverlay.AddChild(_gearButton);
+
+        Callable.From(() =>
+        {
+            if (_gearButton != null)
+                _gearButton.PivotOffset = _gearButton.Size * 0.5f;
+        }).CallDeferred();
 
         // ── 右侧信息面板 ──
         _infoPanel = new PanelContainer
@@ -1504,6 +1568,230 @@ public partial class BattleHud : CanvasLayer
     }
 
     /// <summary>把信息面板的底边收到内容高度，避免 TopRight 锚点被拉满整屏。</summary>
+    // ─────────────────────────── 战斗内设置 ───────────────────────────
+
+    public bool SettingsOpen => _settingsOpen;
+
+    /// <summary>齿轮按钮的旋转动画（按下/松开时顺时针转）。</summary>
+    private void SpinGear(float degrees, float time, Tween.TransitionType trans)
+    {
+        if (_gearButton == null || !IsInstanceValid(_gearButton))
+            return;
+
+        _gearButton.PivotOffset = _gearButton.Size * 0.5f;
+        float from = _gearButton.RotationDegrees;
+        float to = from + degrees;
+
+        Tween t = CreateTween();
+        t.TweenProperty(_gearButton, "rotation_degrees", to, time)
+            .SetTrans(trans).SetEase(Tween.EaseType.Out);
+    }
+
+    /// <summary>调试：慢速转一圈，用于截图检查齿轮旋转动画。</summary>
+    public void DebugSpinGear() => SpinGear(90f, 1.2f, Tween.TransitionType.Linear);
+
+    /// <summary>调试：齿轮按钮的屏幕矩形。</summary>
+    public Rect2 GearButtonRect() => _gearButton == null ? new Rect2() : _gearButton.GetGlobalRect();
+
+    /// <summary>调试：直接触发投降（等同点击设置里的红字按钮）。</summary>
+    public void DebugSurrender()
+    {
+        HideBattleSettings();
+        SurrenderClicked?.Invoke();
+    }
+
+    public void ShowBattleSettings()
+    {
+        if (!_settingsBuilt)
+            BuildBattleSettings();
+
+        if (_settingsOpen || _settingsRoot == null)
+            return;
+
+        _settingsOpen = true;
+        _settingsRoot.Visible = true;
+        _settingsRoot.MouseFilter = Control.MouseFilterEnum.Stop;
+
+        // 面板居中（尺寸布局完成后再算中心点，保证缩放围绕中心）
+        Callable.From(() =>
+        {
+            if (_settingsPanel != null)
+                _settingsPanel.PivotOffset = _settingsPanel.Size * 0.5f;
+        }).CallDeferred();
+
+        _settingsDim.Color = new Color(0f, 0f, 0f, 0f);
+        _settingsPanel.Scale = new Vector2(0.92f, 0.92f);
+        _settingsPanel.Modulate = new Color(1f, 1f, 1f, 0f);
+
+        Tween t = CreateTween();
+        t.SetParallel(true);
+        t.TweenProperty(_settingsDim, "color:a", 0.55f, 0.16f);
+        t.TweenProperty(_settingsPanel, "modulate:a", 1f, 0.14f);
+        t.TweenProperty(_settingsPanel, "scale", Vector2.One, 0.20f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+    }
+
+    public void HideBattleSettings()
+    {
+        if (!_settingsOpen || _settingsRoot == null)
+            return;
+
+        _settingsOpen = false;
+        Tween t = CreateTween();
+        t.SetParallel(true);
+        t.TweenProperty(_settingsDim, "color:a", 0f, 0.12f);
+        t.TweenProperty(_settingsPanel, "modulate:a", 0f, 0.10f);
+        t.TweenProperty(_settingsPanel, "scale", new Vector2(0.95f, 0.95f), 0.12f);
+        t.Chain().TweenCallback(Callable.From(() =>
+        {
+            if (_settingsRoot != null && !_settingsOpen)
+                _settingsRoot.Visible = false;
+        }));
+    }
+
+    private void BuildBattleSettings()
+    {
+        _settingsBuilt = true;
+
+        _settingsRoot = new Control
+        {
+            Name = "BattleSettings",
+            Visible = false,
+            ZIndex = 500,             // 压过信息面板 / 牌堆查看器
+            MouseFilter = Control.MouseFilterEnum.Stop,
+        };
+        _settingsRoot.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_settingsRoot);
+
+        _settingsDim = new ColorRect { Color = new Color(0f, 0f, 0f, 0f), MouseFilter = Control.MouseFilterEnum.Stop };
+        _settingsDim.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _settingsRoot.AddChild(_settingsDim);
+
+        var center = new CenterContainer();
+        center.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _settingsRoot.AddChild(center);
+
+        _settingsPanel = new PanelContainer { CustomMinimumSize = new Vector2(430, 0) };
+        center.AddChild(_settingsPanel);
+
+        var box = new VBoxContainer();
+        box.AddThemeConstantOverride("separation", 12);
+        _settingsPanel.AddChild(box);
+
+        Label title = NewLabel(Loc.T("battle.settings_open"), 26);
+        title.HorizontalAlignment = HorizontalAlignment.Center;
+        box.AddChild(title);
+
+        box.AddChild(new HSeparator());
+
+        // 音量
+        box.AddChild(VolumeRow(Loc.T("settings.master"), "Master", 0.8f));
+        box.AddChild(VolumeRow(Loc.T("settings.music"), "Music", 0.7f));
+        box.AddChild(VolumeRow(Loc.T("settings.sfx"), "SFX", 0.9f));
+
+        // 开关
+        var fullscreen = new CheckButton { ButtonPressed = Settings.GetBool("video", "fullscreen", false) };
+        fullscreen.Toggled += on =>
+        {
+            Settings.SetBool("video", "fullscreen", on);
+            Settings.Save();
+            DisplaySettings.ApplyFromSettings();
+        };
+        box.AddChild(BoolRow(Loc.T("settings.fullscreen"), fullscreen));
+
+        var fast = new CheckButton { ButtonPressed = Settings.GetBool("video", "fast_mode", false) };
+        fast.Toggled += on =>
+        {
+            Settings.SetBool("video", "fast_mode", on);
+            Settings.Save();
+            AnimSpeed.Apply(on);
+        };
+        box.AddChild(BoolRow(Loc.T("settings.fast_mode"), fast));
+
+        var handOrder = new CheckButton { ButtonPressed = Settings.GetBool("video", "hand_order", true) };
+        handOrder.Toggled += on =>
+        {
+            Settings.SetBool("video", "hand_order", on);
+            Settings.Save();
+            _hand.SetOrderHintEnabled(on);
+        };
+        box.AddChild(BoolRow(Loc.T("settings.hand_order"), handOrder));
+
+        box.AddChild(new HSeparator());
+
+        var buttons = new HBoxContainer();
+        buttons.AddThemeConstantOverride("separation", 12);
+        box.AddChild(buttons);
+
+        var close = new Button { Text = Loc.T("settings.close"), CustomMinimumSize = new Vector2(0, 44) };
+        close.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        close.Pressed += () =>
+        {
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_backOrDisable.ogg", -6f);
+            HideBattleSettings();
+        };
+        buttons.AddChild(close);
+
+        var surrender = new Button
+        {
+            Text = Loc.T("battle.surrender"),
+            CustomMinimumSize = new Vector2(0, 44),
+            TooltipText = Loc.T("battle.surrender_hint"),
+        };
+        surrender.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        // 红字：字色 + 描边都偏红，和牛皮纸底色对比明显
+        surrender.AddThemeColorOverride("font_color", new Color("C0392B"));
+        surrender.AddThemeColorOverride("font_hover_color", new Color("E04B3A"));
+        surrender.AddThemeColorOverride("font_pressed_color", new Color("9B2C21"));
+        surrender.Pressed += () =>
+        {
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_backOrDisable.ogg", -4f);
+            HideBattleSettings();
+            SurrenderClicked?.Invoke();
+        };
+        buttons.AddChild(surrender);
+    }
+
+    private Control VolumeRow(string text, string bus, float def)
+    {
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 10);
+
+        Label label = NewLabel(text, 16);
+        label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        row.AddChild(label);
+
+        var slider = new HSlider
+        {
+            MinValue = 0, MaxValue = 1, Step = 0.01,
+            CustomMinimumSize = new Vector2(190, 26),
+            SizeFlagsVertical = Control.SizeFlags.ShrinkCenter,
+        };
+        slider.Value = Settings.GetFloat("audio", bus, def);
+        slider.ValueChanged += v =>
+        {
+            Settings.SetFloat("audio", bus, (float)v);
+            Settings.Save();
+            AudioBuses.SetVolume(bus, (float)v);
+        };
+        row.AddChild(slider);
+
+        return row;
+    }
+
+    private Control BoolRow(string text, CheckButton toggle)
+    {
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 10);
+
+        Label label = NewLabel(text, 16);
+        label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        row.AddChild(label);
+        row.AddChild(toggle);
+
+        return row;
+    }
+
     private void UpdateInfoPanelHeight()
     {
         if (_infoPanel == null || !IsInstanceValid(_infoPanel) || !_infoPanel.Visible)

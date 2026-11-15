@@ -19,6 +19,7 @@ public partial class MapSelect : Control
     {
         Loc.EnsureLoaded();
         GameDatabase.EnsureLoaded();
+        DisplaySettings.ApplyFromSettings();   // 直接跑地图选择（调试）时也应用窗口设置
 
         Theme = UiTheme.Get();
         SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);

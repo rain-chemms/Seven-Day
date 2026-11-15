@@ -31,6 +31,7 @@ public partial class MainMenu : Node3D
         Loc.EnsureLoaded();
         AudioBuses.Ensure();
         AnimSpeed.ApplyFromSettings();
+        DisplaySettings.ApplyFromSettings();   // 启动时应用分辨率 / 垂直同步 / 全屏
 
         AddChild(new MainMenuBackdrop { Name = "Backdrop" });
         BuildUi();

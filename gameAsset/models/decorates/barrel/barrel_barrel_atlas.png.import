@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://4ran7x7mognm"
 path.s3tc="res://.godot/imported/barrel_barrel_atlas.png-1905b6a7cea4a691b9545beadce09434.s3tc.ctex"
+path.etc2="res://.godot/imported/barrel_barrel_atlas.png-1905b6a7cea4a691b9545beadce09434.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://gameAsset/models/decorates/barrel/barrel_barrel_atlas.png"
-dest_files=["res://.godot/imported/barrel_barrel_atlas.png-1905b6a7cea4a691b9545beadce09434.s3tc.ctex"]
+dest_files=["res://.godot/imported/barrel_barrel_atlas.png-1905b6a7cea4a691b9545beadce09434.s3tc.ctex", "res://.godot/imported/barrel_barrel_atlas.png-1905b6a7cea4a691b9545beadce09434.etc2.ctex"]
 
 [params]
 

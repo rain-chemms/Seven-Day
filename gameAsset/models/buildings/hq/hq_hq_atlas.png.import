@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dnd8obspqkobf"
 path.s3tc="res://.godot/imported/hq_hq_atlas.png-9684c893e0b482e1d3ea3836d728f6a1.s3tc.ctex"
+path.etc2="res://.godot/imported/hq_hq_atlas.png-9684c893e0b482e1d3ea3836d728f6a1.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://gameAsset/models/buildings/hq/hq_hq_atlas.png"
-dest_files=["res://.godot/imported/hq_hq_atlas.png-9684c893e0b482e1d3ea3836d728f6a1.s3tc.ctex"]
+dest_files=["res://.godot/imported/hq_hq_atlas.png-9684c893e0b482e1d3ea3836d728f6a1.s3tc.ctex", "res://.godot/imported/hq_hq_atlas.png-9684c893e0b482e1d3ea3836d728f6a1.etc2.ctex"]
 
 [params]
 

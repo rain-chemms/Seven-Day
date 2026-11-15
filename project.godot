@@ -35,6 +35,11 @@ project/assembly_name="Seven-Day"
 
 enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
 
+[input_devices]
+
+pointing/android/enable_long_press_as_right_click=true
+pointing/android/enable_pan_and_scale_gestures=true
+
 [physics]
 
 3d/physics_engine="Jolt Physics"
@@ -43,3 +48,4 @@ enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
 
 rendering_device/driver.windows="d3d12"
 renderer/rendering_method="mobile"
+textures/vram_compression/import_etc2_astc=true

@@ -52,6 +52,7 @@ public partial class BattleScene : Node3D
     public override void _Ready()
     {
         AnimSpeed.ApplyFromSettings();      // 加速模式（全局 TimeScale）
+        DisplaySettings.ApplyFromSettings();  // 直接跑战斗场景（调试）时也应用窗口设置
         if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
             GD.Print($"[Speed] 加速模式={AnimSpeed.Fast} TimeScale={Engine.TimeScale}");
 
@@ -180,6 +181,12 @@ public partial class BattleScene : Node3D
         // 开发调试：--demo-pile-layers 验证牌堆查看器在飞牌之上
         if (OS.GetCmdlineUserArgs().Contains("--demo-pile-layers"))
             CallDeferred(nameof(DemoPileLayers));
+
+        // 开发调试：--demo-gear 打开设置面板 / --demo-surrender 投降回主界面
+        if (OS.GetCmdlineUserArgs().Contains("--demo-gear"))
+            CallDeferred(nameof(DemoGear));
+        if (OS.GetCmdlineUserArgs().Contains("--demo-surrender"))
+            CallDeferred(nameof(DemoSurrender));
 
         // 开发调试：--demo-retract-all 验证选中单位/建筑都下沉手牌
         if (OS.GetCmdlineUserArgs().Contains("--demo-retract-all"))
@@ -3760,9 +3767,19 @@ public partial class BattleScene : Node3D
         GD.Print($"[Lv1] 按钮数量={_hud.SpawnButtonCount()}（应为 1）");
 
         // 点第一个出兵按钮：应扣费并原地生成（先等面板完成定位）
-        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+        await ToSignal(GetTree().CreateTimer(0.55), SceneTreeTimer.SignalName.Timeout);
         Rect2 btnRect = _hud.SpawnButtonRect(0);
-        SendClick(btnRect.Position + btnRect.Size * 0.5f);
+        Vector2 clickPos = btnRect.Position + btnRect.Size * 0.5f;
+        // 合成点击前先把鼠标移过去、等一帧，让 GUI 重建 hover 命中列表
+        Input.WarpMouse(clickPos);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
+        {
+            GD.Print($"[Lv1] 点击前 面板={_hud.SpawnPanelRect()} 按钮={btnRect} " +
+                     $"hover={(GetViewport().GuiGetHoveredControl()?.Name.ToString() ?? "null")}");
+        }
+        SendClick(clickPos);
         await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
         GD.Print($"[Lv1] 点击后：金币={_state.Player.Gold} 本格单位={_state.Cell(barracks.Coord).Units.Count} " +
                  $"选中建筑={(_selBuilding != null ? _selBuilding.DefId : "无")} 面板可见={_hud.SpawnVisible}");
@@ -4409,8 +4426,35 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
         GD.Print($"[RetractAll] 取消选择 收起={_hud.HandRetracted}");
     }
-    private void DemoDeploy()
+    /// <summary>调试：打开设置面板。</summary>
+    private async void DemoGear()
     {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Gear] 齿轮矩形={_hud.GearButtonRect()}");
+        if (OS.GetCmdlineUserArgs().Contains("--demo-gear-spin"))
+        {
+            _hud.DebugSpinGear();
+            await ToSignal(GetTree().CreateTimer(0.45), SceneTreeTimer.SignalName.Timeout);
+            GD.Print("[Gear] 旋转中，截图检查");
+            return;
+        }
+        _hud.ShowBattleSettings();
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Gear] 设置打开={_hud.SettingsOpen}");
+    }
+
+    /// <summary>调试：投降 → 返回主界面。</summary>
+    private async void DemoSurrender()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        _hud.ShowBattleSettings();
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        _hud.DebugSurrender();
+        await ToSignal(GetTree().CreateTimer(1.6), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Surrender] 当前场景={GetTree().CurrentScene?.SceneFilePath}");
+    }
+
+    private void DemoDeploy()    {
         BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
         if (hq == null)
             return;
@@ -4711,6 +4755,21 @@ public partial class BattleScene : Node3D
         _hud.PreviewUnhovered += OnPreviewUnhovered;
         _hud.CancelClicked += () => { ClearSelection(); RefreshAll(); };
         _hud.PileClicked += OnPileClicked;
+        _hud.SurrenderClicked += OnSurrender;
+    }
+
+    /// <summary>投降：按失败结算，弹出失败面板，由面板上的「返回主菜单」离开。</summary>
+    private void OnSurrender()
+    {
+        if (_state == null || _resultShown)
+            return;
+
+        _hud.Toast(Loc.T("battle.surrender"));
+
+        // 走正常失败流程：判定敌方胜、弹出结算面板（同时写战绩、播失败音效）
+        _state.Phase = BattlePhase.GameOver;
+        _state.Winner = PlayerId.Enemy;
+        CheckGameOver();
     }
 
     /// <summary>点底部牌堆：弹出查看器。</summary>

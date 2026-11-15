@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://qmklwfnsqluc"
 path.s3tc="res://.godot/imported/sandBags_sandbags_atlas.png-ac9b31272792bb798ad940ad3efa0d3a.s3tc.ctex"
+path.etc2="res://.godot/imported/sandBags_sandbags_atlas.png-ac9b31272792bb798ad940ad3efa0d3a.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://gameAsset/models/decorates/sandBags/sandBags_sandbags_atlas.png"
-dest_files=["res://.godot/imported/sandBags_sandbags_atlas.png-ac9b31272792bb798ad940ad3efa0d3a.s3tc.ctex"]
+dest_files=["res://.godot/imported/sandBags_sandbags_atlas.png-ac9b31272792bb798ad940ad3efa0d3a.s3tc.ctex", "res://.godot/imported/sandBags_sandbags_atlas.png-ac9b31272792bb798ad940ad3efa0d3a.etc2.ctex"]
 
 [params]
 

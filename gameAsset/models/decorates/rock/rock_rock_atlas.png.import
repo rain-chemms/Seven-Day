@@ -4,8 +4,9 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://cdqcwqtboca28"
 path.s3tc="res://.godot/imported/rock_rock_atlas.png-fd1728fef44ecfcd50531bf764d16f07.s3tc.ctex"
+path.etc2="res://.godot/imported/rock_rock_atlas.png-fd1728fef44ecfcd50531bf764d16f07.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 generator_parameters={
@@ -15,7 +16,7 @@ generator_parameters={
 [deps]
 
 source_file="res://gameAsset/models/decorates/rock/rock_rock_atlas.png"
-dest_files=["res://.godot/imported/rock_rock_atlas.png-fd1728fef44ecfcd50531bf764d16f07.s3tc.ctex"]
+dest_files=["res://.godot/imported/rock_rock_atlas.png-fd1728fef44ecfcd50531bf764d16f07.s3tc.ctex", "res://.godot/imported/rock_rock_atlas.png-fd1728fef44ecfcd50531bf764d16f07.etc2.ctex"]
 
 [params]
 

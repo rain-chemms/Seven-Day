@@ -88,18 +88,42 @@ public static class ToonMaterial
         return cel;
     }
 
-    /// <summary>按模型路径自动找同目录下的 *_atlas.png。</summary>
+    /// <summary>
+    /// 找模型同目录下的图集。
+    /// 导出版不能依赖 DirAccess：导出包里源 png 会被替换成 .ctex，目录扫描拿不到名字，
+    /// 于是所有模型都拿不到 albedo 贴图（表现就是「导出后 3D 模型贴图全没了」）。
+    /// 改成按约定文件名逐一尝试，用 ResourceLoader.Exists 走重映射。
+    /// </summary>
     public static string FindAtlas(string modelPath)
     {
         if (string.IsNullOrEmpty(modelPath))
             return null;
 
         string dir = modelPath.GetBaseDir();
-        string[] files = DirAccess.GetFilesAt(dir);
-        foreach (string f in files)
+        string baseName = modelPath.GetFile().GetBaseName();
+
+        // 命名约定：<模型>_<模型>_atlas.png（导出工具产物），兼容单次前缀
+        string[] candidates =
         {
-            if (f.EndsWith("_atlas.png", System.StringComparison.OrdinalIgnoreCase))
-                return dir + "/" + f;
+            $"{dir}/{baseName}_{baseName}_atlas.png",
+            $"{dir}/{baseName}_atlas.png",
+            $"{dir}/{baseName}_Atlas.png",
+        };
+
+        foreach (string path in candidates)
+        {
+            if (ResourceLoader.Exists(path))
+                return path;
+        }
+
+        // 编辑器里再兜底扫一遍目录（开发时文件名不规范也能用）
+        if (!OS.HasFeature("template"))
+        {
+            foreach (string f in DirAccess.GetFilesAt(dir))
+            {
+                if (f.EndsWith("_atlas.png", System.StringComparison.OrdinalIgnoreCase))
+                    return dir + "/" + f;
+            }
         }
 
         return null;
