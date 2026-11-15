@@ -181,6 +181,22 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-pile-layers"))
             CallDeferred(nameof(DemoPileLayers));
 
+        // 开发调试：--demo-retract-all 验证选中单位/建筑都下沉手牌
+        if (OS.GetCmdlineUserArgs().Contains("--demo-retract-all"))
+            CallDeferred(nameof(DemoRetractAll));
+
+        // 开发调试：--demo-spawn-crowded 验证手牌很多时出兵按钮仍可点
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-crowded"))
+            CallDeferred(nameof(DemoSpawnCrowded));
+
+        // 开发调试：--demo-spawn-pierce 验证出兵面板不穿透到牌堆
+        if (OS.GetCmdlineUserArgs().Contains("--demo-spawn-pierce"))
+            CallDeferred(nameof(DemoSpawnPierce));
+
+        // 开发调试：--demo-hand-retract 验证手牌收起与出兵面板层级
+        if (OS.GetCmdlineUserArgs().Contains("--demo-hand-retract"))
+            CallDeferred(nameof(DemoHandRetract));
+
         // 开发调试：--demo-reclaim 验证战场扫荡
         if (OS.GetCmdlineUserArgs().Contains("--demo-reclaim"))
             CallDeferred(nameof(DemoReclaim));
@@ -3743,7 +3759,8 @@ public partial class BattleScene : Node3D
 
         GD.Print($"[Lv1] 按钮数量={_hud.SpawnButtonCount()}（应为 1）");
 
-        // 点第一个出兵按钮：应扣费并原地生成
+        // 点第一个出兵按钮：应扣费并原地生成（先等面板完成定位）
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
         Rect2 btnRect = _hud.SpawnButtonRect(0);
         SendClick(btnRect.Position + btnRect.Size * 0.5f);
         await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
@@ -4268,6 +4285,129 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
         _hud.PlayProduceAnimation(GameDatabase.Card("unit_tank"),
             _hud.PileCenter(PileView.PileKind.Exhaust), 0, 0f);
+    }
+    /// <summary>验证：选中单位手牌下移；出兵面板压在手牌之上。</summary>
+    private async void DemoHandRetract()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord hq = _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord;
+        HexCoord? spot = HexCoord.Spiral(hq, 2).FirstOrDefault(c => c != hq && _state.Cell(c)?.Building == null);
+        _state.Player.Gold = 3000;
+        UnitInst u = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        GD.Print($"[Retract] 选中前 收起={_hud.HandRetracted}");
+        SelectUnit(u);
+        await ToSignal(GetTree().CreateTimer(1.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Retract] 选中单位后 收起={_hud.HandRetracted}");
+
+        ClearSelection();
+        await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Retract] 取消选中后 收起={_hud.HandRetracted}");
+
+        // 出兵面板：盖在手牌上方
+        _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value is var _ ? HexCoord.Spiral(hq, 3).First(c => _state.Cell(c)?.Building == null) : spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        BuildingInst barracks = _state.Buildings.Last(b => b.DefId == "barracks");
+        SelectBuilding(barracks);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Retract] 出兵面板 z={_hud.SpawnPanelZ()} 可见={_hud.SpawnVisible}");
+    }
+    /// <summary>验证：出兵面板覆盖牌堆时，点击不会穿透打开牌堆。</summary>
+    private async void DemoSpawnPierce()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord hq = _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord;
+        HexCoord? spot = HexCoord.Spiral(hq, 2).FirstOrDefault(c => c != hq && _state.Cell(c)?.Building == null);
+        _state.Player.Gold = 3000;
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        Rect2 panel = _hud.SpawnPanelRect();
+        GD.Print($"[Pierce] 面板={panel} 牌堆开={_hud.PileOpen}");
+
+        // 面板右下角（正好压在弃牌堆图标上）
+        Vector2 onPile = new(panel.Position.X + panel.Size.X - 20f, panel.End.Y - 12f);
+        SendClick(onPile);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Pierce] 点面板右下后 牌堆开={_hud.PileOpen} 面板可见={_hud.SpawnVisible}");
+
+        // 再点出兵按钮中心
+        int before = _state.Player.Gold;
+        Rect2 btn = _hud.SpawnButtonRect(0);
+        GD.Print($"[Pierce] 按钮矩形={btn} 按钮数={_hud.SpawnButtonCount()}");
+        SendClick(btn.GetCenter());
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Pierce] 点出兵按钮 金币 {before} → {_state.Player.Gold}");
+    }
+    /// <summary>手牌很多时，出兵按钮仍可点、且不会误触地图。</summary>
+    private async void DemoSpawnCrowded()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord hq = _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord;
+        HexCoord? spot = HexCoord.Spiral(hq, 2).FirstOrDefault(c => c != hq && _state.Cell(c)?.Building == null);
+
+        _state.Player.Gold = 3000;
+        _state.Player.Hand.Clear();
+        for (int i = 0; i < 10; i++)
+            _state.Player.Hand.Add("unit_infantry");     // 顶满 10 张手牌
+
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        barracks.Level = 3;
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+        await ToSignal(GetTree().CreateTimer(0.45), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Crowded] 手牌={_state.Player.Hand.Count} 收起={_hud.HandRetracted} 面板={_hud.SpawnPanelRect()}");
+
+        int before = _state.Player.Gold;
+        int unitsBefore = _state.Cells.Values.Sum(c => c.Units.Count);
+        SendClick(_hud.SpawnButtonRect(0).GetCenter());
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[Crowded] 点出兵后 金币 {before}→{_state.Player.Gold} 场上单位 {unitsBefore}→{_state.Cells.Values.Sum(c => c.Units.Count)}");
+    }
+    /// <summary>验证：选中任何单位/建筑都会下沉手牌，取消后复位。</summary>
+    private async void DemoRetractAll()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        BuildingInst hq = _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq);
+        SelectBuilding(hq);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[RetractAll] 选中指挥部（无出兵面板）收起={_hud.HandRetracted}");
+
+        HexCoord? spot = HexCoord.Spiral(hq.Coord, 2).FirstOrDefault(c => c != hq.Coord && _state.Cell(c)?.Building == null);
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[RetractAll] 选中兵营（有出兵面板）收起={_hud.HandRetracted} 面板={_hud.SpawnVisible}");
+
+        UnitInst u = _state.SpawnUnit("infantry", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        SelectUnit(u);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[RetractAll] 选中单位 收起={_hud.HandRetracted}");
+
+        ClearSelection();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[RetractAll] 取消选择 收起={_hud.HandRetracted}");
     }
     private void DemoDeploy()
     {
@@ -6004,6 +6144,7 @@ public partial class BattleScene : Node3D
         _selUnit = u;
         _selBuilding = null;
         _hud.HideSpawnPanel();
+        _hud.SetHandRetracted(true);
         _hud.ShowTerrain(_state.TerrainAt(u.Coord));
         CloseBuildMenu();
         _map.ClearHints();
@@ -6197,6 +6338,9 @@ public partial class BattleScene : Node3D
         CloseBuildMenu();
         ShowBuildingInfo(b);
 
+        // 选中任何建筑（含敌方）也把手牌下沉，露出战场
+        _hud.SetHandRetracted(true);
+
         if (b.Owner != PlayerId.Player)
             return;
 
@@ -6380,6 +6524,7 @@ public partial class BattleScene : Node3D
         _map.SetSelectedBuilding(-1);
         _hud.HideInfo();
         _hud.HideSpawnPanel();   // 取消选中建筑 → 出兵面板一起收起
+        _hud.SetHandRetracted(false);
     }
 
     private void RefreshAll()

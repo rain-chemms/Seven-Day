@@ -48,6 +48,9 @@ public partial class BattleHud : CanvasLayer
     private Label _toastLabel;
     private PanelContainer _toastPanel;
     private Label _infoTitle;
+    private VBoxContainer _infoContent;
+    private float _infoBottom;
+    private float _infoHeight;
     private RichTextLabel _infoBody;
     private TextureRect _infoImage;
     private CardHandView _hand;
@@ -158,6 +161,7 @@ public partial class BattleHud : CanvasLayer
         _infoPanel = new PanelContainer
         {
             Name = "InfoPanel",
+            ZIndex = 320,     // 永远压在出兵面板之上
             Visible = false,
             CustomMinimumSize = new Vector2(330, 0),
         };
@@ -174,6 +178,7 @@ public partial class BattleHud : CanvasLayer
         var infoBox = new VBoxContainer();
         infoBox.AddThemeConstantOverride("separation", 8);
         _infoPanel.AddChild(infoBox);
+        _infoContent = infoBox;
 
         _infoTitle = NewLabel("", 20);
         infoBox.AddChild(_infoTitle);
@@ -468,6 +473,7 @@ public partial class BattleHud : CanvasLayer
     {
         _state = state;
 
+
         // 手牌顺序编号（设置里的开关，默认开）
         if (_hand != null)
             _hand.SetOrderHintEnabled(Settings.GetBool("video", "hand_order", true));
@@ -703,6 +709,15 @@ public partial class BattleHud : CanvasLayer
 
     public void RefreshHand()
     {
+        RefreshHandCore();
+
+        // 出兵面板开着时刷新了手牌，新卡会带回默认 mouse filter，需要重新屏蔽
+        if (_spawnPanel is { Visible: true })
+            SetSpawnBlocking(true);
+    }
+
+    private void RefreshHandCore()
+    {
         if (_state == null)
             return;
 
@@ -753,7 +768,7 @@ public partial class BattleHud : CanvasLayer
         {
             var button = new Button
             {
-                CustomMinimumSize = new Vector2(92, 108),
+                CustomMinimumSize = new Vector2(92, 96),
                 Disabled = !ready,
                 TooltipText = tip,
             };
@@ -765,13 +780,13 @@ public partial class BattleHud : CanvasLayer
                 Alignment = BoxContainer.AlignmentMode.Center,
             };
             box.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
-            box.OffsetTop = 12;      // 预览图离按钮上沿留点空隙
+            box.OffsetTop = 8;       // 预览图离按钮上沿留点空隙
             box.OffsetBottom = -6;
             button.AddChild(box);
 
             var art = new TextureRect
             {
-                CustomMinimumSize = new Vector2(0, 52),
+                CustomMinimumSize = new Vector2(0, 44),
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
                 StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
                 MouseFilter = Control.MouseFilterEnum.Ignore,
@@ -785,7 +800,7 @@ public partial class BattleHud : CanvasLayer
                 HorizontalAlignment = HorizontalAlignment.Center,
                 MouseFilter = Control.MouseFilterEnum.Ignore,
             };
-            label.AddThemeFontSizeOverride("font_size", 14);
+            label.AddThemeFontSizeOverride("font_size", 13);
             label.AddThemeColorOverride("font_color", UiTheme.Ink);
             box.AddChild(label);
 
@@ -795,7 +810,7 @@ public partial class BattleHud : CanvasLayer
                 HorizontalAlignment = HorizontalAlignment.Center,
                 MouseFilter = Control.MouseFilterEnum.Ignore,
             };
-            price.AddThemeFontSizeOverride("font_size", 14);
+            price.AddThemeFontSizeOverride("font_size", 13);
             price.AddThemeColorOverride("font_color", new Color("C08A10"));   // 价格始终金黄，禁用状态交给按钮本身
             box.AddChild(price);
 
@@ -812,18 +827,37 @@ public partial class BattleHud : CanvasLayer
             string id = cardId;
             button.Pressed += () =>
             {
+                if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+                    GD.Print($"[SpawnBtn] pressed {id}");
+            };
+            button.Pressed += () =>
+            {
                 AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_enterOrEnable.ogg", -3f);
                 SpawnClicked?.Invoke(id);
             };
             _spawnList.AddChild(button);
         }
 
-        _spawnPanel.Visible = true;
         SetSpawnBlocking(true);
-        Callable.From(PlaceSpawnPanel).CallDeferred();   // 等一帧布局后再贴位置
+        SetHandRetracted(true);      // 面板区域与手牌重叠时，手牌下沉，避免误触
+        _spawnPanel.Visible = true;
+        Callable.From(() => { UpdateInfoPanelHeight(); PlaceSpawnPanel(); }).CallDeferred();
+
+        SceneTreeTimer fix = GetTree().CreateTimer(0.06);
+        fix.Timeout += () =>
+        {
+            if (_spawnPanel == null || !IsInstanceValid(_spawnPanel))
+                return;
+
+            UpdateInfoPanelHeight();
+            PlaceSpawnPanel();
+        };
     }
 
     public bool SpawnVisible => _spawnPanel != null && _spawnPanel.Visible;
+
+    /// <summary>调试：牌堆查看器是否打开。</summary>
+    public bool PileOpen => _pileViewer != null && _pileViewer.Visible;
 
     /// <summary>当前出兵按钮数量（调试用）。</summary>
     public int SpawnButtonCount() => _spawnList?.GetChildCount() ?? 0;
@@ -838,6 +872,8 @@ public partial class BattleHud : CanvasLayer
     }
 
     /// <summary>出兵面板的屏幕矩形（调试用）。</summary>
+    public Rect2 InfoPanelRect() => _infoPanel == null ? new Rect2() : _infoPanel.GetGlobalRect();
+
     public Rect2 SpawnPanelRect() => _spawnPanel == null ? new Rect2() : _spawnPanel.GetGlobalRect();
 
     /// <summary>出兵面板在屏幕上的中心点（调试用）。</summary>
@@ -847,19 +883,24 @@ public partial class BattleHud : CanvasLayer
     /// <summary>把出兵面板贴到信息面板正下方（两者挨在一起）。</summary>
     private void PlaceSpawnPanel()
     {
-        if (_spawnPanel == null || _infoPanel == null)
+        if (_spawnPanel == null)
             return;
 
-        const float SpawnPanelHeight = 192f;
-        // 信息面板是「顶部右对齐」锚点，Size.Y 会被拉伸，用内容最小高度更准
-        float top = _infoPanel.Position.Y + _infoPanel.GetCombinedMinimumSize().Y + 8f;
+        float bottom = _infoBottom > 0f ? _infoBottom : _infoPanel.OffsetTop + _infoHeight;
+        if (bottom <= 0f)
+            bottom = _infoPanel.OffsetTop + _infoPanel.GetCombinedMinimumSize().Y;
 
-        // 屏幕放不下就贴到底部上方，别跑到屏幕外
-        float maxTop = GetViewport().GetVisibleRect().Size.Y - SpawnPanelHeight - 16f;
+        const float H = 172f;
+        float top = bottom + 16f;      // 与信息面板之间留出间隔
+
+        float maxTop = GetViewport().GetVisibleRect().Size.Y - H - 16f;
         top = Mathf.Clamp(top, 72f, Mathf.Max(72f, maxTop));
 
         _spawnPanel.OffsetTop = top;
-        _spawnPanel.OffsetBottom = top + SpawnPanelHeight;
+        _spawnPanel.OffsetBottom = top + H;
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[Spawn] bottom={bottom} top={top} rect={_spawnPanel.GetGlobalRect()}");
     }
 
     public void HideSpawnPanel()
@@ -868,12 +909,46 @@ public partial class BattleHud : CanvasLayer
             _spawnPanel.Visible = false;
 
         SetSpawnBlocking(false);
+        SetHandRetracted(false);     // 手牌复位
+        UpdateInfoPanelHeight();     // 收起后信息面板高度回缩
     }
+
+    private float _handRetract;
+
+    /// <summary>选中单位时把手牌整体往下挪半张卡高，露出战场。</summary>
+    public void SetHandRetracted(bool retracted)
+    {
+        if (_hand == null)
+            return;
+
+        float target = retracted ? CardView.CardHeight * 0.5f : 0f;
+        if (Mathf.IsEqualApprox(target, _handRetract))
+            return;
+
+        float from = _handRetract;
+        _handRetract = target;
+
+        Tween tw = CreateTween();
+        tw.TweenMethod(Callable.From<float>(v =>
+        {
+            if (!IsInstanceValid(_hand))
+                return;
+
+            _hand.OffsetTop = -272f + v;
+            _hand.OffsetBottom = v;
+        }), from, target, 0.18f).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+    }
+
+    public bool HandRetracted => _handRetract > 1f;
+
+    /// <summary>调试：出兵面板的 ZIndex。</summary>
+    public int SpawnPanelZ() => _spawnPanel != null ? _spawnPanel.ZIndex : -1;
 
     /// <summary>出兵面板打开时，把下面的手牌 / 牌堆控件设为不吃鼠标，避免点击穿透。</summary>
     private void SetSpawnBlocking(bool blocked)
     {
         var filter = blocked ? Control.MouseFilterEnum.Ignore : Control.MouseFilterEnum.Pass;
+
 
         if (_hand != null)
             SetTreeMouseFilter(_hand, filter);
@@ -923,20 +998,22 @@ public partial class BattleHud : CanvasLayer
             Name = "SpawnPanel",
             Visible = false,
             CustomMinimumSize = new Vector2(320, 0),
-            ZIndex = 40,          // 盖住右下角的牌堆图标 / 手牌
+            ZIndex = 300,         // 盖住手牌（含悬停 200 / 选中 250）与牌堆图标
             MouseFilter = Control.MouseFilterEnum.Stop,   // 挡住下面的地图/手牌点击
         };
-        _spawnPanel.SetAnchorsPreset(Control.LayoutPreset.TopRight);
         _spawnPanel.GuiInput += e =>
         {
+            if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+                GD.Print($"[SpawnPanel] gui {e.GetType().Name}");
             if (e is InputEventMouseButton)
                 _spawnPanel.AcceptEvent();
         };
-        // 挂在信息面板正下方（位置在 ShowSpawnPanel 里按信息面板高度动态计算）
-        _spawnPanel.OffsetLeft = -346;
-        _spawnPanel.OffsetTop = 320;
+        // 贴在信息面板正下方（具体位置在 PlaceSpawnPanel 里按内容高度算）
+        _spawnPanel.CustomMinimumSize = new Vector2(330, 172);
+        _spawnPanel.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+        _spawnPanel.ZIndex = 300;      // 压在手牌（悬停 200 / 选中 250）之上
+        _spawnPanel.OffsetLeft = -346;   // 与信息面板同宽、同右边缘
         _spawnPanel.OffsetRight = -16;
-        _spawnPanel.OffsetBottom = 496;
         _root.AddChild(_spawnPanel);
 
         var box = new VBoxContainer();
@@ -1342,6 +1419,7 @@ public partial class BattleHud : CanvasLayer
         int demolishRefund = 0, bool showProduce = false, bool produceOn = true)
     {
         _infoPanel.Visible = true;
+        Callable.From(UpdateInfoPanelHeight).CallDeferred();
         _infoTitle.Text = title;
         _infoBody.Text = body;
         if (!string.IsNullOrEmpty(imagePath) && ResourceLoader.Exists(imagePath))
@@ -1423,6 +1501,38 @@ public partial class BattleHud : CanvasLayer
             _upgradeBtn.Visible = showButtons;
             _upgradeBtn.Disabled = !canUpgrade;
         }
+    }
+
+    /// <summary>把信息面板的底边收到内容高度，避免 TopRight 锚点被拉满整屏。</summary>
+    private void UpdateInfoPanelHeight()
+    {
+        if (_infoPanel == null || !IsInstanceValid(_infoPanel) || !_infoPanel.Visible)
+            return;
+
+        // 用子控件实际高度累计：HFlow 的按钮行换行时 GetCombinedMinimumSize 会偏小
+        float h = 0f;
+        int count = 0;
+
+        if (_infoContent != null)
+        {
+            foreach (Node node in _infoContent.GetChildren())
+            {
+                if (node is Control c && c.Visible)
+                {
+                    h += c.Size.Y;
+                    count++;
+                }
+            }
+        }
+
+        h += Mathf.Max(0, count - 1) * 6f + 26f;
+
+        _infoHeight = h;
+        _infoBottom = _infoPanel.OffsetTop + h;
+        _infoPanel.OffsetBottom = _infoBottom;
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[InfoH] children={count} h={h} bottom={_infoBottom}");
     }
 
     public void HideInfo() => _infoPanel.Visible = false;
