@@ -14,6 +14,9 @@ public sealed class NetRoomOffer
     /// <summary>主机决定的初始基地等级（双方共用）。</summary>
     public int HqLevel { get; set; } = 1;
 
+    /// <summary>客户端游戏版本（用于提示两端版本不一致）。</summary>
+    public string Version { get; set; } = "";
+
     private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
 
     public string ToJson() => JsonSerializer.Serialize(this, Options);
@@ -57,6 +60,9 @@ public sealed class NetResumePayload
 
     /// <summary>本局是否已锁定房主（接管过）。</summary>
     public bool HostLocked { get; set; }
+
+    /// <summary>主机已处理过的客户端动作序号，重连方要接着往后编号。</summary>
+    public int ClientSeqBase { get; set; }
     public NetBattleConfig Config { get; set; }
     public string[] History { get; set; } = System.Array.Empty<string>();
 
@@ -82,6 +88,9 @@ public sealed class NetResumePayload
 public sealed class NetClientHello
 {
     public int HqLevel { get; set; } = 1;
+
+    /// <summary>客户端游戏版本（用于提示两端版本不一致）。</summary>
+    public string Version { get; set; } = "";
     public string[] Deck { get; set; } = Array.Empty<string>();
 
     private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };

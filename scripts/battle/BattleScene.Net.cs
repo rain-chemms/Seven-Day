@@ -47,7 +47,7 @@ public partial class BattleScene
 
     private bool _netBusy;      // 正在播放“命中前”的动画（伤害延后到爆炸瞬间结算）
     private ulong _netBusySinceMsec;
-    private NetIntent _netPending;
+    private readonly System.Collections.Generic.Queue<NetIntent> _netPending = new();
 
     public bool NetMode => Session.LanBattle && LanSession.Active;
 
@@ -221,6 +221,16 @@ public partial class BattleScene
         if (NetResumeStore.WasResumed)
         {
             NetResumeStore.WasResumed = false;
+
+            // 重连场景是“换场景 + RPC”同时发生，HUD 可能按旧尺寸布局，延迟强制重排一次
+            GetTree().CreateTimer(0.2).Timeout += () =>
+            {
+                if (IsInstanceValid(this) && _hud != null && _state != null)
+                {
+                    _hud.ForceRelayout();
+                    GD.Print("[Net] 重连后强制重排 HUD");
+                }
+            };
             _hud.Toast(Loc.T("lan.reconnect_resumed"));
         }
         else if (_state.CurrentPlayer == PlayerId.Player && _state.Phase == BattlePhase.PlayerTurn)
@@ -569,6 +579,7 @@ public partial class BattleScene
             Config = LanSession.Config,
             AssignActor = 1 - LanSession.LocalActor,   // 新加入方使用另一个 actor
             HostLocked = LanSession.HostLocked,
+            ClientSeqBase = _netLastClientSeq,
             History = _netHistory.Select(x => x.ToJson()).ToArray(),
         };
 
@@ -601,6 +612,7 @@ public partial class BattleScene
             Config = LanSession.Config,
             AssignActor = 1 - LanSession.LocalActor,
             HostLocked = LanSession.HostLocked,
+            ClientSeqBase = _netLastClientSeq,
             History = _netHistory.Select(x => x.ToJson()).ToArray(),
         };
 
@@ -627,6 +639,8 @@ public partial class BattleScene
             LanSession.AssignActor(payload.AssignActor);
         if (payload.HostLocked)
             LanSession.SetHostLocked(true);
+        if (payload.ClientSeqBase > LanSession.ClientSeq)
+            LanSession.ClientSeq = payload.ClientSeqBase;   // 接着主机已处理的序号继续
 
         NetResumeStore.Pending = payload;
         LanSession.Config = payload.Config;
@@ -970,6 +984,9 @@ public partial class BattleScene
                 UnitInst u = _state.UnitsAt(from).FirstOrDefault(x => x.Owner == side && x.Alive);
                 if (u == null)
                 {
+                    if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
+                        GD.Print($"[NetDiag] Move from={from} to={to} side={side} A={it.A} localActor={LanSession.LocalActor} " +
+                                 $"units={string.Join(";", _state.Units.Select(x => $"{x.Owner}@{x.Coord}:{x.Alive}"))}");
                     why = "没有可移动的单位";
                     return false;
                 }
@@ -1119,8 +1136,8 @@ public partial class BattleScene
     {
         if (_netBusy)
         {
-            // 命中动画还没走完：先挂起，等结算完再执行（保证状态顺序一致）
-            _netPending = it;
+            // 命中动画还没走完：按顺序排队，等结算完依次执行（保证状态顺序一致）
+            _netPending.Enqueue(it);
             return;
         }
 
@@ -1214,13 +1231,7 @@ public partial class BattleScene
                 finally
                 {
                     _netBusy = false;
-
-                    if (_netPending != null)
-                    {
-                        NetIntent next = _netPending;
-                        _netPending = null;
-                        ExecuteNetIntent(next);
-                    }
+                    PumpNetPending();
                 }
             };
             return;
@@ -1230,6 +1241,12 @@ public partial class BattleScene
             hasHandRect, handRect, discardRects, false);
     }
 
+    /// <summary>结算完一个动作后，把排队中的动作按顺序继续执行完（遇到需要延迟的会重新挂起）。</summary>
+    private void PumpNetPending()
+    {
+        while (!_netBusy && _netPending.Count > 0)
+            ExecuteNetIntent(_netPending.Dequeue());
+    }
     /// <summary>攻击的“命中前”表现：转向 + 开火动画 + 弹道，返回命中延迟。</summary>
     private float PlayAttackPreVisual(UnitInst attacker, HexCoord target)
     {
@@ -1573,6 +1590,7 @@ public partial class BattleScene
         {
             GD.PushWarning("[Net] 演出超时，强制解除忙碌状态");
             _netBusy = false;
+            PumpNetPending();
         }
 
         if (_netBusy)

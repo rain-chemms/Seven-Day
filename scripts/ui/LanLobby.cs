@@ -48,7 +48,8 @@ public partial class LanLobby : Control
             GetTree().CreateTimer(0.9).Timeout += () => _backBtn?.EmitSignal(BaseButton.SignalName.Pressed);
 
         // 有未完成的联机对局：先让玩家决定是否载入
-        if (LanSaveStore.Exists())
+        bool joinMode = System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--lan-join") >= 0;
+        if (!joinMode && LanSaveStore.Exists())
         {
             if (OS.GetCmdlineUserArgs().Contains("--demo-lan-restore"))
                 CallDeferred(nameof(DemoRestoreNow));
@@ -853,6 +854,17 @@ public partial class LanLobby : Control
     {
         if (_starting)
             return;
+
+        // 版本不一致会导致 RPC 方法表不同、重连后操作失效，先拦住并明确提示
+        string localVer = (string)ProjectSettings.GetSetting("application/config/version", "");
+        if (!string.IsNullOrEmpty(hello.Version) && !string.IsNullOrEmpty(localVer) &&
+            hello.Version != localVer)
+        {
+            SetStatus($"版本不一致：主机 {localVer} / 客机 {hello.Version}，请更新到同一版本");
+            GD.Print($"[Lan] 拒绝版本不一致的客户端：{hello.Version} != {localVer}");
+            NetBridge.Instance?.Abort();
+            return;
+        }
 
         MapDef map = GameDatabase.Map(Session.MapId) ?? GameDatabase.Maps.Values.FirstOrDefault();
         if (map == null)

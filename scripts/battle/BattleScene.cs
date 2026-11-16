@@ -479,7 +479,15 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-hq-close"))
             DemoHqCloseFlow();
 
-        // 开发调试：--demo-touch-arrow 模拟手指指向，验证卡牌箭头
+        // 开发调试：--demo-resume-actions 重连后部署+移动
+    if (OS.GetCmdlineUserArgs().Contains("--demo-resume-actions"))
+        CallDeferred(nameof(DemoResumeActions));
+
+    // 开发调试：--demo-resume-input 重连恢复后验证点击
+    if (OS.GetCmdlineUserArgs().Contains("--demo-resume-input"))
+        CallDeferred(nameof(DemoResumeInput));
+
+    // 开发调试：--demo-touch-arrow 模拟手指指向，验证卡牌箭头
     if (OS.GetCmdlineUserArgs().Contains("--demo-touch-arrow"))
         CallDeferred(nameof(DemoTouchArrow));
 
@@ -3294,6 +3302,142 @@ public partial class BattleScene : Node3D
         GD.Print("[BuildAll] 全部完成");
     }
     /// <summary>调试：模拟手指指向目标格，检查卡牌箭头是否跟随。</summary>
+    /// <summary>调试：重连恢复后模拟点击手牌 + 格子，验证输入可用。</summary>
+    /// <summary>调试：重连后真的部署一个单位再尝试移动，检查主机校验。</summary>
+    private async void DemoResumeActions()
+    {
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+
+        int cardIdx = -1;
+        for (int i = 0; i < _state.Player.Hand.Count; i++)
+        {
+            CardDef c = GameDatabase.Card(_state.Player.Hand[i]);
+            if (c != null && c.KindEnum == CardKind.Unit)
+            {
+                cardIdx = i;
+                break;
+            }
+        }
+
+        if (cardIdx < 0)
+        {
+            GD.Print("[ResumeAct] 没有单位卡");
+            return;
+        }
+
+        // 找可部署格
+        CardDef card = GameDatabase.Card(_state.Player.Hand[cardIdx]);
+        HexCoord? spot = null;
+        foreach (var kv in _state.Cells)
+        {
+            if (_state.CanDeployCard(card.Id, PlayerId.Player, kv.Key, out _))
+            {
+                spot = kv.Key;
+                break;
+            }
+        }
+
+        if (spot == null)
+        {
+            GD.Print("[ResumeAct] 没有可部署格");
+            return;
+        }
+
+        OnCardClicked(cardIdx);
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+
+        // 走真实点击路径（OnLeftClick → NetSendDeploy）
+        Vector2 sp = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(spot.Value, HexMapView.TileTop));
+        SendMotion(sp, sp);
+        OnLeftClick(sp);
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+
+        var mine = _state.Units.Where(u => u.Owner == PlayerId.Player && u.Alive).ToList();
+        GD.Print($"[ResumeAct] 部署后我方单位={mine.Count} 位置={string.Join(";", mine.Select(u => u.Coord))}");
+
+        if (mine.Count == 0)
+            return;
+
+        UnitInst u = mine[0];
+        Vector2 up = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(u.Coord, HexMapView.TileTop));
+        SendMotion(up, up);
+        OnLeftClick(up);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[ResumeAct] 点单位后 selUnit={_selUnit?.DefId} hints={_state.MoveRange(u).Count}");
+
+        // 找一个可移动格再点
+        HexCoord? dest = _state.MoveRange(u).Cast<HexCoord?>().FirstOrDefault();
+        if (dest != null)
+        {
+            Vector2 dp = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(dest.Value, HexMapView.TileTop));
+            SendMotion(dp, dp);
+            OnLeftClick(dp);
+            await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[ResumeAct] 移动后 单位位置={u.Coord} 目标={dest.Value}");
+        }
+    }
+    private async void DemoResumeInput()
+    {
+        await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+
+        GD.Print($"[ResumeInput] phase={_state.Phase} current={_state.CurrentPlayer} hand={_state.Player.Hand.Count}");
+
+        // 点第一张手牌
+        if (_state.Player.Hand.Count > 0 && _hud.TryGetCardRect(0, out Rect2 cardRect))
+        {
+            Vector2 cp = cardRect.Position + cardRect.Size * 0.5f;
+            GD.Print($"[ResumeInput] 卡0 rect={cardRect}");
+            _hud.RefreshAll();
+            await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+            if (_hud.TryGetCardRect(0, out Rect2 rect2))
+                GD.Print($"[ResumeInput] RefreshAll 后 rect={rect2}");
+            SendMotion(cp, cp);
+            OnLeftClick(cp);
+            await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[ResumeInput] 点卡后 selCard={_selCard} gate={_inputGateUntil - Time.GetTicksMsec()}");
+        }
+
+        OnCardClicked(0);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[ResumeInput] 直接 OnCardClicked 后 selCard={_selCard}");
+
+        // 点一个己方单位，验证地图点选
+        var u = _state.Units.FirstOrDefault(x => x.Owner == PlayerId.Player && x.Alive);
+        if (u != null)
+        {
+            Vector2 up = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(u.Coord, HexMapView.TileTop));
+            SendMotion(up, up);
+            OnLeftClick(up);
+            await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[ResumeInput] 点己方单位后 selUnit={_selUnit?.DefId} selCard={_selCard}");
+        }
+
+        // 点一个可部署格
+        HexCoord? spot = null;
+        foreach (var kv in _state.Cells)
+        {
+            CardDef c = _selCard >= 0 && _selCard < _state.Player.Hand.Count
+                ? GameDatabase.Card(_state.Player.Hand[_selCard]) : null;
+            if (c != null && _state.CanDeployCard(c.Id, PlayerId.Player, kv.Key, out _))
+            {
+                spot = kv.Key;
+                break;
+            }
+        }
+
+        if (spot == null)
+        {
+            GD.Print("[ResumeInput] 没有可部署格");
+            return;
+        }
+
+        Vector2 p = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(spot.Value, HexMapView.TileTop));
+        SendMotion(p, p);
+        OnLeftClick(p);
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[ResumeInput] 点格后 单位数={_state.Units.Count} gold={_state.Player.Gold} selCard={_selCard}");
+        GetTree().Quit();
+    }
     private async void DemoTouchArrow()
     {
         await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);

@@ -620,6 +620,25 @@ public partial class BattleHud : CanvasLayer
         ButtonJuice.AttachAll(_touchBar);
         UiSound.AttachAll(_touchBar);
     }
+    /// <summary>强制重新应用一次全屏锚点与手牌布局（重连恢复后修正错位用）。</summary>
+    public void ForceRelayout()
+    {
+        if (_root == null)
+            return;
+
+        _root.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+
+        if (_hand != null)
+        {
+            _hand.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomWide);
+            _hand.OffsetLeft = 230;
+            _hand.OffsetRight = -230;
+            _hand.OffsetTop = -272f + _handRetract;
+            _hand.OffsetBottom = _handRetract;
+        }
+
+        RefreshAll();
+    }
     public void RefreshAll()
     {
         if (_state == null)
