@@ -479,7 +479,11 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-hq-close"))
             DemoHqCloseFlow();
 
-        // 开发调试：--demo-build-all 依次建造所有建筑
+        // 开发调试：--demo-touch-arrow 模拟手指指向，验证卡牌箭头
+    if (OS.GetCmdlineUserArgs().Contains("--demo-touch-arrow"))
+        CallDeferred(nameof(DemoTouchArrow));
+
+    // 开发调试：--demo-build-all 依次建造所有建筑
     if (OS.GetCmdlineUserArgs().Contains("--demo-build-all"))
         CallDeferred(nameof(DemoBuildAll));
 
@@ -3288,6 +3292,38 @@ public partial class BattleScene : Node3D
         }
 
         GD.Print("[BuildAll] 全部完成");
+    }
+    /// <summary>调试：模拟手指指向目标格，检查卡牌箭头是否跟随。</summary>
+    private async void DemoTouchArrow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        int pick = -1;
+        for (int i = 0; i < _state.Player.Hand.Count; i++)
+        {
+            CardDef c = GameDatabase.Card(_state.Player.Hand[i]);
+            if (c != null && c.KindEnum != CardKind.Global)
+            {
+                pick = i;
+                break;
+            }
+        }
+
+        if (pick < 0)
+            return;
+
+        OnCardClicked(pick);
+        HexCoord target = new(0, 2);
+        Vector2 p = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(target, HexMapView.TileTop));
+        GD.Print($"[Arrow] 手指坐标={p}");
+
+        // 只发 ScreenDrag（等价于手指移动），避免触摸模拟鼠标点击直接出牌
+        Input.ParseInputEvent(new InputEventScreenDrag
+        {
+            Index = 0, Position = p, Relative = Vector2.Zero,
+        });
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[Arrow] mouseScreen={_mouseScreen} selCard={_selCard}");
     }
     private async void DemoBuildClick()
     {
@@ -6182,6 +6218,10 @@ public partial class BattleScene : Node3D
             else
                 _touches.Remove(touch.Index);
 
+            // 单指时箭头/悬停跟随手指；双指手势不抢箭头
+            if (_touches.Count <= 1)
+                _mouseScreen = touch.Position;
+
             _touchPrevDist = 0f;
             return;
         }
@@ -6189,6 +6229,13 @@ public partial class BattleScene : Node3D
         if (@event is InputEventScreenDrag drag)
         {
             _touches[drag.Index] = drag.Position;
+
+            // 单指拖动：箭头/悬停跟随手指；双指留给缩放/平移
+            if (_touches.Count == 1)
+            {
+                _mouseScreen = drag.Position;
+                UpdateHover(drag.Position);
+            }
             if (_touches.Count >= 2)
             {
                 UpdateTouchGesture();
