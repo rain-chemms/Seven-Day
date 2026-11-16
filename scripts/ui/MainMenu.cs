@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Godot;
 using SevenDay.Core;
+using SevenDay.Net;
 
 namespace SevenDay.UI;
 
@@ -28,6 +29,18 @@ public partial class MainMenu : Node3D
 
     public override void _Ready()
     {
+        // 调试：自动进入联机大厅（验证二次载入未完成对局）
+        if (OS.GetCmdlineUserArgs().Contains("--demo-enter-lan"))
+            GetTree().CreateTimer(0.8).Timeout += () => GetTree().ChangeSceneToFile("res://scenes/lanLobby.tscn");
+
+        // 回到主菜单：确保上局的联机会话不会残留（否则人机对战会误走联机分支）
+        if (Session.LanBattle || LanSession.Active)
+        {
+            LanSession.Leave();
+            Session.LanBattle = false;
+            GD.Print("[Net] 已清理上一局联机会话");
+        }
+
         Loc.EnsureLoaded();
         AudioBuses.Ensure();
         AnimSpeed.ApplyFromSettings();
@@ -869,7 +882,7 @@ public partial class MainMenu : Node3D
         _root.AddChild(col);
 
         AddMenuButton(col, "menu.vs_ai", OnVsAi);
-        AddMenuButton(col, "menu.lan", () => ShowToast(Loc.T("common.locked")), accent: false);
+        AddMenuButton(col, "menu.lan", () => GetTree().ChangeSceneToFile("res://scenes/lanLobby.tscn"), accent: false);
         AddMenuButton(col, "menu.deck", OnDeck);
         AddMenuButton(col, "menu.settings", OpenSettings);
         AddMenuButton(col, "menu.gallery", () =>
@@ -932,6 +945,7 @@ public partial class MainMenu : Node3D
         if (_settingsPanel == null)
             return;
 
+        ButtonJuice.AttachAll(_settingsPanel);   // 设置页里的按钮也挂上动效
         _settingsPanel.Visible = true;
         _settingsPanel.PivotOffset = _settingsPanel.Size * 0.5f;
         _settingsPanel.Modulate = new Color(1f, 1f, 1f, 0f);

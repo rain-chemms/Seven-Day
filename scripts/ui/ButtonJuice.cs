@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Godot;
+using SevenDay.Core;
 
 namespace SevenDay.UI;
 
@@ -43,7 +44,7 @@ public static class ButtonJuice
 
     public static void Attach(Button button)
     {
-        if (button == null || button.HasMeta("juice"))
+        if (button == null || button.HasMeta("juice") || button.HasMeta("custom_fx"))
             return;
 
         button.SetMeta("juice", true);
@@ -61,6 +62,8 @@ public static class ButtonJuice
         {
             state.Hover = true;
             button.ZIndex = 10;
+            if (!button.Disabled)
+                AudioManager.PlaySfx("res://gameAsset/audios/ui/button_hover.ogg", -9f);
             // 悬停只放大，不做任何倾斜（保持水平）
             Animate(button, state, new Vector2(HoverScale, HoverScale), 0f, 0.14f,
                 Tween.TransitionType.Back, Tween.EaseType.Out);
@@ -76,10 +79,23 @@ public static class ButtonJuice
 
         button.ButtonDown += () =>
         {
+            if (button.Disabled)
+                return;
+
+            AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_enterOrEnable.ogg", -7f);
             button.ZIndex = 20;
             Animate(button, state, new Vector2(PressScaleX, PressScaleY), 0f, 0.07f,
                 Tween.TransitionType.Sine, Tween.EaseType.Out);
         };
+
+        if (button is CheckButton check)
+        {
+            check.Toggled += on =>
+            {
+                if (!on)
+                    AudioManager.PlaySfx("res://gameAsset/audios/ui/button_click_backOrDisable.ogg", -7f);
+            };
+        }
 
         button.ButtonUp += () =>
         {

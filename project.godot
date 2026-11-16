@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 
 AudioManager="*res://scripts/core/AudioManager.cs"
 ScreenshotAgent="*res://scripts/tools/ScreenshotAgent.cs"
+NetBridge="*res://scripts/net/NetBridge.cs"
 
 [display]
 

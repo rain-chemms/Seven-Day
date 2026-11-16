@@ -10,8 +10,9 @@ namespace SevenDay.UI;
 /// </summary>
 public partial class PileViewer : Control
 {
-    private const int MaxColumns = 5;
+    private const int MaxColumns = 4;
     private const int Gap = 14;
+    private const float ScrollScale = 1.0f;   // 竖向滚动模式下的固定缩放
 
     // 面板内边距 + 顶栏占用（用来算卡牌缩放）
     private const float PanelWidth = 940f;
@@ -21,8 +22,9 @@ public partial class PileViewer : Control
     private const int HeaderGap = 12;
 
     private PanelContainer _panel;
-    private CenterContainer _center;
     private GridContainer _grid;
+    private ScrollContainer _scroll;
+    private CenterContainer _center;
     private Label _title;
     private readonly List<Control> _cells = new();
 
@@ -92,20 +94,55 @@ public partial class PileViewer : Control
         close.Pressed += Close;
         header.AddChild(close);
 
-        // 卡牌网格：居中铺满（不滚动，靠缩放自适应数量）
-        _center = new CenterContainer
+        // 卡牌网格：竖向滚动（滚动条沿用主题里的 VScrollBar 样式）
+        _scroll = new ScrollContainer
         {
             SizeFlagsVertical = SizeFlags.ExpandFill,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            VerticalScrollMode = ScrollContainer.ScrollMode.ShowAlways,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            FollowFocus = false,
         };
-        root.AddChild(_center);
+        root.AddChild(_scroll);
 
-        _grid = new GridContainer { Columns = MaxColumns };
+        _center = new CenterContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+        };
+        _scroll.AddChild(_center);
+
+        _grid = new GridContainer
+        {
+            Columns = MaxColumns,
+        };
         _grid.AddThemeConstantOverride("h_separation", Gap);
         _grid.AddThemeConstantOverride("v_separation", Gap);
         _center.AddChild(_grid);
     }
 
+    /// <summary>让内容在面板里纵向居中：容器高度取 max(视口, 内容高)，CenterContainer 负责居中。</summary>
+    private void UpdateCenterHeight(int rows, float cardHeight, int count = -1)
+    {
+        if (_center == null || _scroll == null)
+            return;
+
+        int actualRows = rows > 0 ? rows : 1;
+        float contentH = actualRows * cardHeight + (actualRows - 1) * Gap;
+        _center.CustomMinimumSize = new Vector2(0, Mathf.Max(0, contentH));
+    }
+
+    /// <summary>布局变化后按当前网格尺寸重算居中容器高度。</summary>
+    private void UpdateCenterHeight()
+    {
+        if (_center == null || _scroll == null)
+            return;
+
+        float contentH = _center.GetCombinedMinimumSize().Y;
+        if (_grid != null)
+            contentH = Mathf.Max(contentH, _grid.GetCombinedMinimumSize().Y);
+
+        _center.CustomMinimumSize = new Vector2(0, Mathf.Max(_scroll.Size.Y, contentH));
+    }
     /// <summary>可用的内容区域（用来算卡牌缩放）。</summary>
     private Vector2 ContentArea =>
         new(PanelWidth - ContentMargin * 2f, PanelHeight - ContentMargin * 2f - HeaderHeight - HeaderGap);
@@ -131,9 +168,8 @@ public partial class PileViewer : Control
             _cells.Add(empty);
         }
 
-        // 按数量算格子大小，让卡牌尽量铺满
-        int columns = Mathf.Clamp(list.Count, 1, MaxColumns);
-        int rows = Mathf.Max(1, Mathf.CeilToInt(list.Count / (float)columns));
+        // 竖向滚动：列数取 min(卡片数, 上限)，再按面板宽度把卡片放大到填满
+        int columns = Mathf.Clamp(Mathf.Min(list.Count, MaxColumns), 1, MaxColumns);
         _grid.Columns = columns;
 
         // 先建卡，量出「一张卡实际需要多大」（描述行数会让它比 128x196 高）
@@ -159,11 +195,19 @@ public partial class PileViewer : Control
             pending.Add((def, card, ethereal.Contains(i)));
         }
 
-        Vector2 area = ContentArea;
-        float fitW = (area.X - (columns - 1) * Gap) / (columns * need.X);
-        float fitH = (area.Y - (rows - 1) * Gap) / (rows * need.Y);
-        // 放大上限压到 1.3：再往上字体/卡图会被拉糊（卡牌是按 128×196 排版的）
-        float scale = Mathf.Clamp(Mathf.Min(fitW, fitH), 0.35f, 1.3f);
+        // 卡片尽量大：先用宽度算缩放；行数少（<=2 行）时再按高度收一点，保证整块能居中显示
+        float usableW = ContentArea.X - (columns - 1) * Gap;
+        float widthFit = usableW / (columns * Mathf.Max(1f, need.X));
+        int previewRows = Mathf.Max(1, Mathf.CeilToInt(pending.Count / (float)columns));
+        float usableH = ContentArea.Y - (previewRows - 1) * Gap;
+        float heightFit = usableH / (previewRows * Mathf.Max(1f, need.Y));
+
+        float scale = previewRows <= 2
+            ? Mathf.Clamp(Mathf.Min(widthFit, heightFit), 0.85f, 1.85f)
+            : Mathf.Clamp(widthFit, 0.9f, 1.85f);
+
+        int rows = Mathf.Max(1, Mathf.CeilToInt(pending.Count / (float)columns));
+        UpdateCenterHeight(rows, need.Y * scale);
 
         int order = 0;
         foreach ((CardDef def, CardView card, bool isEthereal) in pending)

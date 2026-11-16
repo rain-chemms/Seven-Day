@@ -8,6 +8,12 @@ namespace SevenDay;
 /// <summary>跨场景传递的小状态：这一局选了什么地图、什么难度，以及玩家自定义的出战卡组。</summary>
 public static class Session
 {
+    /// <summary>本局是否来自局域网大厅（决定是否走联机战斗逻辑）。</summary>
+    public static bool LanBattle;
+
+    /// <summary>本次进入战斗是否要载入“未完成联机对局”的存档（房主恢复用）。</summary>
+    public static bool RestoreLanSave;
+
     public static string MapId = "map_01";
     public static AIDifficulty Difficulty = AIDifficulty.Normal;
 
@@ -45,9 +51,15 @@ public static class Session
         }
     }
 
+    /// <summary>调试用：命令行 --lan-deck 指定的卡组（只在本进程生效，不写设置）。</summary>
+    public static List<string> DebugDeckOverride;
+
     /// <summary>现在这一局实际要用的卡组：自定义优先，否则回落到地图默认。</summary>
     public static List<string> EffectiveDeck(MapDef map)
     {
+        if (DebugDeckOverride != null && DebugDeckOverride.Count >= DeckMin)
+            return new List<string>(DebugDeckOverride);
+
         List<string> custom = PlayerDeck;
         if (custom != null && custom.Count >= DeckMin)
             return new List<string>(custom);

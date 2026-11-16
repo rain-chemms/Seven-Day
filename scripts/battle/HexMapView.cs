@@ -22,6 +22,9 @@ public partial class HexMapView : Node3D
     private static readonly Color HoverHint = new("FFF2B0");
 
     private BattleState _state;
+
+    /// <summary>联机镜像视角：自己的基地在地图另一端，朝向要整体翻转。</summary>
+    private bool _mirrored;
     private Mesh _hexMesh;
     private Mesh _ringMesh;
     private Mesh _borderMesh;
@@ -182,6 +185,12 @@ public partial class HexMapView : Node3D
     public void Build(BattleState state)
     {
         _state = state;
+
+        // 判断是否为镜像视角：本地 Player 的指挥部是否落在地图定义的 PlayerHq 上
+        _mirrored = false;
+        BuildingInst myHq = state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        if (myHq != null && state.Map is { PlayerHq: not null })
+            _mirrored = myHq.Coord.Q != state.Map.PlayerHq[0] || myHq.Coord.R != state.Map.PlayerHq[1];
 
         foreach (MeshInstance3D m in _tiles.Values)
             m.QueueFree();
@@ -563,6 +572,23 @@ public partial class HexMapView : Node3D
         _buildMarker.Visible = true;
     }
 
+    /// <summary>显式播一次「缩放 0 → 1」的生长动画（联机建造/升级用，确保一定播出来）。</summary>
+    public void PlayBuildingGrow(int id, float duration = 0.45f)
+    {
+        if (!_buildingViews.TryGetValue(id, out Node3D view) || !IsInstanceValid(view))
+            return;
+
+        view.Scale = Vector3.One * 0.01f;
+        CreateTween()
+            .TweenProperty(view, "scale", Vector3.One, duration)
+            .SetTrans(Tween.TransitionType.Cubic)
+            .SetEase(Tween.EaseType.Out);
+    }
+
+    /// <summary>调试：读取某个建筑视图当前的缩放（验证生长动画）。</summary>
+    public float DebugBuildingScale(int id) =>
+        _buildingViews.TryGetValue(id, out Node3D v) && IsInstanceValid(v) ? v.Scale.X : -1f;
+
     /// <summary>调试：放大某个建筑视图，便于近距离看结构。</summary>
     public void ScaleBuildingView(int buildingId, float k)
     {
@@ -820,6 +846,8 @@ public partial class HexMapView : Node3D
         }
 
         RotateToward(root, b.Owner);
+        if (b.IsHq && System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[Model] HQ owner={b.Owner} yaw={root.RotationDegrees.Y} mirrored={_mirrored}");
         if (animate)
             PopIn(root, 0.45f);
         return root;
@@ -840,6 +868,7 @@ public partial class HexMapView : Node3D
             .SetDelay(delay)
             .SetTrans(Tween.TransitionType.Cubic)
             .SetEase(Tween.EaseType.Out);
+
     }
 
     private Node3D CreateUnitView(UnitInst u)
@@ -902,10 +931,11 @@ public partial class HexMapView : Node3D
         return root;
     }
 
-    /// <summary>玩家在左、敌人在右，模型朝向大致相对。</summary>
-    private static void RotateToward(Node3D node, PlayerId owner)
+    /// <summary>双方模型相向而立；镜像视角下 Player 在地图另一端，整体翻转。</summary>
+    private void RotateToward(Node3D node, PlayerId owner)
     {
-        node.RotationDegrees = new Vector3(0, owner == PlayerId.Player ? 90 : -90, 0);
+        bool rightFacing = (owner == PlayerId.Player) ^ _mirrored;
+        node.RotationDegrees = new Vector3(0, rightFacing ? 90 : -90, 0);
     }
 
     /// <summary>让单位转向某个世界坐标（模型的正面是本地 +Z）。</summary>

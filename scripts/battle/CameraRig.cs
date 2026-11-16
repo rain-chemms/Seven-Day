@@ -148,6 +148,9 @@ public partial class CameraRig : Node3D
         Apply();
     }
 
+    /// <summary>调试：当前相机距离。</summary>
+    public float DebugDistance => _distance;
+
     public void Zoom(float steps)
     {
         _distance = Mathf.Clamp(_distance - steps * 1.6f * _zoomSpeed, MinDistance, MaxDistance);

@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Godot;
 using SevenDay.Core;
 using SevenDay.Data;
+using SevenDay.Net;
 using SevenDay.UI;
 
 namespace SevenDay.Battle;
@@ -64,6 +65,23 @@ public partial class BattleScene : Node3D
         BuildEnvironment();
         _inputGateUntil = Time.GetTicksMsec() + 400;
 
+        // 调试：--demo-lan-stale-ai 模拟“联机残留后打人机”，验证会回落单机
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lan-stale-ai"))
+        {
+            Session.LanBattle = true;
+            LanSession.StartHost(7799, out _);
+            GD.Print("[Demo] 已伪造残留联机会话（监听 7799，无客户端）");
+        }
+
+        // 调试：--lan-deck a,b,c 指定本进程使用的卡组（用于联机测试不同卡组）
+        string[] lanDeckArgs = OS.GetCmdlineUserArgs();
+        int deckFlag = System.Array.IndexOf(lanDeckArgs, "--lan-deck");
+        if (deckFlag >= 0 && deckFlag + 1 < lanDeckArgs.Length)
+        {
+            Session.DebugDeckOverride = lanDeckArgs[deckFlag + 1]
+                .Split(new[] { ',' }, System.StringSplitOptions.RemoveEmptyEntries)
+                .ToList();
+        }
         // 调试：--map map_02 直接指定地图
         string[] args = OS.GetCmdlineUserArgs();
         int mapFlag = System.Array.IndexOf(args, "--map");
@@ -78,7 +96,21 @@ public partial class BattleScene : Node3D
             return;
         }
 
-        _state = BattleState.Create(map, Session.Difficulty);
+        // 房主载入未完成对局：把存档当成重连数据，交给同一套回放流程
+        if (Session.RestoreLanSave)
+        {
+            Session.RestoreLanSave = false;
+            LanSaveStore.RestoreIntoPending();
+        }
+
+        NetApplyPendingConfig();
+        NetSanitizeStale();
+        _state = NetCreateState(map);
+
+        // 调试：--lan-empty-deck 在开局第一回合后清空“主机方”牌库（弃牌堆塞满），
+        // 下一次该方回合开始必定触发洗回，用于验证洗牌动画同步。
+        if (OS.GetCmdlineUserArgs().Contains("--lan-empty-deck"))
+            GetTree().CreateTimer(1.2).Timeout += DemoEmptyDeck;
 
         _map = new HexMapView { Name = "HexMap" };
         AddChild(_map);
@@ -117,11 +149,14 @@ public partial class BattleScene : Node3D
             };
         }
 
-        _state.BeginTurn(PlayerId.Player);
+        // 先按正常开局开始第一回合（主机 Player / 客户端 Enemy），再回放历史
+        NetBeginFirstTurn();
+        NetResumeReplayIfNeeded();
         // 开局等同一次正常回合开始（基础抽牌 3 张 + 建筑发牌），不再额外补牌
         _map.SyncEntities();
         _map.RefreshZones();
         _hud.Setup(_state);
+        NetAttach();
 
         if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
         {
@@ -178,9 +213,37 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-missile-exhaust"))
             CallDeferred(nameof(DemoMissileExhaust));
 
+        // 开发调试：--demo-pile-scroll 验证牌堆竖向滚动 + 查看器开着时滚轮不缩放
+        if (OS.GetCmdlineUserArgs().Contains("--demo-pile-scroll"))
+            CallDeferred(nameof(DemoPileScroll));
+
         // 开发调试：--demo-pile-layers 验证牌堆查看器在飞牌之上
         if (OS.GetCmdlineUserArgs().Contains("--demo-pile-layers"))
             CallDeferred(nameof(DemoPileLayers));
+
+        // 开发调试：--demo-lan-leave 对局中返回主菜单
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lan-leave"))
+            CallDeferred(nameof(DemoLanLeave));
+
+        // 开发调试：--demo-lan-client-endturn 客户端结束一次回合
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lan-client-endturn"))
+            CallDeferred(nameof(DemoClientEndTurn));
+
+        // 开发调试：--demo-lan-kick 模拟断线，验证重连
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lan-kick"))
+            CallDeferred(nameof(DemoLanKick));
+
+        // 开发调试：--demo-lan-invalid-play 验证非法出牌不播动画
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lan-invalid-play"))
+            CallDeferred(nameof(DemoInvalidPlay));
+
+        // 开发调试：--lan-auto 联机自动对局（配合大厅 --lan-host / --lan-join）
+        if (OS.GetCmdlineUserArgs().Contains("--lan-auto"))
+            CallDeferred(nameof(DemoLanAuto));
+
+        // 开发调试：--demo-upgrade-gold 验证金币不足时升级按钮禁用
+        if (OS.GetCmdlineUserArgs().Contains("--demo-upgrade-gold"))
+            CallDeferred(nameof(DemoUpgradeGold));
 
         // 开发调试：--demo-gear 打开设置面板 / --demo-surrender 投降回主界面
         if (OS.GetCmdlineUserArgs().Contains("--demo-gear"))
@@ -1744,6 +1807,35 @@ public partial class BattleScene : Node3D
     }
 
     /// <summary>验证三堆 UI、关键字、回合结束弃牌与消耗。</summary>
+    private async void DemoPileScroll()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Deck.Clear();
+        string[] pool = { "unit_infantry", "unit_tank", "unit_fighter", "magic_repair", "magic_airstrike", "unit_helicopter" };
+        int pileCount = OS.GetCmdlineUserArgs().Contains("--pile-seven") ? 7 : 24;
+        for (int i = 0; i < pileCount; i++)
+            _state.Player.Deck.Add(pool[i % pool.Length]);
+
+        RefreshAll();
+        OnPileClicked((int)PileView.PileKind.Deck);
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+
+        float before = _rig.DebugDistance;
+        Vector2 center = GetViewport().GetVisibleRect().Size * 0.5f;
+        for (int i = 0; i < 4; i++)
+        {
+            Input.ParseInputEvent(new InputEventMouseButton
+            {
+                ButtonIndex = MouseButton.WheelDown, Pressed = true,
+                Position = center, GlobalPosition = center,
+            });
+        }
+
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[PileScroll] 查看器={_hud.PileOpen} 滚轮前后相机距离 {before:F2} → {_rig.DebugDistance:F2} " +
+                 $"（应相同）");
+    }
     private async void DemoPilesFlow()
     {
         await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
@@ -3768,12 +3860,23 @@ public partial class BattleScene : Node3D
 
         // 点第一个出兵按钮：应扣费并原地生成（先等面板完成定位）
         await ToSignal(GetTree().CreateTimer(0.55), SceneTreeTimer.SignalName.Timeout);
+        // 等布局稳定后再取按钮矩形（信息面板高度变化会带动出兵面板移动）
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
         Rect2 btnRect = _hud.SpawnButtonRect(0);
         Vector2 clickPos = btnRect.Position + btnRect.Size * 0.5f;
-        // 合成点击前先把鼠标移过去、等一帧，让 GUI 重建 hover 命中列表
         Input.WarpMouse(clickPos);
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = clickPos, GlobalPosition = clickPos });
+        await ToSignal(GetTree().CreateTimer(0.12), SceneTreeTimer.SignalName.Timeout);
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
-        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        // 再测一次，防止等待期间面板又移动
+        Rect2 btnRect2 = _hud.SpawnButtonRect(0);
+        if (btnRect2.Size.X > 0 && btnRect2.Size != btnRect.Size)
+        {
+            btnRect = btnRect2;
+            clickPos = btnRect.Position + btnRect.Size * 0.5f;
+            Input.WarpMouse(clickPos);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
         if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
         {
             GD.Print($"[Lv1] 点击前 面板={_hud.SpawnPanelRect()} 按钮={btnRect} " +
@@ -4454,6 +4557,47 @@ public partial class BattleScene : Node3D
         GD.Print($"[Surrender] 当前场景={GetTree().CurrentScene?.SceneFilePath}");
     }
 
+    /// <summary>验证：金币不足时升级按钮应禁用。</summary>
+    private async void DemoUpgradeGold()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord hq = _state.Buildings.First(b => b.Owner == PlayerId.Player && b.IsHq).Coord;
+        HexCoord? spot = HexCoord.Spiral(hq, 2).FirstOrDefault(c => c != hq && _state.Cell(c)?.Building == null);
+        _state.Player.Gold = 5000;
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+
+        int cost = barracks.Def.UpgradeCostAt(barracks.Level);
+        GD.Print($"[UpGold] 金币 {_state.Player.Gold} 升级花费 {cost} 禁用={_hud.DebugUpgradeDisabled}");
+
+        _state.Player.Gold = 0;
+        RefreshAll();
+        await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UpGold] 金币 0 → 禁用={_hud.DebugUpgradeDisabled}（应为 True）");
+
+        // 强行点一次升级：应被守卫拦下、等级不变
+        OnUpgradeClicked();
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[UpGold] 点击后 等级={barracks.Level} 金币={_state.Player.Gold}");
+    }
+    private void DemoEmptyDeck()
+    {
+        if (_state == null)
+            return;
+
+        PlayerId hostSide = LanSession.IsHost ? PlayerId.Player : PlayerId.Enemy;
+        PlayerState hostState = _state.StateOf(hostSide);
+        var refill = new List<string>(hostState.Deck);
+        hostState.Deck.Clear();
+        hostState.Discard.Clear();
+        hostState.Discard.AddRange(refill);
+        GD.Print($"[Demo] 主机方牌库清空，弃牌堆={hostState.Discard.Count}");
+    }
     private void DemoDeploy()    {
         BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
         if (hq == null)
@@ -4764,6 +4908,9 @@ public partial class BattleScene : Node3D
         if (_state == null || _resultShown)
             return;
 
+        if (NetSendSurrender())
+            return;
+
         _hud.Toast(Loc.T("battle.surrender"));
 
         // 走正常失败流程：判定敌方胜、弹出结算面板（同时写战绩、播失败音效）
@@ -4777,6 +4924,11 @@ public partial class BattleScene : Node3D
     {
         switch (kind)
         {
+            case (int)PileView.PileKind.EnemyDeck:
+                // 展示敌方开局配置的卡组（顺序无关，不是实时抽牌堆）
+                _hud.ShowPile(Loc.T("pile.enemy_deck"), _netEnemyDeck);
+                break;
+
             case (int)PileView.PileKind.Discard:
             {
                 // 打出后进弃牌堆的虚无卡，查看器里也要显示关键字
@@ -5604,6 +5756,9 @@ public partial class BattleScene : Node3D
             return;
         }
 
+        if (NetSendEndTurn())
+            return;
+
         ClearSelection();
 
         // 记下手牌位置：回合结束弃掉的牌要从这里飞向弃牌堆
@@ -5626,6 +5781,9 @@ public partial class BattleScene : Node3D
 
     private async void RunEnemyTurnDeferred()
     {
+        if (NetMode)
+            return;      // 联机：对手是真人，不跑 AI
+
         _enemyBusy = true;
         RefreshAll();
         _hud.Toast("敌方行动中…");
@@ -5741,6 +5899,12 @@ public partial class BattleScene : Node3D
         }
 
         HexCoord target = _buildTarget.Value;
+        if (NetSendBuild(defId, target))
+        {
+            CloseBuildMenu();
+            return;
+        }
+
         if (!_state.TryBuild(PlayerId.Player, defId, target, out string error))
         {
             _hud.Toast(error);
@@ -5778,6 +5942,9 @@ public partial class BattleScene : Node3D
         if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player)
             return;
 
+        if (NetSendBuildingOp(NetIntentType.Repair, _selBuilding.Coord))
+            return;
+
         int cost = BattleState.RepairCost(_selBuilding);
         if (!_state.TryRepair(_selBuilding, out string error))
         {
@@ -5797,6 +5964,17 @@ public partial class BattleScene : Node3D
     {
         if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player)
             return;
+
+        if (NetSendBuildingOp(NetIntentType.Upgrade, _selBuilding.Coord))
+            return;
+
+        int need = _selBuilding.Def.UpgradeCostAt(_selBuilding.Level);
+        if (_state.Player.Gold < need)
+        {
+            _hud.Toast($"金币不足，升级需要 {need}$");
+            ShowBuildingInfo(_selBuilding);
+            return;
+        }
 
         // 先结束悬停预览，避免「升级后模型退回上一级」
         _map.ClearBuildingPreview();
@@ -5821,6 +5999,9 @@ public partial class BattleScene : Node3D
     private void OnDemolishClicked()
     {
         if (_selBuilding == null || _selBuilding.Owner != PlayerId.Player || _selBuilding.IsHq)
+            return;
+
+        if (NetSendBuildingOp(NetIntentType.Demolish, _selBuilding.Coord))
             return;
 
         int refund = BattleState.DemolishRefund(_selBuilding);
@@ -5874,9 +6055,22 @@ public partial class BattleScene : Node3D
             switch (mb.ButtonIndex)
             {
                 case MouseButton.WheelUp when mb.Pressed:
+                    if (_hud.PileOpen)
+                    {
+                        // 牌堆查看器开着：滚轮只用于滚动列表，不缩放战场
+                        GetViewport().SetInputAsHandled();
+                        return;
+                    }
+
                     _rig.Zoom(-1);
                     return;
                 case MouseButton.WheelDown when mb.Pressed:
+                    if (_hud.PileOpen)
+                    {
+                        GetViewport().SetInputAsHandled();
+                        return;
+                    }
+
                     _rig.Zoom(1);
                     return;
                 case MouseButton.Left when mb.Pressed:
@@ -6060,6 +6254,22 @@ public partial class BattleScene : Node3D
         // 1) 正在选卡
         if (_selCard >= 0 && _selCard < _state.Player.Hand.Count)
         {
+            if (NetMode)
+            {
+                if (NetBlockIfNotMyTurn())
+                    return;
+
+                if (NetSendDeploy(_selCard, coord))
+                {
+                    _selCard = -1;
+                    _hud.SetSelectedCard(-1);
+                    _map.ClearHints();
+                    ClearSelection();
+                    RefreshAll();
+                    return;
+                }
+            }
+
             if (TryPlayCardAt(_selCard, coord))
                 return;
 
@@ -6077,6 +6287,12 @@ public partial class BattleScene : Node3D
             if (_state.CanAttack(_selUnit, coord))
             {
                 UnitInst attacker = _selUnit;
+
+                if (NetSendAttack(attacker.Coord, coord))
+                {
+                    RefreshAll();
+                    return;
+                }
 
                 AudioManager.PlayAttack(attacker.DefId);
                 // 攻击时转向目标：有炮塔的只转炮塔，其余整体转身；然后播放一次攻击动作
@@ -6097,6 +6313,12 @@ public partial class BattleScene : Node3D
 
             if (_state.MoveRange(_selUnit).Contains(coord))
             {
+                if (NetSendMove(_selUnit.Coord, coord))
+                {
+                    RefreshAll();
+                    return;
+                }
+
                 AudioManager.PlayMove(_selUnit.DefId);
                 _state.TryMove(_selUnit, coord, out _);
                 _map.SyncEntities();
@@ -6210,21 +6432,31 @@ public partial class BattleScene : Node3D
         _map.SetSelectedBuilding(-1);
         _map.SetSelectedUnit(u?.Id ?? -1);
 
-        if (u.Owner == PlayerId.Player)
-        {
-            _map.ShowHints(_state.MoveRange(u), new Color("5BC0EB"));
+        RefreshUnitHints(u);
+        ShowUnitInfo(u);
+    }
 
-            // 已经攻击过的单位不再标「可攻击」
-            if (!u.Attacked)
-            {
-                var targets = _state.AttackTargets(u)
-                    .Select(t => t.building != null ? t.building.Coord : t.unit.Coord)
-                    .ToHashSet();
-                _map.ShowAttackMarks(_state.AttackRangeCells(u).ToList(), targets);
-            }
+    /// <summary>重算选中单位的移动/攻击范围高亮（移动、攻击、联机同步后都要刷新）。</summary>
+    private void RefreshUnitHints(UnitInst u)
+    {
+        if (_map == null)
+            return;
+
+        _map.ClearHints();
+        if (u == null || !u.Alive || u.Owner != PlayerId.Player)
+            return;
+
+        _map.ShowHints(_state.MoveRange(u), new Color("5BC0EB"));
+
+        // 已经攻击过的单位不再标「可攻击」
+        if (!u.Attacked)
+        {
+            var targets = _state.AttackTargets(u)
+                .Select(t => t.building != null ? t.building.Coord : t.unit.Coord)
+                .ToHashSet();
+            _map.ShowAttackMarks(_state.AttackRangeCells(u).ToList(), targets);
         }
 
-        ShowUnitInfo(u);
     }
 
     /// <summary>刷新单位信息面板（攻击力按血量变色，实时调用）。</summary>
@@ -6309,6 +6541,7 @@ public partial class BattleScene : Node3D
     private void SendClick(Vector2 pos)
     {
         Input.WarpMouse(pos);
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = pos, GlobalPosition = pos });
         Input.ParseInputEvent(new InputEventMouseButton
         {
             ButtonIndex = MouseButton.Left, Pressed = true, Position = pos, GlobalPosition = pos,
@@ -6333,6 +6566,9 @@ public partial class BattleScene : Node3D
     private void OnSpawnClicked(string cardId)
     {
         if (_selBuilding == null || _state.Phase != BattlePhase.PlayerTurn)
+            return;
+
+        if (NetSendSpawn(_selBuilding.Coord, cardId))
             return;
 
         UnitInst spawned = _state.TrySpawnFromBuilding(_selBuilding, cardId, out string reason);
@@ -6452,7 +6688,8 @@ public partial class BattleScene : Node3D
         _hud.ShowInfo(title, string.Join("\n", lines),
             b.Def.Preview, showButtons: b.Owner == PlayerId.Player,
             extraFireCost: canExtra ? b.Def.ExtraFireCost : 0, extraFireReady: extraReady,
-            showDemolish: !b.IsHq, canUpgrade: canUp,
+            showDemolish: !b.IsHq,
+            canUpgrade: canUp && (b.Owner != PlayerId.Player || _state.Player.Gold >= b.Def.UpgradeCostAt(level)),
             repairCost: repairCost,
             repairAffordable: _state.Player.Gold >= repairCost,
             demolishRefund: b.Owner == PlayerId.Player && !b.IsHq
@@ -6595,6 +6832,10 @@ public partial class BattleScene : Node3D
 
         _hud.RefreshAll();
         _map.ShowHover(_hover);
+
+        // 金币/等级变化后，右侧信息面板的按钮可用状态要跟着刷新
+        if (_selBuilding != null && _selBuilding.Owner == PlayerId.Player && !_selBuilding.IsDead)
+            ShowBuildingInfo(_selBuilding);
     }
 
     /// <summary>把本帧因失去发射井而移除的己方卡牌，播一个燃烧特效。</summary>
@@ -6654,10 +6895,36 @@ public partial class BattleScene : Node3D
 
         _hud.Toast(win ? Loc.T("battle.victory") : Loc.T("battle.defeat"));
 
+        if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
+            GD.Print($"[Result] win={win} turns={_state.TurnNumber} playerHp={playerHp} enemyHp={enemyHp}");
+
         _result = new ResultScreen();
         AddChild(_result);
-        _result.RematchClicked += () => GetTree().ReloadCurrentScene();
-        _result.MenuClicked += () => GetTree().ChangeSceneToFile("res://scenes/mainMenu.tscn");
-        _result.Show(win, _state.TurnNumber, mapName, (int)_state.Difficulty, playerHp, enemyHp);
+        _result.RematchClicked += () =>
+        {
+            if (Session.LanBattle)
+            {
+                LanSession.Leave();
+                Session.LanBattle = false;
+            }
+
+            GetTree().ReloadCurrentScene();
+        };
+        _result.MenuClicked += () =>
+        {
+            if (Session.LanBattle)
+            {
+                LanSession.Leave();
+                Session.LanBattle = false;
+            }
+
+            GetTree().ChangeSceneToFile("res://scenes/mainMenu.tscn");
+        };
+        _result.Show(win, _state.TurnNumber, mapName, (int)_state.Difficulty, playerHp, enemyHp,
+            allowRematch: !NetMode);
+
+        // 联机对局结束：断开连接，双方各自控制结算画面
+        if (NetMode)
+            NetFinishMatch();
     }
 }

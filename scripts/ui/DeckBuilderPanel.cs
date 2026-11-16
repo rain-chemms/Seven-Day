@@ -136,6 +136,7 @@ public partial class DeckBuilderPanel : PanelContainer
 
         ulong t0 = Time.GetTicksMsec();
         EnsureBuilt();
+        ButtonJuice.AttachAll(this);   // 面板每次打开时补挂按钮动效（幂等）
 
         // 先显示再重建：否则第一次打开时容器还没布局，宽度是 0，列数会算错
         Visible = true;
@@ -225,6 +226,7 @@ public partial class DeckBuilderPanel : PanelContainer
         (GetParent() as Control ?? this).AddChild(_dragGhost);
 
         WireButtons(this);
+        ButtonJuice.AttachAll(this);
         UiSound.AttachAll(this);
     }
 
@@ -722,6 +724,11 @@ public partial class DeckBuilderPanel : PanelContainer
     // ─────────────────────────── 牌库（左） ───────────────────────────
 
     private string _poolKey = "";
+
+    private void AttachJuice()
+    {
+        ButtonJuice.AttachAll(this);
+    }
 
     private void RebuildPool()
     {

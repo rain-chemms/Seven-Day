@@ -155,10 +155,42 @@ public sealed class BattleState
 
     private int _nextId = 1;
 
-    public static BattleState Create(MapDef map, AIDifficulty difficulty)
+    // ── 随机数：按阵营分开，联机时由主机下发种子保证两端一致 ──
+    public int PlayerSeed;
+    public int EnemySeed;
+    private Random _rngPlayer;
+    private Random _rngEnemy;
+
+    public Random RngOf(PlayerId id) =>
+        id == PlayerId.Player ? (_rngPlayer ??= new Random()) : (_rngEnemy ??= new Random());
+
+    public static BattleState Create(MapDef map, AIDifficulty difficulty) =>
+        Create(map, difficulty, null, null, Session.StartHqLevel, 1, 0, 0);
+
+    /// <summary>
+    /// 联机/自定义开局：可以指定双方卡组、基地等级、随机种子（0 = 不固定，单机随机）。
+    /// </summary>
+    public static BattleState Create(
+        MapDef map,
+        AIDifficulty difficulty,
+        List<string> playerDeck,
+        List<string> enemyDeck,
+        int playerHqLevel = 1,
+        int enemyHqLevel = 1,
+        int playerSeed = 0,
+        int enemySeed = 0,
+        bool mirrorHq = false)
     {
         GameDatabase.EnsureLoaded();
-        var s = new BattleState { Map = map, Difficulty = difficulty };
+        var s = new BattleState
+        {
+            Map = map,
+            Difficulty = difficulty,
+            PlayerSeed = playerSeed,
+            EnemySeed = enemySeed,
+            _rngPlayer = playerSeed != 0 ? new Random(playerSeed) : new Random(),
+            _rngEnemy = enemySeed != 0 ? new Random(enemySeed) : new Random(),
+        };
 
         for (int r = 0; r < map.Height; r++)
         {
@@ -178,17 +210,29 @@ public sealed class BattleState
 
         s.Player = new PlayerState { Id = PlayerId.Player, Gold = map.StartGold };
         s.Enemy = new PlayerState { Id = PlayerId.Enemy, Gold = map.StartGold };
-        List<string> playerDeck = Session.EffectiveDeck(map);
-        s.Player.Deck.AddRange(playerDeck);
-        s.Enemy.Deck.AddRange(map.EnemyDeck);
+        List<string> pDeck = playerDeck ?? Session.EffectiveDeck(map);
+        List<string> eDeck = enemyDeck ?? new List<string>(map.EnemyDeck);
+        s.Player.Deck.AddRange(pDeck);
+        s.Enemy.Deck.AddRange(eDeck);
+
+        // 开局洗牌一次（按阵营各自的随机数；联机时两端种子一致，洗出的顺序相同）
+        s.Shuffle(s.Player.Deck, PlayerId.Player);
+        s.Shuffle(s.Enemy.Deck, PlayerId.Enemy);
 
         if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--deck-log") >= 0)
-            GD.Print($"[Deck] 本局使用 {playerDeck.Count} 张：{string.Join(",", playerDeck)}");
+            GD.Print($"[Deck] 洗牌后 P={string.Join(",", s.Player.Deck.Take(Mathf.Min(6, s.Player.Deck.Count)))} " +
+                     $"E={string.Join(",", s.Enemy.Deck.Take(Mathf.Min(6, s.Enemy.Deck.Count)))}");
 
-        HexCoord playerHq = new(map.PlayerHq[0], map.PlayerHq[1]);
-        HexCoord enemyHq = new(map.EnemyHq[0], map.EnemyHq[1]);
-        s.SpawnBuilding("hq", PlayerId.Player, playerHq, level: Session.StartHqLevel, free: true);
-        s.SpawnBuilding("hq", PlayerId.Enemy, enemyHq, free: true);
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--deck-log") >= 0)
+            GD.Print($"[Deck] 本局使用 {pDeck.Count} 张：{string.Join(",", pDeck)}");
+
+        // 联机镜像视角：客户端把自己的基地放在地图的另一端
+        HexCoord playerHq = new(mirrorHq ? map.EnemyHq[0] : map.PlayerHq[0],
+                                mirrorHq ? map.EnemyHq[1] : map.PlayerHq[1]);
+        HexCoord enemyHq = new(mirrorHq ? map.PlayerHq[0] : map.EnemyHq[0],
+                               mirrorHq ? map.PlayerHq[1] : map.EnemyHq[1]);
+        s.SpawnBuilding("hq", PlayerId.Player, playerHq, level: Mathf.Max(1, playerHqLevel), free: true);
+        s.SpawnBuilding("hq", PlayerId.Enemy, enemyHq, level: Mathf.Max(1, enemyHqLevel), free: true);
 
         s.RecalculateZones();
         return s;
@@ -1270,6 +1314,9 @@ public sealed class BattleState
     /// <summary>本次抽牌有没有发生「弃牌堆洗回牌库」。</summary>
     public bool LastDrawReshuffled;
 
+    /// <summary>洗回牌库的累计次数（两端一致，用于联机同步播放洗牌动画）。</summary>
+    public int ReshuffleSerial;
+
     /// <summary>本回合防御建筑的开火记录（给表现层放特效用）。</summary>
     public readonly List<(HexCoord From, HexCoord To, string Kind)> Volleys = new();
 
@@ -1671,8 +1718,12 @@ public sealed class BattleState
                 st.ProducedExhaustDeck.AddRange(st.ProducedExhaustDiscarded);
                 st.ProducedExhaustDiscarded.Clear();
 
-                Shuffle(st.Deck);
+                Shuffle(st.Deck, st.Id);
                 LastDrawReshuffled = true;
+                ReshuffleSerial++;
+
+                if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+                    GD.Print($"[Reshuffle] side={st.Id} serial={ReshuffleSerial}");
             }
 
             string card = st.Deck[0];
@@ -1754,8 +1805,10 @@ public sealed class BattleState
         st.Hand.Insert(to, card);
     }
 
-    public static void Shuffle(List<string> list)    {
-        var rng = new Random();
+    /// <summary>按阵营的随机数洗牌：联机时同一阵营在两个客户端用同一颗种子。</summary>
+    private void Shuffle(List<string> list, PlayerId side)
+    {
+        Random rng = RngOf(side);
         for (int i = list.Count - 1; i > 0; i--)
         {
             int j = rng.Next(i + 1);

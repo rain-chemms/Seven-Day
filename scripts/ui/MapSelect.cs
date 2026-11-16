@@ -13,6 +13,7 @@ public partial class MapSelect : Control
     private readonly List<(Button Button, AIDifficulty Diff)> _diffButtons = new();
     private Label _mapInfo;
     private Label _mapDesc;
+    private TextureRect _mapPreview;
 
 
     public override void _Ready()
@@ -30,10 +31,10 @@ public partial class MapSelect : Control
 
         var panel = new PanelContainer();
         panel.SetAnchorsPreset(LayoutPreset.Center);
-        panel.OffsetLeft = -420;
-        panel.OffsetRight = 420;
-        panel.OffsetTop = -215;
-        panel.OffsetBottom = 215;
+        panel.OffsetLeft = -490;
+        panel.OffsetRight = 490;
+        panel.OffsetTop = -300;
+        panel.OffsetBottom = 300;
         AddChild(panel);
 
         var box = new VBoxContainer();
@@ -126,13 +127,24 @@ public partial class MapSelect : Control
         _mapDesc = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
         _mapDesc.AddThemeFontSizeOverride("font_size", 14);
         _mapDesc.AddThemeColorOverride("font_color", UiTheme.SandDark);
-        _mapDesc.CustomMinimumSize = new Vector2(0, 104);
+        _mapDesc.CustomMinimumSize = new Vector2(0, 64);
         _mapDesc.VerticalAlignment = VerticalAlignment.Top;
         left.AddChild(_mapDesc);
 
+        // 地图预览图（res://gameAsset/textures/mapPreview/mapPreview_<id>.png）
+        _mapPreview = new TextureRect
+        {
+            CustomMinimumSize = new Vector2(0, 232),
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            MouseFilter = MouseFilterEnum.Ignore,
+        };
+        left.AddChild(_mapPreview);
+
         // 右：地图下拉 + 难度
         var right = new VBoxContainer { CustomMinimumSize = new Vector2(340, 0) };
-        right.AddThemeConstantOverride("separation", 14);
+        right.AddThemeConstantOverride("separation", 18);
         row.AddChild(right);
 
         if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--map-list") >= 0)
@@ -158,8 +170,8 @@ public partial class MapSelect : Control
         right.AddChild(_diffLabel);
 
         var diffGrid = new GridContainer { Columns = 2 };
-        diffGrid.AddThemeConstantOverride("h_separation", 8);
-        diffGrid.AddThemeConstantOverride("v_separation", 8);
+        diffGrid.AddThemeConstantOverride("h_separation", 12);
+        diffGrid.AddThemeConstantOverride("v_separation", 12);
         right.AddChild(diffGrid);
 
         AddDiff(diffGrid, AIDifficulty.Easy, "diff.easy");
@@ -167,6 +179,9 @@ public partial class MapSelect : Control
         AddDiff(diffGrid, AIDifficulty.Hard, "diff.hard");
         AddDiff(diffGrid, AIDifficulty.Lunatic, "diff.lunatic");
         SelectDiff(Session.Difficulty);
+
+        // 弹性空隙：难度与底部按钮之间拉开距离，右栏不再挤在上半部分
+        right.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
 
         right.AddChild(SectionLine());
 
@@ -295,6 +310,38 @@ public partial class MapSelect : Control
 
         if (_mapDesc != null)
             _mapDesc.Text = Loc.Name(m.DescZh, m.DescEn);
+
+        if (_mapPreview != null)
+        {
+            Texture2D preview = LoadMapPreview(m);
+            _mapPreview.Texture = preview;
+            if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+                GD.Print($"[MapPreview] {m.Id} 加载={(preview != null)} " +
+                         $"path=res://gameAsset/textures/mapPreview/mapPreview_{m.Id}.png exists=" +
+                         $"{ResourceLoader.Exists($"res://gameAsset/textures/mapPreview/mapPreview_{m.Id}.png")}");
+        }
+    }
+
+    /// <summary>地图预览图：优先按 id，再回退到中/英文名。</summary>
+    public static Texture2D LoadMapPreview(MapDef map)
+    {
+        if (map == null)
+            return null;
+
+        string[] candidates =
+        {
+            $"res://gameAsset/textures/mapPreview/mapPreview_{map.Id}.png",
+            $"res://gameAsset/textures/mapPreview/mapPreview_{map.NameZh}.png",
+            $"res://gameAsset/textures/mapPreview/mapPreview_{map.NameEn}.png",
+        };
+
+        foreach (string path in candidates)
+        {
+            if (ResourceLoader.Exists(path))
+                return GD.Load<Texture2D>(path);
+        }
+
+        return null;
     }
 
     /// <summary>切换语言后刷新本界面所有文本。</summary>
@@ -359,6 +406,8 @@ public partial class MapSelect : Control
 
     private void StartBattle()
     {
+        // 人机对战：确保不残留联机标记
+        Session.LanBattle = false;
         if (_leaving)
             return;
 

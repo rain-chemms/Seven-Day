@@ -14,6 +14,7 @@ public partial class PileView : Control
         Deck,
         Discard,
         Exhaust,
+        EnemyDeck,
     }
 
     [Signal]
@@ -86,6 +87,7 @@ public partial class PileView : Control
     {
         PileKind.Discard => new Color("B07A4A"),
         PileKind.Exhaust => new Color("8A5FA8"),
+        PileKind.EnemyDeck => new Color("C2543E"),
         _ => new Color("4A7EA8"),
     };
 
@@ -172,6 +174,28 @@ public partial class PileView : Control
                     center + new Vector2(-w * 0.5f, w * 0.5f),
                 };
                 DrawColoredPolygon(flame2, accent.Lightened(0.3f));
+                break;
+            }
+
+            case PileKind.EnemyDeck:
+            {
+                // 敌方牌堆：红色菱形（与抽牌箭头 / 弃牌折角 / 消耗火焰区分）
+                Vector2[] diamond =
+                {
+                    center + new Vector2(0f, -w),
+                    center + new Vector2(w, 0f),
+                    center + new Vector2(0f, w),
+                    center + new Vector2(-w, 0f),
+                };
+                DrawColoredPolygon(diamond, accent);
+                Vector2[] inner =
+                {
+                    center + new Vector2(0f, -w * 0.45f),
+                    center + new Vector2(w * 0.45f, 0f),
+                    center + new Vector2(0f, w * 0.45f),
+                    center + new Vector2(-w * 0.45f, 0f),
+                };
+                DrawColoredPolygon(inner, CardFill);
                 break;
             }
 

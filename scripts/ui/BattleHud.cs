@@ -39,6 +39,9 @@ public partial class BattleHud : CanvasLayer
     /// <summary>点击「投降」：提前结束本局并返回主界面。</summary>
     public event Action SurrenderClicked;
     private PileView _deckPile;
+    private PileView _enemyPile;
+    private bool _enemyPileWanted;
+    private int _enemyPileCount;
     private PileView _discardPile;
     private PileView _exhaustPile;
     private PileViewer _pileViewer;
@@ -196,6 +199,7 @@ public partial class BattleHud : CanvasLayer
             OffsetTop = -20,
             OffsetBottom = 20,
         };
+        _gearButton.SetMeta("custom_fx", true);
         _gearButton.MouseEntered += () =>
         {
             AnimateSpawnButton(_gearButton, 1.08f, 0.10f, Tween.TransitionType.Back);
@@ -545,6 +549,39 @@ public partial class BattleHud : CanvasLayer
         RefreshAll();
     }
 
+    /// <summary>联机：设置“敌方配置卡组”（数量固定为开局配置的总张数）。</summary>
+    public void SetEnemyPileCards(IReadOnlyList<string> cards)
+    {
+        _enemyPileCount = cards?.Count ?? 0;
+        if (_enemyPile != null)
+            _enemyPile.SetCount(_enemyPileCount);
+    }
+
+    /// <summary>联机模式：右上角显示「敌方牌堆」按钮（单机不显示）。</summary>
+    public void SetEnemyPileVisible(bool show)
+    {
+        _enemyPileWanted = show;
+
+        if (show && _enemyPile == null && _root != null)
+        {
+            _enemyPile = new PileView { Name = "PileEnemyDeck" };
+            _enemyPile.Setup(PileView.PileKind.EnemyDeck, Loc.T("pile.enemy_deck"));
+            // 靠右边缘摆放（与信息面板同一右边距），信息面板打开时会盖住它
+            _enemyPile.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+            _enemyPile.OffsetLeft = -104;
+            _enemyPile.OffsetRight = -20;
+            _enemyPile.OffsetTop = 64;
+            _enemyPile.OffsetBottom = 162;
+            _enemyPile.ZIndex = 250;
+            _enemyPile.PileClicked += kind => PileClicked?.Invoke((int)kind);
+            _root.AddChild(_enemyPile);
+
+            _enemyPile.SetCount(_enemyPileCount);
+        }
+
+        if (_enemyPile != null)
+            _enemyPile.Visible = show;
+    }
     public void RefreshAll()
     {
         if (_state == null)
@@ -560,6 +597,11 @@ public partial class BattleHud : CanvasLayer
             return;
 
         _deckPile.SetCount(_state.Player.Deck.Count);
+        if (_enemyPile != null)
+        {
+            _enemyPile.SetCount(_enemyPileCount);   // 敌方“配置卡组”的总张数（不随抽牌减少）
+            _enemyPile.Visible = _enemyPileWanted;
+        }
         _discardPile.SetCount(_state.Player.Discard.Count);
         _exhaustPile.SetCount(Mathf.Max(0, _state.Player.Exhaust.Count - _pendingExhaust));
     }
@@ -879,6 +921,8 @@ public partial class BattleHud : CanvasLayer
             box.AddChild(price);
 
             // 悬停放大 / 按下回缩 / 松开回弹（ScrollContainer 会裁剪，幅度控制小一点）
+            button.SetMeta("custom_fx", true);   // 已有自己的缩放动画，跳过 ButtonJuice
+
             button.MouseEntered += () => AnimateSpawnButton(button, 1.03f, 0.10f, Tween.TransitionType.Back);
             button.MouseExited += () => AnimateSpawnButton(button, 1f, 0.12f, Tween.TransitionType.Cubic);
             button.ButtonDown += () => AnimateSpawnButton(button, 0.94f, 0.06f, Tween.TransitionType.Sine);
@@ -1396,6 +1440,16 @@ public partial class BattleHud : CanvasLayer
     /// 烧卡特效：卡牌被移除时在手牌原位置「烧掉」。
     /// 必须在刷新（重建手牌）之前调用，否则拿不到卡面位置。
     /// </summary>
+    /// <summary>联机：从任意屏幕矩形飞出一张卡（自己的手牌或对手的出牌）。</summary>
+    public void PlayCardFlyFrom(Rect2 from, CardDef card, Vector2 targetScreen)
+    {
+        if (card == null || _root == null)
+            return;
+
+        var fly = new CardFlyEffect { Name = "NetCardFly" };
+        _root.AddChild(fly);
+        fly.Play(card, from, targetScreen);
+    }
     public void BurnCards(IReadOnlyList<string> cardIds)
     {
         if (cardIds == null || cardIds.Count == 0)
@@ -1571,6 +1625,9 @@ public partial class BattleHud : CanvasLayer
     // ─────────────────────────── 战斗内设置 ───────────────────────────
 
     public bool SettingsOpen => _settingsOpen;
+
+    /// <summary>调试：升级按钮是否被禁用。</summary>
+    public bool DebugUpgradeDisabled => _upgradeBtn == null || _upgradeBtn.Disabled;
 
     /// <summary>齿轮按钮的旋转动画（按下/松开时顺时针转）。</summary>
     private void SpinGear(float degrees, float time, Tween.TransitionType trans)

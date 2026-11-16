@@ -16,6 +16,7 @@ public partial class ResultScreen : CanvasLayer
     private Label _title;
     private Label _subtitle;
     private VBoxContainer _historyBox;
+    private Button _rematchButton;
 
     public override void _Ready()
     {
@@ -67,9 +68,14 @@ public partial class ResultScreen : CanvasLayer
         row.AddThemeConstantOverride("separation", 12);
         box.AddChild(row);
 
-        var rematch = new Button { Text = Loc.T("result.rematch"), SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(0, 52) };
-        rematch.Pressed += () => RematchClicked?.Invoke();
-        row.AddChild(rematch);
+        _rematchButton = new Button
+        {
+            Text = Loc.T("result.rematch"),
+            SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 52),
+        };
+        _rematchButton.Pressed += () => RematchClicked?.Invoke();
+        row.AddChild(_rematchButton);
 
         var menu = new Button { Text = Loc.T("result.menu"), SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(0, 52) };
         menu.Pressed += () => MenuClicked?.Invoke();
@@ -79,8 +85,12 @@ public partial class ResultScreen : CanvasLayer
         UiSound.AttachAll(_root);
     }
 
-    public void Show(bool win, int turns, string mapName, int difficulty, int playerHqHp, int enemyHqHp)
+    public void Show(bool win, int turns, string mapName, int difficulty, int playerHqHp, int enemyHqHp,
+        bool allowRematch = true)
     {
+        if (_rematchButton != null)
+            _rematchButton.Visible = allowRematch;
+
         _title.Text = win ? Loc.T("battle.victory") : Loc.T("battle.defeat");
         _title.AddThemeColorOverride("font_color", win ? UiTheme.Green : UiTheme.Red);
 
