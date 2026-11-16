@@ -44,6 +44,9 @@ public partial class LanLobby : Control
         ValidateInputs();
         PlayOpen();
 
+        if (OS.GetCmdlineUserArgs().Contains("--demo-lan-close"))
+            GetTree().CreateTimer(0.9).Timeout += () => _backBtn?.EmitSignal(BaseButton.SignalName.Pressed);
+
         // 有未完成的联机对局：先让玩家决定是否载入
         if (LanSaveStore.Exists())
         {
@@ -463,7 +466,7 @@ public partial class LanLobby : Control
         _panel.PivotOffset = _panel.Size * 0.5f;
         KillAnim();
         _anim = CreateTween().SetParallel(true);
-        _anim.TweenProperty(_backdrop, "color:a", 0f, 0.14f);
+        // 底色保持不透明（淡掉的话会露出引擎默认灰色背景），只淡出面板
         _anim.TweenProperty(_panel, "modulate:a", 0f, 0.12f);
         _anim.TweenProperty(_panel, "scale", Vector2.One * 0.965f, 0.13f)
             .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);

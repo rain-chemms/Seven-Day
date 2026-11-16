@@ -14,6 +14,9 @@ public partial class MapSelect : Control
     private Label _mapInfo;
     private Label _mapDesc;
     private TextureRect _mapPreview;
+    private PanelContainer _panel;
+    private ColorRect _bg;
+    private Tween _anim;
 
 
     public override void _Ready()
@@ -25,11 +28,12 @@ public partial class MapSelect : Control
         Theme = UiTheme.Get();
         SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
 
-        var bg = new ColorRect { Color = UiTheme.Paper };
-        bg.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-        AddChild(bg);
+        _bg = new ColorRect { Color = UiTheme.Paper };
+        _bg.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        AddChild(_bg);
 
-        var panel = new PanelContainer();
+        _panel = new PanelContainer();
+        var panel = _panel;
         panel.SetAnchorsPreset(LayoutPreset.Center);
         panel.OffsetLeft = -490;
         panel.OffsetRight = 490;
@@ -198,14 +202,21 @@ public partial class MapSelect : Control
             if (_leaving)
                 return;
 
-            _leaving = true;
-            GetTree().ChangeSceneToFile("res://scenes/mainMenu.tscn");
+            PlayClose(() => GetTree().ChangeSceneToFile("res://scenes/mainMenu.tscn"));
         };
         right.AddChild(back);
+
+        PlayOpen();
 
         OnMapSelected(0);
         Loc.Changed += RefreshTexts;
         TreeExiting += () => Loc.Changed -= RefreshTexts;
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--demo-mapselect-back") >= 0)
+        {
+            var tb = GetTree().CreateTimer(0.9);
+            tb.Timeout += () => _backButton?.EmitSignal(BaseButton.SignalName.Pressed);
+        }
 
         if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--demo-mapselect") >= 0)
         {
@@ -401,6 +412,66 @@ public partial class MapSelect : Control
         UpdateMapInfo();
     }
 
+    /// <summary>进入地图选择：整体淡入 + 面板轻微放大。</summary>
+    private void PlayOpen()
+    {
+        bool log = System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0;
+        if (log)
+            GD.Print("[Anim] mapselect open start alpha=0");
+
+        Modulate = new Color(1f, 1f, 1f, 0f);
+        _anim?.Kill();
+        _anim = CreateTween().SetParallel(true);
+        _anim.TweenProperty(this, "modulate:a", 1f, 0.25f)
+            .SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+
+        if (_panel != null)
+        {
+            Callable.From(() =>
+            {
+                _panel.PivotOffset = _panel.Size * 0.5f;
+                _panel.Scale = Vector2.One * 0.96f;
+            }).CallDeferred();
+
+            _anim.TweenProperty(_panel, "scale", Vector2.One, 0.28f)
+                .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        }
+
+        if (log)
+            GetTree().CreateTimer(0.3).Timeout += () =>
+                GD.Print($"[Anim] mapselect open t=0.3 alpha={Modulate.A:F2} scale={_panel.Scale.X:F3}");
+    }
+
+    /// <summary>离开地图选择：整体淡出后再切场景。</summary>
+    private void PlayClose(System.Action onDone)
+    {
+        if (_leaving)
+            return;
+
+        _leaving = true;
+        _anim?.Kill();
+        _anim = CreateTween().SetParallel(true);
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--anim-log") >= 0)
+            GD.Print($"[Anim] mapselect close start alpha={Modulate.A:F2}");
+
+        if (_panel != null)
+        {
+            _panel.PivotOffset = _panel.Size * 0.5f;
+            _anim.TweenProperty(_panel, "modulate:a", 0f, 0.16f);
+            _anim.TweenProperty(_panel, "scale", Vector2.One * 0.97f, 0.16f)
+                .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+        }
+
+        if (_bg != null)
+            _anim.TweenProperty(_bg, "modulate:a", 0f, 0.18f);
+
+        _anim.Chain().TweenCallback(Callable.From(() =>
+        {
+            _leaving = false;
+            onDone?.Invoke();
+        }));
+    }
     /// <summary>已经在切场景了：防止同一次点击触发两次跳转。</summary>
     private bool _leaving;
 
@@ -411,7 +482,6 @@ public partial class MapSelect : Control
         if (_leaving)
             return;
 
-        _leaving = true;
-        GetTree().ChangeSceneToFile("res://scenes/battleScene.tscn");
+        PlayClose(() => GetTree().ChangeSceneToFile("res://scenes/battleScene.tscn"));
     }
 }

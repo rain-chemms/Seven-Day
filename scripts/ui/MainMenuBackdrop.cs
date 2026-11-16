@@ -104,10 +104,10 @@ public partial class MainMenuBackdrop : Node3D
 
         var skyMat = new ProceduralSkyMaterial
         {
-            SkyTopColor = new Color("8FA8C8"),
-            SkyHorizonColor = new Color("E7DFF2"),
-            GroundBottomColor = new Color("D8CDBF"),
-            GroundHorizonColor = new Color("E9E2D4"),
+            SkyTopColor = new Color("EDE1C2"),
+            SkyHorizonColor = new Color("FAF3E2"),
+            GroundBottomColor = new Color("E6D8B8"),
+            GroundHorizonColor = new Color("F4EAD3"),
             SunAngleMax = 20f,
         };
         var sky = new Sky { SkyMaterial = skyMat };
@@ -121,7 +121,7 @@ public partial class MainMenuBackdrop : Node3D
             TonemapMode = Godot.Environment.ToneMapper.Filmic,
             TonemapExposure = 1.0f,
             FogEnabled = true,
-            FogLightColor = new Color("E4DDF0"),
+            FogLightColor = new Color("F4EBD8"),
             FogDensity = 0.006f,
         };
         AddChild(new WorldEnvironment { Environment = env });

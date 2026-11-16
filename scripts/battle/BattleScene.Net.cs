@@ -46,6 +46,7 @@ public partial class BattleScene
     private const float HeartbeatTimeout = 9.0f;    // 连续 9 秒没有任何对端消息 → 先进入确认流程
 
     private bool _netBusy;      // 正在播放“命中前”的动画（伤害延后到爆炸瞬间结算）
+    private ulong _netBusySinceMsec;
     private NetIntent _netPending;
 
     public bool NetMode => Session.LanBattle && LanSession.Active;
@@ -1195,18 +1196,31 @@ public partial class BattleScene
                 GD.Print($"[NetFx] impact-delay {it.Type} {delay:F2}s t={Time.GetTicksMsec()}");
 
             _netBusy = true;
+            _netBusySinceMsec = Time.GetTicksMsec();
             var timer = GetTree().CreateTimer(delay);
             timer.Timeout += () =>
             {
-                ApplyNetMutation(it, side, to, from, local, actorUnit, deployCard,
-                    hasHandRect, handRect, discardRects, prePlayed);
-                _netBusy = false;
-
-                if (_netPending != null)
+                // 即使演出过程抛异常，也一定要解锁，避免整局卡在“演出中”
+                try
                 {
-                    NetIntent next = _netPending;
-                    _netPending = null;
-                    ExecuteNetIntent(next);
+                    ApplyNetMutation(it, side, to, from, local, actorUnit, deployCard,
+                        hasHandRect, handRect, discardRects, prePlayed);
+                }
+                catch (System.Exception e)
+                {
+                    GD.PushError($"[Net] 结算 {it.Type} 失败：{e}");
+                    _hud.Toast("结算出错，已跳过该动作");
+                }
+                finally
+                {
+                    _netBusy = false;
+
+                    if (_netPending != null)
+                    {
+                        NetIntent next = _netPending;
+                        _netPending = null;
+                        ExecuteNetIntent(next);
+                    }
                 }
             };
             return;
@@ -1552,6 +1566,13 @@ public partial class BattleScene
         {
             _hud.Toast("等待重连…");
             return true;
+        }
+
+        // 演出保险：异常情况下最多卡 5 秒，超时强制解锁
+        if (_netBusy && Time.GetTicksMsec() - _netBusySinceMsec > 5000)
+        {
+            GD.PushWarning("[Net] 演出超时，强制解除忙碌状态");
+            _netBusy = false;
         }
 
         if (_netBusy)

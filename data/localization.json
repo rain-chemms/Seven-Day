@@ -158,7 +158,10 @@
     "lan.restore_load": "载入对局",
     "lan.restore_discard": "放弃对局",
     "lan.restore_loaded": "已载入未完成对局，等待对方加入",
-    "lan.reconnect_back_menu": "返回主菜单"
+    "lan.reconnect_back_menu": "返回主菜单",
+    "settings.boot_logo": "启动画面",
+    "settings.boot_classic": "经典",
+    "settings.boot_pixel": "像素"
   },
   "en": {
     "game.title": "Seven-Day",
@@ -319,6 +322,9 @@
     "lan.restore_load": "Load Match",
     "lan.restore_discard": "Discard",
     "lan.restore_loaded": "Match loaded. Waiting for the other player...",
-    "lan.reconnect_back_menu": "Back to Main Menu"
+    "lan.reconnect_back_menu": "Back to Main Menu",
+    "settings.boot_logo": "Boot Screen",
+    "settings.boot_classic": "Classic",
+    "settings.boot_pixel": "Pixel"
   }
 }

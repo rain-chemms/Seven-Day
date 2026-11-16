@@ -48,6 +48,9 @@ public partial class BattleHud : CanvasLayer
 
     // ── 战斗内设置 ──
     private TextureButton _gearButton;
+    private Control _touchBar;
+    private Button _touchCancel;
+    private Button _touchReset;
     private Control _settingsRoot;
     private ColorRect _settingsDim;
     private PanelContainer _settingsPanel;
@@ -581,6 +584,41 @@ public partial class BattleHud : CanvasLayer
 
         if (_enemyPile != null)
             _enemyPile.Visible = show;
+    }
+    /// <summary>重置视角按钮（触屏用）。</summary>
+    public event System.Action ResetViewRequested;
+
+    /// <summary>触屏设备：显示「取消 / 视角」快捷按钮（鼠标右键/中键的替代）。</summary>
+    public void SetTouchControls(bool show)
+    {
+        if (!show || _touchBar != null || _root == null)
+            return;
+
+        _touchBar = new HBoxContainer { Name = "TouchBar" };
+        _touchBar.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
+        _touchBar.OffsetLeft = -364;
+        _touchBar.OffsetRight = -176;
+        _touchBar.OffsetTop = -70;
+        _touchBar.OffsetBottom = -22;
+        _touchBar.AddThemeConstantOverride("separation", 8);
+        _root.AddChild(_touchBar);
+
+        _touchReset = new Button { Text = "视角", CustomMinimumSize = new Vector2(86, 40) };
+        _touchReset.AddThemeFontSizeOverride("font_size", 15);
+        _touchReset.Pressed += () => ResetViewRequested?.Invoke();
+        _touchBar.AddChild(_touchReset);
+
+        _touchCancel = new Button { Text = "取消", CustomMinimumSize = new Vector2(86, 40) };
+        _touchCancel.AddThemeFontSizeOverride("font_size", 15);
+        _touchCancel.Pressed += () =>
+        {
+            HideSpawnPanel();
+            CancelClicked?.Invoke();
+        };
+        _touchBar.AddChild(_touchCancel);
+
+        ButtonJuice.AttachAll(_touchBar);
+        UiSound.AttachAll(_touchBar);
     }
     public void RefreshAll()
     {
@@ -1883,6 +1921,12 @@ public partial class BattleHud : CanvasLayer
     public void HideInfo() => _infoPanel.Visible = false;
 
     private readonly Dictionary<string, Button> _buildButtons = new();
+
+    /// <summary>调试：建造按钮的全局矩形（模拟点击用）。</summary>
+    public Rect2 DebugBuildButtonRect(string defId)
+    {
+        return _buildButtons.TryGetValue(defId, out Button b) ? b.GetGlobalRect() : new Rect2();
+    }
 
     /// <summary>调试：模拟悬停某个建造选项。</summary>
     public void DebugHoverBuild(string defId)

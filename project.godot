@@ -11,9 +11,12 @@ config_version=5
 [application]
 
 config/name="Seven-Day"
-run/main_scene="res://scenes/mainMenu.tscn"
+config/version="v0.1.2"
+run/main_scene="res://scenes/bootSplash.tscn"
 config/features=PackedStringArray("4.7", "C#", "Mobile")
-config/icon="res://icon.svg"
+boot_splash/bg_color=Color(0.3, 0.3, 0.3, 1)
+boot_splash/show_image=false
+boot_splash/use_filter=false
 
 [autoload]
 
@@ -27,6 +30,7 @@ window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
+mouse_cursor/custom_image="uid://dvbj1vpnhr5ic"
 
 [dotnet]
 
@@ -50,3 +54,4 @@ pointing/android/enable_pan_and_scale_gestures=true
 rendering_device/driver.windows="d3d12"
 renderer/rendering_method="mobile"
 textures/vram_compression/import_etc2_astc=true
+rendering/environment/defaults/default_clear_color=Color(0.965, 0.933, 0.882, 1)

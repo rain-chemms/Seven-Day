@@ -36,6 +36,9 @@ public partial class BattleScene : Node3D
     private bool _discardMode;
     private HexCoord? _buildTarget;
     private bool _dragPan;
+    private readonly System.Collections.Generic.Dictionary<long, Vector2> _touches = new();
+    private float _touchPrevDist;
+    private Vector2 _touchPrevCenter;
     private bool _rightDragging;
     private bool _rightMoved;
     private Vector2 _rightStart;
@@ -129,6 +132,10 @@ public partial class BattleScene : Node3D
         AddChild(_hud);
         _hud.SetHealthCamera(_rig.Camera);
         WireHud();
+
+        bool touchUi = DisplayServer.IsTouchscreenAvailable() || OS.HasFeature("mobile") ||
+                       System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--demo-touch-ui") >= 0;
+        _hud.SetTouchControls(touchUi);
         _hud.ShowTransitionMask();
         // 延迟到场景初始化完成再预热（_Ready 里 root 正忙于挂子节点）
         Callable.From(SevenDay.UI.CardInspectOverlay.Prewarm).CallDeferred();
@@ -472,7 +479,18 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-hq-close"))
             DemoHqCloseFlow();
 
-        // 开发调试：--demo-barracks 单个 Lv1 兵营，检查主体是否渲染
+        // 开发调试：--demo-build-all 依次建造所有建筑
+    if (OS.GetCmdlineUserArgs().Contains("--demo-build-all"))
+        CallDeferred(nameof(DemoBuildAll));
+
+    // 开发调试：--demo-build-click 用鼠标点建造菜单按钮
+    if (OS.GetCmdlineUserArgs().Contains("--demo-build-click"))
+        CallDeferred(nameof(DemoBuildClick));
+
+    // 开发调试：--demo-build-place 直接放一个兵营（复现建造流程）
+    if (OS.GetCmdlineUserArgs().Contains("--demo-build-place"))
+        CallDeferred(nameof(DemoBuildPlace));
+    // 开发调试：--demo-barracks 单个 Lv1 兵营，检查主体是否渲染
         if (OS.GetCmdlineUserArgs().Contains("--demo-barracks"))
             DemoBuildingFlow("barracks", 1);
 
@@ -3242,6 +3260,107 @@ public partial class BattleScene : Node3D
     }
 
     /// <summary>点一个己方可建造的空格，打开建造菜单；带 --build-apply 时再真的建一座。</summary>
+    /// <summary>调试：真的用鼠标点建造菜单里的按钮，复现“建造卡死”。</summary>
+    private async void DemoBuildAll()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        foreach (BuildingDef def in GameDatabase.Buildings.Values)
+        {
+            HexCoord? spot = null;
+            foreach (Cell c in _state.Cells.Values)
+            {
+                if (_state.CanBuildAt(c.Coord, PlayerId.Player))
+                {
+                    spot = c.Coord;
+                    break;
+                }
+            }
+
+            if (spot == null)
+                break;
+
+            GD.Print($"[BuildAll] {def.Id}");
+            _buildTarget = spot.Value;
+            OnBuildClicked(def.Id);
+            await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[BuildAll] {def.Id} done built={_state.BuildingAt(spot.Value)?.DefId}");
+        }
+
+        GD.Print("[BuildAll] 全部完成");
+    }
+    private async void DemoBuildClick()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (_state.CanBuildAt(c.Coord, PlayerId.Player))
+            {
+                spot = c.Coord;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        Vector2 p = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(spot.Value, HexMapView.TileTop));
+        SendMotion(p, p);
+        UpdateHover(p);
+        OnLeftClick(p);
+        await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[BuildClick] 菜单打开 target={_buildTarget}");
+
+        Rect2 rect = _hud.DebugBuildButtonRect("city");
+        GD.Print($"[BuildClick] city 按钮 rect={rect}");
+        if (rect.Size == Vector2.Zero)
+            return;
+
+        Vector2 clickPos = rect.Position + rect.Size * 0.5f;
+        Input.WarpMouse(clickPos);
+        Input.ParseInputEvent(new InputEventMouseMotion { Position = clickPos, GlobalPosition = clickPos });
+        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        GD.Print("[BuildClick] 发送按下");
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = true, Position = clickPos, GlobalPosition = clickPos,
+        });
+        await ToSignal(GetTree().CreateTimer(0.1), SceneTreeTimer.SignalName.Timeout);
+        GD.Print("[BuildClick] 发送抬起");
+        Input.ParseInputEvent(new InputEventMouseButton
+        {
+            ButtonIndex = MouseButton.Left, Pressed = false, Position = clickPos, GlobalPosition = clickPos,
+        });
+
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        BuildingInst built = _state.BuildingAt(spot.Value);
+        GD.Print($"[BuildClick] built={built?.DefId} gold={_state.Player.Gold}");
+    }
+    private async void DemoBuildPlace()
+    {
+        await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
+
+        foreach (var kv in _state.Cells)
+        {
+            if (!_state.CanBuildAt(kv.Key, PlayerId.Player))
+                continue;
+
+            GD.Print($"[Build] 尝试在 {kv.Key.Q},{kv.Key.R} 建造");
+            if (!_state.TryBuild(PlayerId.Player, "barracks", kv.Key, out string err))
+            {
+                GD.Print($"[Build] 失败：{err}");
+                continue;
+            }
+
+            // 走完整的 UI 建造路径（含 PunchBuilding / 音效 / HUD 刷新）
+            _buildTarget = kv.Key;
+            OnBuildClicked("barracks");
+            GD.Print("[Build] 流程完成");
+            return;
+        }
+    }
     private async void DemoBuildFlow()
     {
         await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
@@ -4898,6 +5017,11 @@ public partial class BattleScene : Node3D
         _hud.UpgradeHovered += OnUpgradeHovered;
         _hud.PreviewUnhovered += OnPreviewUnhovered;
         _hud.CancelClicked += () => { ClearSelection(); RefreshAll(); };
+        _hud.ResetViewRequested += () =>
+        {
+            _rig.ResetView();
+            _hud.Toast("视角已复位");
+        };
         _hud.PileClicked += OnPileClicked;
         _hud.SurrenderClicked += OnSurrender;
     }
@@ -6050,6 +6174,36 @@ public partial class BattleScene : Node3D
             }
         }
 
+        // ── 触屏手势：双指缩放 + 平移（鼠标右键/中键的移动端替代）
+        if (@event is InputEventScreenTouch touch)
+        {
+            if (touch.Pressed)
+                _touches[touch.Index] = touch.Position;
+            else
+                _touches.Remove(touch.Index);
+
+            _touchPrevDist = 0f;
+            return;
+        }
+
+        if (@event is InputEventScreenDrag drag)
+        {
+            _touches[drag.Index] = drag.Position;
+            if (_touches.Count >= 2)
+            {
+                UpdateTouchGesture();
+                GetViewport().SetInputAsHandled();
+            }
+            return;
+        }
+
+        if (@event is InputEventMagnifyGesture magnify)
+        {
+            _rig.Zoom((magnify.Factor - 1f) * 8f);
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
         if (@event is InputEventMouseButton mb)
         {
             switch (mb.ButtonIndex)
@@ -6411,6 +6565,33 @@ public partial class BattleScene : Node3D
         }
     }
 
+    /// <summary>双指手势：两指间距变化 → 缩放；两指中心移动 → 平移。</summary>
+    private void UpdateTouchGesture()
+    {
+        if (_touches.Count < 2)
+        {
+            _touchPrevDist = 0f;
+            return;
+        }
+
+        using var e = _touches.Values.GetEnumerator();
+        e.MoveNext();
+        Vector2 a = e.Current;
+        e.MoveNext();
+        Vector2 b = e.Current;
+
+        Vector2 center = (a + b) * 0.5f;
+        float dist = a.DistanceTo(b);
+
+        if (_touchPrevDist > 0.5f)
+        {
+            _rig.Zoom((dist - _touchPrevDist) * 0.02f);   // 张开手指 = 拉近
+            _rig.Pan(center - _touchPrevCenter);
+        }
+
+        _touchPrevDist = dist;
+        _touchPrevCenter = center;
+    }
     private void OnRightClick()
     {
         _selCard = -1;

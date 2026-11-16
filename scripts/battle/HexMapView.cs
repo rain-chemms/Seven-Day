@@ -66,6 +66,8 @@ public partial class HexMapView : Node3D
     private Node3D _unitRoot;
     private MeshInstance3D _hover;
     private Node3D _buildMarker;
+    private Tween _markerBadgeTween;
+    private Tween _markerPulseTween;
 
     private StandardMaterial3D _ringMatPlayer;
     private StandardMaterial3D _ringMatEnemy;
@@ -506,6 +508,12 @@ public partial class HexMapView : Node3D
     {
         if (coord == null)
         {
+            // 先停掉循环 tween，否则节点释放后引擎会持续报无限循环
+            _markerBadgeTween?.Kill();
+            _markerPulseTween?.Kill();
+            _markerBadgeTween = null;
+            _markerPulseTween = null;
+
             if (_buildMarker != null)
             {
                 _buildMarker.QueueFree();
@@ -548,7 +556,8 @@ public partial class HexMapView : Node3D
             };
             _buildMarker.AddChild(badge);
 
-            Tween badgeTween = CreateTween();
+            _markerBadgeTween = CreateTween();
+            Tween badgeTween = _markerBadgeTween;
             badgeTween.SetLoops();
             badgeTween.SetParallel(true);
             badgeTween.TweenProperty(badge, "position:y", 1.55f, 0.55f)
@@ -560,7 +569,8 @@ public partial class HexMapView : Node3D
                 .SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
 
             // 地面圈呼吸脉动
-            Tween pulse = CreateTween();
+            _markerPulseTween = CreateTween();
+            Tween pulse = _markerPulseTween;
             pulse.SetLoops();
             pulse.TweenProperty(_buildMarker, "scale", new Vector3(1.08f, 1f, 1.08f), 0.55f)
                 .SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);

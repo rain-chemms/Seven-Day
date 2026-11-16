@@ -14,6 +14,9 @@ public static class Session
     /// <summary>本次进入战斗是否要载入“未完成联机对局”的存档（房主恢复用）。</summary>
     public static bool RestoreLanSave;
 
+    /// <summary>主菜单是否需要从全黑淡入（启动动画结束后做柔和过渡）。</summary>
+    public static bool FadeInFromBlack;
+
     public static string MapId = "map_01";
     public static AIDifficulty Difficulty = AIDifficulty.Normal;
 

@@ -48,6 +48,13 @@ public partial class MainMenu : Node3D
 
         AddChild(new MainMenuBackdrop { Name = "Backdrop" });
         BuildUi();
+
+        // 启动动画结束后：主菜单从全黑淡入，避免画面跳变
+        if (Session.FadeInFromBlack)
+        {
+            Session.FadeInFromBlack = false;
+            PlayBootBlackFade();
+        }
         ApplyAudioFromSettings();
         AudioManager.StopStinger();       // 从结算界面回来时别让胜利/失败音效继续响
         AudioManager.PlayBgm("res://gameAsset/audios/bgm/menu_theme.ogg", 1.2f);
@@ -821,6 +828,26 @@ public partial class MainMenu : Node3D
         }
     }
 
+    /// <summary>从引擎默认灰色（alpha 1 → 0）淡入主菜单。</summary>
+    private void PlayBootBlackFade()
+    {
+        GD.Print("[Boot] 主菜单从灰色淡入（0.9s）");
+        var layer = new CanvasLayer { Name = "BootFade", Layer = 160 };
+        AddChild(layer);
+
+        var black = new ColorRect
+        {
+            Color = new Color(0.3f, 0.3f, 0.3f, 1f),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        black.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        layer.AddChild(black);
+
+        Tween tw = CreateTween();
+        tw.TweenProperty(black, "color:a", 0f, 0.9f)
+            .SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.Out);
+        tw.TweenCallback(Callable.From(() => layer.QueueFree()));
+    }
     public override void _ExitTree()
     {
         Loc.Changed -= RebuildTexts;
@@ -1421,6 +1448,19 @@ public partial class MainMenu : Node3D
             DisplayServer.WindowSetMode(on ? DisplayServer.WindowMode.Fullscreen : DisplayServer.WindowMode.Windowed);
         };
         tab.AddChild(BoolRow("settings.fullscreen", full));
+
+        // 启动画面风格：经典 / 像素
+        tab.AddChild(NewRowLabel("settings.boot_logo"));
+        var bootStyle = new OptionButton();
+        bootStyle.AddItem(Loc.T("settings.boot_classic"), 0);
+        bootStyle.AddItem(Loc.T("settings.boot_pixel"), 1);
+        bootStyle.Selected = Mathf.Clamp(Settings.GetInt("video", "boot_logo", 0), 0, 1);
+        bootStyle.ItemSelected += i =>
+        {
+            Settings.SetInt("video", "boot_logo", (int)i);
+            Settings.Save();
+        };
+        tab.AddChild(bootStyle);
 
         // 卡牌字体大小
         var cardFontRow = new HBoxContainer();
