@@ -228,6 +228,8 @@ public partial class NetBridge : Node
             LanSession.AssignActor(payload.AssignActor);
         if (payload.HostLocked)
             LanSession.SetHostLocked(true);
+        if (payload.ClientSeqBase > LanSession.ClientSeq)
+            LanSession.ClientSeq = payload.ClientSeqBase;
 
         NetResumeStore.Pending = payload;
         LanSession.Config = payload.Config;
