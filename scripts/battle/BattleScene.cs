@@ -27,6 +27,7 @@ public partial class BattleScene : Node3D
     private Vfx _vfx;
 
     private UnitInst _selUnit;
+    private UnitInst _carrierSpawn;
     private int _infoUnitHp = -1;
     private BuildingInst _selBuilding;
     private HexCoord? _hover;
@@ -490,6 +491,30 @@ public partial class BattleScene : Node3D
     // 开发调试：--demo-touch-arrow 模拟手指指向，验证卡牌箭头
     if (OS.GetCmdlineUserArgs().Contains("--demo-touch-arrow"))
         CallDeferred(nameof(DemoTouchArrow));
+
+    // 开发调试：--demo-contested-build 争夺区建造
+    if (OS.GetCmdlineUserArgs().Contains("--demo-contested-build"))
+        CallDeferred(nameof(DemoContestedBuild));
+
+    // 开发调试：--lan-demo-move 联机时由主机自动走一步（验证对手移动反馈）
+    if (OS.GetCmdlineUserArgs().Contains("--lan-demo-move"))
+        CallDeferred(nameof(DemoLanMove));
+
+    // 开发调试：--demo-contested 争夺区出兵
+    if (OS.GetCmdlineUserArgs().Contains("--demo-contested"))
+        CallDeferred(nameof(DemoContested));
+
+    // 开发调试：--demo-navy-buildmenu 水面建造菜单
+    if (OS.GetCmdlineUserArgs().Contains("--demo-navy-buildmenu"))
+        CallDeferred(nameof(DemoNavyBuildMenu));
+
+    // 开发调试：--demo-navy-probe 海军规则检查
+    if (OS.GetCmdlineUserArgs().Contains("--demo-navy-probe"))
+        CallDeferred(nameof(DemoNavyProbe));
+
+    // 开发调试：--demo-navy 海军基地 + 舰艇演示
+    if (OS.GetCmdlineUserArgs().Contains("--demo-navy"))
+        CallDeferred(nameof(DemoNavy));
 
     // 开发调试：--demo-build-all 依次建造所有建筑
     if (OS.GetCmdlineUserArgs().Contains("--demo-build-all"))
@@ -1493,7 +1518,7 @@ public partial class BattleScene : Node3D
         _map.SetBuildMarker(spot.Value);
 
         var defs = GameDatabase.Buildings.Values
-            .Where(d => d.Id != "hq")
+            .Where(d => d.Id != "hq" && _state.CanBuildAt(spot.Value, PlayerId.Player, d.Id))
             .OrderBy(d => d.UpgradeCostAt(0))
             .ToList();
         _hud.ShowBuildMenu(defs, _state.Player.Gold);
@@ -3518,6 +3543,331 @@ public partial class BattleScene : Node3D
         BuildingInst built = _state.BuildingAt(spot.Value);
         GD.Print($"[BuildClick] built={built?.DefId} gold={_state.Player.Gold}");
     }
+    /// <summary>调试：在临陆水面放海军基地 + 三种舰艇，选中潜艇展示信息面板。</summary>
+    /// <summary>调试：联机主机自动移动一个单位，验证客户端能看到移动反馈。</summary>
+    private async void DemoLanMove()
+    {
+        await ToSignal(GetTree().CreateTimer(3.0), SceneTreeTimer.SignalName.Timeout);
+        if (!NetMode || !LanSession.IsHost || _state == null)
+            return;
+
+        UnitInst u = _state.Units.FirstOrDefault(x =>
+            x.Owner == PlayerId.Player && x.Alive && !x.Moved &&
+            _state.MoveRange(x).Any(c => c != x.Coord));
+        if (u == null)
+        {
+            GD.Print("[LanMove] 没有可移动单位");
+            return;
+        }
+
+        HexCoord to = _state.MoveRange(u).First(c => c != u.Coord);
+        GD.Print($"[LanMove] host move unit={u.Id} {u.Coord}->{to}");
+        NetSendMove(u.Coord, to);
+    }
+    /// <summary>调试：争夺区双方都能建造建筑。</summary>
+    private async void DemoContestedBuild()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        var cells = _state.Cells.Values
+            .Where(c => c.Terrain != TerrainType.Water && c.Building == null)
+            .Take(2)
+            .ToList();
+        if (cells.Count == 0)
+            return;
+
+        foreach (Cell c in cells)
+        {
+            c.ControlPlayer = true;
+            c.ControlEnemy = true;
+        }
+
+        bool p = _state.CanBuildAt(cells[0].Coord, PlayerId.Player, "barracks");
+        bool e = _state.CanBuildAt(cells[1].Coord, PlayerId.Enemy, "barracks");
+        GD.Print($"[Contested] 争夺区建造 我方={p} 敌方={e}（应都为 True）");
+
+        _state.Player.Gold = 2000;
+        _state.Enemy.Gold = 2000;
+        bool pb = _state.TryBuild(PlayerId.Player, "barracks", cells[0].Coord, out string e1);
+
+        // 玩家先建会重算控制区：测试敌方前重新标记为争夺区
+        cells[1].ControlPlayer = true;
+        cells[1].ControlEnemy = true;
+        bool eb = _state.TryBuild(PlayerId.Enemy, "barracks", cells[1].Coord, out string e2);
+        GD.Print($"[Contested] TryBuild 我方={pb} 敌方={eb}（应 True/True） 错误={e1}/{e2}");
+    }
+
+    /// <summary>调试：争夺区（双方控制）双方都能出兵。</summary>
+    private async void DemoContested()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+
+        Cell cell = _state.Cells.Values.FirstOrDefault(c =>
+            c.Terrain != TerrainType.Water && c.Building == null);
+        if (cell == null)
+            return;
+
+        cell.ControlPlayer = true;
+        cell.ControlEnemy = true;
+        bool p1 = _state.CanDeployCard("unit_infantry", PlayerId.Player, cell.Coord, out string e1);
+        bool e2 = _state.CanDeployCard("unit_infantry", PlayerId.Enemy, cell.Coord, out string e2s);
+        GD.Print($"[Contested] 争夺区 我方出兵={p1} 敌方出兵={e2} （应都为 True）");
+
+        cell.ControlPlayer = true;
+        cell.ControlEnemy = false;
+        bool p2 = _state.CanDeployCard("unit_infantry", PlayerId.Player, cell.Coord, out _);
+        bool e3 = _state.CanDeployCard("unit_infantry", PlayerId.Enemy, cell.Coord, out _);
+        GD.Print($"[Contested] 仅我方控制 我方={p2} 敌方={e3} （应 True/False）");
+
+        bool build = _state.CanBuildAt(cell.Coord, PlayerId.Player, "barracks");
+        GD.Print($"[Contested] 争夺区仍不能建造={!build}");
+    }
+
+    /// <summary>调试：水面格打开建造菜单，确认只显示海军基地。</summary>
+    private async void DemoNavyBuildMenu()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Terrain != TerrainType.Water || c.Building != null)
+                continue;
+            if (!c.Coord.Neighbors().Any(nb => _state.Cell(nb) != null &&
+                                                _state.Cell(nb).Terrain != TerrainType.Water))
+                continue;
+
+            c.ControlPlayer = true;
+            c.ControlEnemy = false;
+            spot = c.Coord;
+            break;
+        }
+
+        if (spot == null)
+            return;
+
+        _state.Player.Gold = 2000;
+        _buildTarget = spot.Value;
+        _map.SetBuildMarker(spot.Value);
+        var defs = GameDatabase.Buildings.Values
+            .Where(d => d.Id != "hq" && _state.CanBuildAt(spot.Value, PlayerId.Player, d.Id))
+            .OrderBy(d => d.UpgradeCostAt(0))
+            .ToList();
+        GD.Print($"[Navy] 水面建造菜单：{string.Join(",", defs.Select(d => d.Id))}");
+        _hud.ShowBuildMenu(defs, _state.Player.Gold);
+        RefreshAll();
+    }
+
+    private void FocusSubCamera(UnitInst sub)
+    {
+        _rig.FocusOn(HexLayout.ToWorld(sub.Coord, HexMapView.TileTop));
+        _rig.ResetView(0.01f);
+        _rig.Zoom(9f);
+    }
+
+    /// <summary>调试：检查海军建造/部署/产卡规则。</summary>
+    private async void DemoNavyProbe()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        Cell coast = null;
+        Cell deep = null;
+        Cell land = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Terrain == TerrainType.Water)
+            {
+                bool nearLand = c.Coord.Neighbors().Any(nb => _state.Cell(nb) != null &&
+                                                              _state.Cell(nb).Terrain != TerrainType.Water);
+                if (nearLand && coast == null) coast = c;
+                if (!nearLand && deep == null) deep = c;
+            }
+            else if (land == null)
+                land = c;
+        }
+
+        if (coast == null || land == null)
+        {
+            GD.Print("[NavyProbe] 地图缺少临陆水面或陆地");
+            return;
+        }
+
+        coast.ControlPlayer = true;
+        coast.ControlEnemy = false;
+        if (deep != null) { deep.ControlPlayer = true; deep.ControlEnemy = false; }
+        land.ControlPlayer = true;
+        land.ControlEnemy = false;
+
+        GD.Print($"[NavyProbe] 临陆水面 海军基地可建={_state.CanBuildAt(coast.Coord, PlayerId.Player, "navyBase")} " +
+                 $"兵营可建={_state.CanBuildAt(coast.Coord, PlayerId.Player, "barracks")}");
+        GD.Print(deep != null
+            ? $"[NavyProbe] 深水 海军基地可建={_state.CanBuildAt(deep.Coord, PlayerId.Player, "navyBase")}"
+            : "[NavyProbe] 地图没有四面环水的深水格（跳过）");
+        GD.Print($"[NavyProbe] 陆地 海军基地可建={_state.CanBuildAt(land.Coord, PlayerId.Player, "navyBase")}");
+        GD.Print($"[NavyProbe] 潜艇部署 水面={_state.CanDeployCard("unit_submarine", PlayerId.Player, coast.Coord, out _)} " +
+                 $"陆地={_state.CanDeployCard("unit_submarine", PlayerId.Player, land.Coord, out _)}");
+
+        _state.Player.Gold = 5000;
+        BuildingInst nb = _state.SpawnBuilding("navyBase", PlayerId.Player, coast.Coord);
+        nb.Level = 1;
+        _state.TurnNumber = 3;
+        int before = _state.Player.Hand.Count;
+        _state.BeginTurn(PlayerId.Player);
+        bool produced = _state.Player.Hand.Contains("unit_submarine");
+        bool ethereal = _state.Player.Ethereal.Contains("unit_submarine");
+        GD.Print($"[NavyProbe] 第3回合产卡={produced} 虚无={ethereal} 手牌 {before}→{_state.Player.Hand.Count}");
+    }
+    private async void DemoNavy()
+    {
+        bool closeup = System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--navy-closeup") >= 0;
+        await ToSignal(GetTree().CreateTimer(closeup ? 0.05 : 0.7), SceneTreeTimer.SignalName.Timeout);
+
+        // 优先选“周围水最多”的临陆水面，基地更容易看见
+        HexCoord? spot = null;
+        int bestWater = -1;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Terrain != TerrainType.Water || c.Building != null)
+                continue;
+            if (!c.Coord.Neighbors().Any(nb => _state.Cell(nb) != null &&
+                                                _state.Cell(nb).Terrain != TerrainType.Water))
+                continue;
+
+            int water = c.Coord.Neighbors().Count(nb => _state.Cell(nb)?.Terrain == TerrainType.Water);
+            if (water > bestWater)
+            {
+                bestWater = water;
+                spot = c.Coord;
+            }
+        }
+
+        if (spot == null)
+        {
+            GD.Print("[Navy] 没有临陆水面");
+            return;
+        }
+
+        _state.Player.Gold = 5000;
+        BuildingInst baseInst = _state.SpawnBuilding("navyBase", PlayerId.Player, spot.Value);
+        baseInst.Level = 3;
+
+        var waterNear = HexCoord.Spiral(spot.Value, 2)
+            .Where(c => c != spot.Value && _state.Cell(c)?.Terrain == TerrainType.Water)
+            .ToList();
+
+        var freeWater = waterNear.Where(c => _state.Cell(c)?.Building == null).ToList();
+        UnitInst sub = freeWater.Count > 0 ? _state.SpawnUnit("submarine", PlayerId.Player, freeWater[0]) : null;
+        UnitInst destroyer = freeWater.Count > 1 ? _state.SpawnUnit("destroyer", PlayerId.Player, freeWater[1]) : null;
+
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+
+        SelectUnit(sub);
+        GD.Print($"[Navy] 基地={baseInst.DefId}@{(spot.Value)} 潜艇={sub?.Id}@{sub?.Coord} " +
+                 $"驱逐舰={destroyer?.Id}@{destroyer?.Coord}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--navy-battle") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+            HexCoord? e = waterNear.FirstOrDefault(c => _state.Cell(c)?.Terrain == TerrainType.Water &&
+                                                         _state.Cell(c)?.Building == null);
+            if (e != null && sub != null)
+            {
+                UnitInst foe = _state.SpawnUnit("submarine", PlayerId.Enemy, e.Value);
+                foe.Submerged = false;
+                _map.SyncEntities();
+                SelectUnit(sub);
+                await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+                Vector2 ep = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(e.Value, HexMapView.TileTop));
+                SendMotion(ep, ep);
+                OnLeftClick(ep);
+                await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
+                GD.Print($"[Navy] 鱼雷战后 敌方HP={foe.Hp}/{foe.MaxHp} 我方攻击过={sub.Attacked}");
+            }
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--navy-carrier") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+            HexCoord? cspot = waterNear.FirstOrDefault(c => _state.Cell(c)?.Terrain == TerrainType.Water &&
+                                                             _state.Cell(c)?.Building == null &&
+                                                             _state.UnitsAt(c).All(u => !u.Alive));
+            if (cspot != null)
+            {
+                UnitInst carrier = _state.SpawnUnit("carrier", PlayerId.Player, cspot.Value);
+                _map.SyncEntities();
+                RefreshAll();
+                SelectUnit(carrier);
+                await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+                GD.Print($"[Navy] 航母出兵面板={_hud.SpawnVisible}");
+
+                _state.Player.Gold = 5000;
+                OnSpawnClicked("unit_fighter");
+                await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+                GD.Print($"[Navy] 航母出兵后单位={_state.Units.Count(u => u.Owner == PlayerId.Player)}");
+
+                // 敌方潜艇：雷达应使其浮出
+                UnitInst foeSub = _state.SpawnUnit("submarine", PlayerId.Enemy, cspot.Value);
+                foeSub.Submerged = true;
+                _map.SyncEntities();
+                OnCarrierRadar();
+                GD.Print($"[Navy] 雷达后敌方潜艇 submerged={foeSub.Submerged} radarUsed={carrier.RadarUsed}");
+            }
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--navy-stale") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+            HexCoord? cspot2 = waterNear.FirstOrDefault(c => _state.Cell(c)?.Terrain == TerrainType.Water &&
+                                                              _state.Cell(c)?.Building == null);
+            if (cspot2 != null)
+            {
+                UnitInst carrier = _state.SpawnUnit("carrier", PlayerId.Player, cspot2.Value);
+                _map.SyncEntities();
+                RefreshAll();
+                SelectUnit(carrier);
+                await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+                GD.Print($"[Navy] 选中航母后按钮数={_hud.DebugUnitActionCount}（应为 2）");
+
+                SelectBuilding(baseInst);
+                await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+                GD.Print($"[Navy] 再选海军基地后按钮数={_hud.DebugUnitActionCount}（应为 0）");
+            }
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--navy-enemy-sub") >= 0)
+        {
+            HexCoord? e = waterNear.FirstOrDefault(c => _state.Cell(c)?.Terrain == TerrainType.Water &&
+                                                         _state.Cell(c)?.Building == null);
+            if (e != null)
+            {
+                UnitInst foe = _state.SpawnUnit("submarine", PlayerId.Enemy, e.Value);
+                foe.Submerged = true;
+                _map.SyncEntities();
+                RefreshAll();
+                await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
+                GD.Print($"[Navy] 敌方深潜潜艇透明度={_map.DebugUnitTransparency(foe.Id):F2}（应为 0）");
+            }
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--navy-dive") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(closeup ? 0.05 : 0.6), SceneTreeTimer.SignalName.Timeout);
+            OnToggleDive();
+            await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[Navy] 深潜后 submerged={sub.Submerged} 透明度={_map.DebugUnitTransparency(sub.Id):F2}");
+            GD.Print($"[Navy] 材质明细：{_map.DebugSubmarineMaterials(sub.Id)}");
+
+            if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--navy-closeup") >= 0)
+            {
+                _rig.FocusOn(HexLayout.ToWorld(sub.Coord, HexMapView.TileTop));
+                _rig.Zoom(7f);
+                FocusSubCamera(sub);
+                await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+            }
+        }
+    }
     private async void DemoBuildPlace()
     {
         await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
@@ -5122,6 +5472,23 @@ public partial class BattleScene : Node3D
                 _vfx.MissileFromTo(from + Vector3.Up * 0.35f, to, 0.95f, 0.55f, 0.45f, arc: 1.7f);
                 return 0.45f;
 
+            case "submarine":
+            case "destroyer":
+            case "carrier":
+            {
+                // 海军打海军 → 鱼雷；打陆地/空中 → 从舰上飞出的导弹
+                bool targetNavy = _state.UnitsAt(target).Any(x => x.Alive && x.Def.Navy) ||
+                                  (_state.BuildingAt(target)?.Def?.NavyBase ?? false);
+                if (targetNavy)
+                {
+                    _vfx.Torpedo(from, to, 0.45f);
+                    return 0.45f;
+                }
+
+                _vfx.MissileFromTo(from + Vector3.Up * 0.3f, to, 0.95f, 0.5f, 0.42f, arc: 1.1f);
+                return 0.42f;
+            }
+
             case "tank":
                 _vfx.MuzzleFlash(from + Vector3.Up * 0.1f, 0.55f);
                 _vfx.Tracer(from, to, new Color("FFC46A"), 0.045f);
@@ -5589,6 +5956,10 @@ public partial class BattleScene : Node3D
         foreach (UnitInst u in _state.Units)
         {
             if (!u.Alive)
+                continue;
+
+            // 敌方深潜潜艇不可见：连血条一起隐藏
+            if (u.DefId == "submarine" && u.Submerged && u.Owner != PlayerId.Player)
                 continue;
 
             float ratio = u.MaxHp > 0 ? u.Hp / (float)u.MaxHp : 0f;
@@ -6687,7 +7058,7 @@ public partial class BattleScene : Node3D
             cycle.Add((null, cell.Building, false));
 
         // 该格还没有建筑、且在己方控制区内 → 加一个「建造」选项
-        if (cell.Building == null && _state.CanBuildAt(coord, PlayerId.Player))
+        if (cell.Building == null && _state.CanBuildAnythingAt(coord, PlayerId.Player))
             cycle.Add((null, null, true));
 
         if (cycle.Count > 0)
@@ -6738,13 +7109,13 @@ public partial class BattleScene : Node3D
         _map.ClearHints();
         _hud.HideInfo();
 
-        if (_state.CanBuildAt(coord, PlayerId.Player))
+        if (_state.CanBuildAnythingAt(coord, PlayerId.Player))
         {
             _hover = coord;
             _buildTarget = coord;
             _map.SetBuildMarker(coord);
             var defs = GameDatabase.Buildings.Values
-                .Where(d => d.Id != "hq")
+                .Where(d => d.Id != "hq" && _state.CanBuildAt(coord, PlayerId.Player, d.Id))
                 .OrderBy(d => d.UpgradeCostAt(0))
                 .ToList();
             _hud.ShowBuildMenu(defs, _state.Player.Gold);
@@ -6752,7 +7123,7 @@ public partial class BattleScene : Node3D
         else
         {
             CloseBuildMenu();
-            _hud.Toast("这里不能建造（需要地面、己方控制区，且不与敌方控制区重叠）");
+            _hud.Toast("这里不能建造（陆地建筑需要地面；海军基地需要临接陆地的水面；都要在己方控制区内）");
         }
     }
 
@@ -6806,6 +7177,13 @@ public partial class BattleScene : Node3D
 
         RefreshUnitHints(u);
         ShowUnitInfo(u);
+
+        // 航母：选中时显示出兵面板（战斗机 / 武装直升机）
+        if (u != null && u.Owner == PlayerId.Player && u.DefId == "carrier")
+        {
+            _carrierSpawn = u;
+            RefreshCarrierSpawnPanel();
+        }
     }
 
     /// <summary>重算选中单位的移动/攻击范围高亮（移动、攻击、联机同步后都要刷新）。</summary>
@@ -6854,15 +7232,48 @@ public partial class BattleScene : Node3D
         string rangeText = range == u.Def.Range ? $"{range}" : $"{range}（地形 {u.Def.Range}）";
         string terrainLine = TerrainEffectLine(_state.TerrainAt(u.Coord));
 
+        string navyLine = "";
+        var actions = new List<(string Text, bool Enabled, Action Pressed)>();
+        bool mine = u.Owner == PlayerId.Player;
+
+        if (u.DefId == "submarine")
+        {
+            navyLine = u.Submerged
+                ? $"潜航状态：本轮{(u.DiveUsed ? "已切换" : "可切换")}\n"
+                : $"浮出状态：本轮{(u.DiveUsed ? "已切换" : "可切换")}\n";
+
+            if (mine)
+            {
+                actions.Add((u.Submerged ? Loc.T("unit.surface") : Loc.T("unit.dive"),
+                    _state.Phase == BattlePhase.PlayerTurn && !u.DiveUsed, OnToggleDive));
+            }
+        }
+        else if (u.DefId == "carrier")
+        {
+            navyLine = $"雷达：{(u.RadarUsed ? "本回合已搜索" : "可搜索")}　" +
+                       $"出兵：{(u.CarrierSpawnUsed ? "已出兵" : "可出兵")}\n";
+
+            if (mine)
+            {
+                actions.Add((Loc.T("unit.radar"),
+                    _state.Phase == BattlePhase.PlayerTurn && !u.RadarUsed, OnCarrierRadar));
+                actions.Add((Loc.T("unit.carrier_spawn"),
+                    _state.Phase == BattlePhase.PlayerTurn && !u.CarrierSpawnUsed, OnCarrierSpawnClicked));
+            }
+        }
+
         _hud.ShowInfo(
             $"{u.Def.NameZh}  {u.Hp}/{u.MaxHp}",
             $"攻击 {atkText}　移动 {moveText}　射程 {rangeText}\n" +
-            $"{(u.IsAir ? "空中单位，可越过地形" : "地面单位")}" +
+            $"{(u.IsAir ? "空中单位，可越过地形" : u.Def.Navy ? "海军单位，仅在水面活动" : "地面单位")}" +
             $"{(u.Def.CanHitAir ? "，可对空" : "")}\n" +
+            navyLine +
             (string.IsNullOrEmpty(terrainLine) ? "" : terrainLine + "\n") +
             (u.SpawnedThisTurn
                 ? "本回合刚登场，下回合才能行动"
                 : $"{(u.Moved ? "已移动" : "可移动")}　{(u.Attacked ? "已攻击" : "可攻击")}"));
+
+        _hud.ShowUnitActions(actions);
     }
 
     /// <summary>在每座产出金币的建筑上方弹出「+N」金色飘字（逐个错开）。</summary>
@@ -6906,7 +7317,7 @@ public partial class BattleScene : Node3D
         TerrainType.Sand => "沙地：本格陆军移动 -1（至少 1）",
         TerrainType.Rock => "岩地：本格陆军移动 +1",
         TerrainType.Snow => "雪地：本格单位射程 +1 / 建筑控制半径 +1",
-        TerrainType.Water => "水面：陆军无法进入",
+        TerrainType.Water => "水面：陆军无法进入，海军只能在水面活动",
         _ => "",
     };
     /// <summary>调试用：在指定屏幕坐标模拟一次左键点击。</summary>
@@ -6923,6 +7334,95 @@ public partial class BattleScene : Node3D
             ButtonIndex = MouseButton.Left, Pressed = false, Position = pos, GlobalPosition = pos,
         });
     }
+    /// <summary>潜艇：深潜/浮出切换（每回合一次）。</summary>
+    private void OnToggleDive()
+    {
+        if (_selUnit == null || _selUnit.Owner != PlayerId.Player)
+            return;
+
+        if (NetSendDive(_selUnit.Coord))
+            return;
+
+        if (!_state.ToggleSubmarineDive(_selUnit, out string error))
+        {
+            _hud.Toast(error);
+            return;
+        }
+
+        AudioManager.PlayUi("dive_submarine");
+        RefreshSubmarineVisuals();
+        RefreshAll();
+        ShowUnitInfo(_selUnit);
+        _hud.Toast(_selUnit.Submerged ? "已深潜（只能移动）" : "已浮出（可移动和攻击）");
+    }
+
+    /// <summary>航母：雷达搜索，让射程内敌方潜艇浮出（每回合一次）。</summary>
+    private void OnCarrierRadar()
+    {
+        if (_selUnit == null || _selUnit.Owner != PlayerId.Player || _selUnit.DefId != "carrier")
+            return;
+
+        if (NetSendRadar(_selUnit.Coord))
+            return;
+
+        if (!_state.UseCarrierRadar(_selUnit, out string error, out int revealed))
+        {
+            _hud.Toast(error);
+            return;
+        }
+
+        AudioManager.PlayUi("radar_carrier");
+        RefreshSubmarineVisuals();
+        RefreshAll();
+        ShowUnitInfo(_selUnit);
+        _hud.Toast(revealed > 0 ? $"雷达发现 {revealed} 艘敌方潜艇" : "雷达搜索完成，没有发现潜艇");
+    }
+
+    private void OnCarrierSpawnClicked() => RefreshCarrierSpawnPanel();
+
+    /// <summary>航母出兵面板：战斗机 / 武装直升机。</summary>
+    private void RefreshCarrierSpawnPanel()
+    {
+        UnitInst carrier = _carrierSpawn;
+        if (carrier == null || !carrier.Alive || carrier.Owner != PlayerId.Player ||
+            _state.Phase != BattlePhase.PlayerTurn)
+        {
+            _hud.HideSpawnPanel();
+            return;
+        }
+
+        var options = new List<(string CardId, string Name, int Cost, string Icon, bool Ready, string Tip)>();
+        foreach (string cardId in BattleState.CarrierAircraft)
+        {
+            CardDef card = GameDatabase.Card(cardId);
+            if (card == null)
+                continue;
+
+            bool ready = _state.CanCarrierSpawn(carrier, cardId, out string reason);
+            string icon = "res://gameAsset/textures/cardface/cardface_" + card.Unit + ".png";
+            string name = Loc.Name(card.NameZh, card.NameEn);
+            string tip = ready ? $"{name}  {card.Cost}$" : $"{name}：{reason}";
+            options.Add((cardId, name, card.Cost, icon, ready, tip));
+        }
+
+        string title = "航空母舰  出兵" + (carrier.CarrierSpawnUsed ? "（本回合已出兵）" : "");
+        _hud.ShowSpawnPanel(title, options);
+    }
+
+    /// <summary>按当前状态刷新所有潜艇的透明度（深潜：己方 0.5 / 敌方全透明）。</summary>
+    private void RefreshSubmarineVisuals()
+    {
+        if (_map == null || _state == null)
+            return;
+
+        foreach (UnitInst u in _state.Units)
+        {
+            if (!u.Alive || u.DefId != "submarine")
+                continue;
+
+            _map.SetSubmarineLook(u.Id, u.Submerged, u.Owner == PlayerId.Player);
+        }
+    }
     /// <summary>切换建筑是否产卡。</summary>
     private void OnProduceToggled()
     {
@@ -6937,6 +7437,33 @@ public partial class BattleScene : Node3D
     /// <summary>点击出兵面板上的兵种：扣费并在建筑本格召唤。</summary>
     private void OnSpawnClicked(string cardId)
     {
+        // 航母出兵（与建筑出兵共用面板）
+        if (_carrierSpawn != null && _carrierSpawn.Alive && _carrierSpawn.DefId == "carrier" &&
+            _selUnit == _carrierSpawn)
+        {
+            if (_state.Phase != BattlePhase.PlayerTurn)
+                return;
+
+            if (NetSendCarrierSpawn(_carrierSpawn.Coord, cardId))
+                return;
+
+            UnitInst air = _state.TryCarrierSpawn(_carrierSpawn, cardId, out string airError);
+            if (air == null)
+            {
+                _hud.Toast(string.IsNullOrEmpty(airError) ? "无法出兵" : airError);
+                return;
+            }
+
+            AudioManager.PlayDeploy(air.DefId);
+            _map.SyncEntities();
+            _map.RefreshZones();
+            RefreshAll();
+            RefreshCarrierSpawnPanel();
+            ShowUnitInfo(_carrierSpawn);
+            _hud.Toast($"航母已出动：{Loc.Name(air.Def.NameZh, air.Def.NameEn)}");
+            return;
+        }
+
         if (_selBuilding == null || _state.Phase != BattlePhase.PlayerTurn)
             return;
 
@@ -7186,6 +7713,7 @@ public partial class BattleScene : Node3D
     private void ClearSelection()
     {
         _selUnit = null;
+        _carrierSpawn = null;
         _selBuilding = null;
         _map.ClearHints();
         _map.SetSelectedUnit(-1);
@@ -7204,6 +7732,7 @@ public partial class BattleScene : Node3D
 
         _hud.RefreshAll();
         _map.ShowHover(_hover);
+        RefreshSubmarineVisuals();
 
         // 金币/等级变化后，右侧信息面板的按钮可用状态要跟着刷新
         if (_selBuilding != null && _selBuilding.Owner == PlayerId.Player && !_selBuilding.IsDead)

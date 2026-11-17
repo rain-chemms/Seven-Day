@@ -223,7 +223,13 @@ public partial class MapSelect : Control
             var t2 = GetTree().CreateTimer(0.5);
             t2.Timeout += () =>
             {
-                if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--mapselect-second") >= 0 && _maps.Count > 1)
+                if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--mapselect-third") >= 0 && _maps.Count > 2)
+                {
+                    _mapOption.Selected = 2;
+                    OnMapSelected(2);
+                    GD.Print($"[MapSelect] 切到第三张图：{Loc.Name(_maps[2].NameZh, _maps[2].NameEn)}");
+                }
+                else if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--mapselect-second") >= 0 && _maps.Count > 1)
                 {
                     _mapOption.Selected = 1;
                     OnMapSelected(1);

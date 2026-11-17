@@ -75,6 +75,7 @@ public partial class BattleHud : CanvasLayer
     private Button _endTurnButton;
     private PanelContainer _infoPanel;
     private Button _extraFireBtn;
+    private HFlowContainer _unitActions;
     private CanvasLayer _spawnLayer;
     private PanelContainer _spawnPanel;
     private Label _spawnTitle;
@@ -365,6 +366,14 @@ public partial class BattleHud : CanvasLayer
         _extraFireBtn.Pressed += () => ExtraFireClicked?.Invoke();
         _extraFireBtn.Visible = false;
         infoButtons.AddChild(_extraFireBtn);
+
+        // 海军单位专属操作（深潜/浮出、雷达搜索、航母出兵）
+        _unitActions = new HFlowContainer();
+        _unitActions.AddThemeConstantOverride("h_separation", 8);
+        _unitActions.AddThemeConstantOverride("v_separation", 6);
+        _unitActions.CustomMinimumSize = new Vector2(256, 0);
+        _unitActions.Visible = false;
+        infoBox.AddChild(_unitActions);
 
     // ── 底部手牌（扇形） ──
     _hand = new CardHandView { Name = "Hand" };
@@ -1588,11 +1597,48 @@ public partial class BattleHud : CanvasLayer
     /// <summary>调试：当前产卡开关按钮的文案。</summary>
     public string DebugProduceText() => (_produceName?.Text ?? "") + (_produceState?.Text ?? "");
 
+    /// <summary>调试：当前海军专属按钮数量。</summary>
+    public int DebugUnitActionCount => _unitActions == null ? 0 : _unitActions.GetChildCount();
+
+    /// <summary>刷新海军单位的专属操作按钮（深潜/浮出、雷达搜索、航母出兵）。</summary>
+    public void ShowUnitActions(
+        System.Collections.Generic.List<(string Text, bool Enabled, System.Action Pressed)> actions)
+    {
+        if (_unitActions == null)
+            return;
+
+        foreach (Node child in _unitActions.GetChildren())
+        {
+            _unitActions.RemoveChild(child);
+            child.QueueFree();
+        }
+
+        bool any = actions != null && actions.Count > 0;
+        _unitActions.Visible = any;
+        if (!any)
+            return;
+
+        foreach ((string text, bool enabled, System.Action pressed) in actions)
+        {
+            var b = NewButton(text);
+            b.Disabled = !enabled;
+            b.AddThemeColorOverride("font_disabled_color", new Color(0.23f, 0.18f, 0.09f, 0.55f));
+            b.Pressed += () => pressed?.Invoke();
+            _unitActions.AddChild(b);
+            ButtonJuice.Attach(b);
+        }
+
+        Callable.From(UpdateInfoPanelHeight).CallDeferred();
+    }
     public void ShowInfo(string title, string body, string imagePath = null, bool showButtons = false,
         int extraFireCost = 0, bool extraFireReady = false, bool showDemolish = true,
         bool canUpgrade = true, int repairCost = 0, bool repairAffordable = true,
         int demolishRefund = 0, bool showProduce = false, bool produceOn = true)
     {
+        // 先清掉上一张卡片留下的海军专属按钮（雷达/出兵/深潜），
+        // 需要时再由 ShowUnitActions 重新添加
+        ShowUnitActions(null);
+
         _infoPanel.Visible = true;
         Callable.From(UpdateInfoPanelHeight).CallDeferred();
         _infoTitle.Text = title;

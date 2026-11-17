@@ -17,6 +17,9 @@ public enum NetIntentType
     Demolish = 7,
     EndTurn = 8,
     Surrender = 9,
+    Dive = 10,
+    Radar = 11,
+    CarrierSpawn = 12,
 }
 
 /// <summary>
@@ -83,6 +86,20 @@ public sealed class NetIntent
         T = (int)NetIntentType.Deploy, A = actor, Hand = hand, Q = coord.Q, R = coord.R,
     };
 
+    public static NetIntent Dive(int actor, HexCoord at) => new()
+    {
+        T = (int)NetIntentType.Dive, A = actor, Q = at.Q, R = at.R,
+    };
+
+    public static NetIntent Radar(int actor, HexCoord at) => new()
+    {
+        T = (int)NetIntentType.Radar, A = actor, Q = at.Q, R = at.R,
+    };
+
+    public static NetIntent CarrierSpawn(int actor, HexCoord at, string cardId) => new()
+    {
+        T = (int)NetIntentType.CarrierSpawn, A = actor, Q = at.Q, R = at.R, Card = cardId,
+    };
     public static NetIntent Move(int actor, HexCoord from, HexCoord to) => new()
     {
         T = (int)NetIntentType.Move, A = actor, Q2 = from.Q, R2 = from.R, Q = to.Q, R = to.R,

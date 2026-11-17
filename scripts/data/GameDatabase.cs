@@ -19,6 +19,9 @@ public sealed class UnitDef
     public bool CanHitGround { get; set; } = true;
     public bool IsAir { get; set; }
 
+    /// <summary>海军单位：只能在水面部署/移动/停留。</summary>
+    public bool Navy { get; set; }
+
     /// <summary>
     /// 自杀式单位（FPV 无人机）：攻击时冲到目标格自爆，造成伤害后自己也死亡。
     /// </summary>
@@ -44,6 +47,9 @@ public sealed class BuildingDef
     public bool CanHitGround { get; set; } = true;
     public string Model { get; set; } = "";
     public string Preview { get; set; } = "";
+
+    /// <summary>海军基地：只能建在临接陆地的水面上。</summary>
+    public bool NavyBase { get; set; }
 
     /// <summary>总览页展示的功能描述。</summary>
     public string DescZh { get; set; } = "";

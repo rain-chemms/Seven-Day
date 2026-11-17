@@ -5,11 +5,31 @@
     "descEn": "Core building: losing it means defeat. Generates gold and has range-2 anti-air/anti-ground fire.",
     "nameZh": "指挥部",
     "nameEn": "HQ",
-    "hp": [1000, 1200, 1500],
-    "income": [100, 150, 200],
-    "upgradeCost": [0, 500, 1000],
-    "controlRadius": [2, 3, 3],
-    "attackDamage": [225, 275, 350],
+    "hp": [
+      1000,
+      1200,
+      1500
+    ],
+    "income": [
+      100,
+      150,
+      200
+    ],
+    "upgradeCost": [
+      0,
+      500,
+      1000
+    ],
+    "controlRadius": [
+      2,
+      3,
+      3
+    ],
+    "attackDamage": [
+      225,
+      275,
+      350
+    ],
     "attackRange": 2,
     "canHitAir": true,
     "canHitGround": true,
@@ -22,11 +42,31 @@
     "descEn": "Economy building: generates gold every turn, cannot attack.",
     "nameZh": "城市",
     "nameEn": "City",
-    "hp": [200, 250, 300],
-    "income": [100, 150, 200],
-    "upgradeCost": [100, 200, 400],
-    "controlRadius": [1, 1, 2],
-    "attackDamage": [0, 0, 0],
+    "hp": [
+      200,
+      250,
+      300
+    ],
+    "income": [
+      100,
+      150,
+      200
+    ],
+    "upgradeCost": [
+      100,
+      200,
+      400
+    ],
+    "controlRadius": [
+      1,
+      1,
+      2
+    ],
+    "attackDamage": [
+      0,
+      0,
+      0
+    ],
     "attackRange": 0,
     "canHitAir": false,
     "canHitGround": false,
@@ -36,19 +76,50 @@
   {
     "id": "barracks",
     "spawnByLevel": [
-      ["unit_infantry"],
-      ["unit_infantry", "unit_fpv_drone", "unit_tank"],
-      ["unit_infantry", "unit_fpv_drone", "unit_tank", "unit_missile_launcher"]
+      [
+        "unit_infantry"
+      ],
+      [
+        "unit_infantry",
+        "unit_fpv_drone",
+        "unit_tank"
+      ],
+      [
+        "unit_infantry",
+        "unit_fpv_drone",
+        "unit_tank",
+        "unit_missile_launcher"
+      ]
     ],
     "descZh": "提供控制区、扩展前线；自身不产出金币。",
     "descEn": "Extends your control zone; no gold income.",
     "nameZh": "兵营",
     "nameEn": "Barracks",
-    "hp": [300, 450, 600],
-    "income": [0, 0, 0],
-    "upgradeCost": [200, 250, 500],
-    "controlRadius": [1, 1, 2],
-    "attackDamage": [0, 0, 0],
+    "hp": [
+      300,
+      450,
+      600
+    ],
+    "income": [
+      0,
+      0,
+      0
+    ],
+    "upgradeCost": [
+      200,
+      250,
+      500
+    ],
+    "controlRadius": [
+      1,
+      1,
+      2
+    ],
+    "attackDamage": [
+      0,
+      0,
+      0
+    ],
     "attackRange": 0,
     "canHitAir": false,
     "canHitGround": false,
@@ -58,19 +129,48 @@
   {
     "id": "helipad",
     "spawnByLevel": [
-      ["unit_fpv_drone"],
-      ["unit_fpv_drone", "unit_helicopter"],
-      ["unit_fpv_drone", "unit_helicopter", "unit_fighter"]
+      [
+        "unit_fpv_drone"
+      ],
+      [
+        "unit_fpv_drone",
+        "unit_helicopter"
+      ],
+      [
+        "unit_fpv_drone",
+        "unit_helicopter",
+        "unit_fighter"
+      ]
     ],
     "descZh": "提供控制区、扩展前线；空中部队的集结地。",
     "descEn": "Extends your control zone; staging ground for air units.",
     "nameZh": "直升机坪",
     "nameEn": "Helipad",
-    "hp": [300, 450, 600],
-    "income": [0, 0, 0],
-    "upgradeCost": [250, 250, 500],
-    "controlRadius": [1, 1, 2],
-    "attackDamage": [0, 0, 0],
+    "hp": [
+      300,
+      450,
+      600
+    ],
+    "income": [
+      0,
+      0,
+      0
+    ],
+    "upgradeCost": [
+      250,
+      250,
+      500
+    ],
+    "controlRadius": [
+      1,
+      1,
+      2
+    ],
+    "attackDamage": [
+      0,
+      0,
+      0
+    ],
     "attackRange": 0,
     "canHitAir": false,
     "canHitGround": false,
@@ -84,11 +184,31 @@
     "nameZh": "炮台",
     "nameEn": "Gun Turret",
     "extraFireCost": 50,
-    "hp": [400, 600, 750],
-    "income": [0, 0, 0],
-    "upgradeCost": [250, 300, 400],
-    "controlRadius": [1, 1, 2],
-    "attackDamage": [150, 200, 300],
+    "hp": [
+      400,
+      600,
+      750
+    ],
+    "income": [
+      0,
+      0,
+      0
+    ],
+    "upgradeCost": [
+      250,
+      300,
+      400
+    ],
+    "controlRadius": [
+      1,
+      1,
+      2
+    ],
+    "attackDamage": [
+      150,
+      200,
+      300
+    ],
     "attackRange": 1,
     "canHitAir": false,
     "canHitGround": true,
@@ -102,11 +222,31 @@
     "nameZh": "防空炮",
     "nameEn": "AA Gun",
     "extraFireCost": 50,
-    "hp": [400, 600, 750],
-    "income": [0, 0, 0],
-    "upgradeCost": [200, 250, 350],
-    "controlRadius": [1, 1, 2],
-    "attackDamage": [200, 300, 450],
+    "hp": [
+      400,
+      600,
+      750
+    ],
+    "income": [
+      0,
+      0,
+      0
+    ],
+    "upgradeCost": [
+      200,
+      250,
+      350
+    ],
+    "controlRadius": [
+      1,
+      1,
+      2
+    ],
+    "attackDamage": [
+      200,
+      300,
+      450
+    ],
     "attackRange": 2,
     "canHitAir": true,
     "canHitGround": false,
@@ -118,17 +258,92 @@
     "descZh": "每回合产出一张「导弹袭击」加入手牌；本体不参与攻击。",
     "descEn": "Produces one Missile Strike card each turn; does not attack itself.",
     "nameZh": "巡航导弹井",
-    "hiddenParts": ["Silo_Missile", "Silo_Flame"],
+    "hiddenParts": [
+      "Silo_Missile",
+      "Silo_Flame"
+    ],
     "nameEn": "Missile Silo",
-    "hp": [200, 300, 400],
-    "income": [0, 0, 0],
-    "upgradeCost": [500, 1000, 2000],
-    "controlRadius": [1, 1, 2],
-    "attackDamage": [0, 0, 0],
+    "hp": [
+      200,
+      300,
+      400
+    ],
+    "income": [
+      0,
+      0,
+      0
+    ],
+    "upgradeCost": [
+      500,
+      1000,
+      2000
+    ],
+    "controlRadius": [
+      1,
+      1,
+      2
+    ],
+    "attackDamage": [
+      0,
+      0,
+      0
+    ],
     "attackRange": 0,
     "canHitAir": false,
     "canHitGround": false,
     "model": "res://gameAsset/models/buildings/missileSilo/missileSilo.glb",
     "preview": "res://gameAsset/textures/buildingsPreview/preview_missileSilo.png"
+  },
+  {
+    "id": "navyBase",
+    "navyBase": true,
+    "spawnByLevel": [
+      [
+        "unit_submarine"
+      ],
+      [
+        "unit_submarine",
+        "unit_destroyer"
+      ],
+      [
+        "unit_submarine",
+        "unit_destroyer",
+        "unit_carrier"
+      ]
+    ],
+    "descZh": "海军基地：只能建在临接陆地的水面上；每 3 回合产出一张「潜水艇」卡（虚无·消耗），等级越高可出兵的舰种越多。",
+    "descEn": "Naval base: build on water adjacent to land; every 3 turns adds a Submarine card (Ethereal, Exhaust). Higher levels unlock more ships.",
+    "nameZh": "海军基地",
+    "nameEn": "Naval Base",
+    "hp": [
+      300,
+      450,
+      600
+    ],
+    "income": [
+      0,
+      0,
+      0
+    ],
+    "upgradeCost": [
+      150,
+      250,
+      650
+    ],
+    "controlRadius": [
+      1,
+      2,
+      3
+    ],
+    "attackDamage": [
+      0,
+      0,
+      0
+    ],
+    "attackRange": 0,
+    "canHitAir": false,
+    "canHitGround": false,
+    "model": "res://gameAsset/models/buildings/naveBase/navyBase.glb",
+    "preview": "res://gameAsset/textures/buildingsPreview/preview_navyBase.png"
   }
 ]

@@ -64,7 +64,8 @@
     "isAir": true,
     "suicide": true,
     "model": "res://gameAsset/models/militaries/fpvDrone/fpvDrone.glb"
-  },  {
+  },
+  {
     "id": "fighter",
     "nameZh": "战斗机",
     "nameEn": "Fighter",
@@ -76,5 +77,47 @@
     "canHitGround": true,
     "isAir": true,
     "model": "res://gameAsset/models/militaries/fighter/fighter.glb"
+  },
+  {
+    "id": "submarine",
+    "nameZh": "潜水艇",
+    "nameEn": "Submarine",
+    "hp": 250,
+    "damage": 200,
+    "move": 4,
+    "range": 1,
+    "canHitAir": false,
+    "canHitGround": true,
+    "isAir": false,
+    "navy": true,
+    "model": "res://gameAsset/models/militaries/submarine/submarine.glb"
+  },
+  {
+    "id": "carrier",
+    "nameZh": "航空母舰",
+    "nameEn": "Aircraft Carrier",
+    "hp": 950,
+    "damage": 350,
+    "move": 1,
+    "range": 2,
+    "canHitAir": true,
+    "canHitGround": true,
+    "isAir": false,
+    "navy": true,
+    "model": "res://gameAsset/models/militaries/carrier/carrier.glb"
+  },
+  {
+    "id": "destroyer",
+    "nameZh": "驱逐舰",
+    "nameEn": "Destroyer",
+    "hp": 475,
+    "damage": 250,
+    "move": 2,
+    "range": 3,
+    "canHitAir": true,
+    "canHitGround": true,
+    "isAir": false,
+    "navy": true,
+    "model": "res://gameAsset/models/militaries/destroyer/destroyer.glb"
   }
 ]

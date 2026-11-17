@@ -25,6 +25,18 @@ public partial class HexMapView : Node3D
 
     /// <summary>联机镜像视角：自己的基地在地图另一端，朝向要整体翻转。</summary>
     private bool _mirrored;
+    private readonly Dictionary<int, List<ShaderMaterial>> _subMats = new();
+    private readonly Dictionary<int, List<MeshInstance3D>> _subMeshes = new();
+    private readonly Dictionary<int, float> _subAlpha = new();
+
+    private static readonly Shader CelNormal =
+        GD.Load<Shader>("res://gameAsset/shaders/toon_type/toon_cel.gdshader");
+    private static readonly Shader CelSub =
+        GD.Load<Shader>("res://gameAsset/shaders/toon_type/toon_cel_sub.gdshader");
+    private static readonly Shader OutlineNormal =
+        GD.Load<Shader>("res://gameAsset/shaders/toon_type/toon_outline.gdshader");
+    private static readonly Shader OutlineSub =
+        GD.Load<Shader>("res://gameAsset/shaders/toon_type/toon_outline_sub.gdshader");
     private Mesh _hexMesh;
     private Mesh _ringMesh;
     private Mesh _borderMesh;
@@ -688,6 +700,31 @@ public partial class HexMapView : Node3D
                      $"centerOff=({offset.X:F2}, {offset.Z:F2})");
         }
     }
+    /// <summary>
+    /// 远端玩家操作的“点击反馈”：在单位脚下放一圈快速扩散的环，
+    /// 用于联机时让对方看到是哪个单位在动 / 点了哪个格子。
+    /// </summary>
+    public void PulseUnit(int unitId, Color color, float seconds = 0.7f)
+    {
+        if (!_unitViews.TryGetValue(unitId, out Node3D view) || !IsInstanceValid(view))
+            return;
+
+        var ring = new MeshInstance3D
+        {
+            Mesh = _ringMesh,
+            Position = view.Position + Vector3.Up * 0.03f,
+            MaterialOverride = MakeUnshaded(color, noDepth: true),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        AddChild(ring);
+
+        var tween = CreateTween();
+        tween.SetParallel(true);
+        tween.TweenProperty(ring, "scale", new Vector3(1.9f, 1f, 1.9f), seconds);
+        tween.TweenProperty(ring.MaterialOverride, "albedo_color", new Color(color, 0f), seconds);
+        tween.SetParallel(false);
+        tween.TweenCallback(Callable.From(ring.QueueFree));
+    }
     public void FlashCell(HexCoord coord, Color color, float seconds = 0.45f)
     {
         var mi = new MeshInstance3D
@@ -900,14 +937,21 @@ public partial class HexMapView : Node3D
         }
 
         string path = string.IsNullOrEmpty(u.Def.Model) ? "" : u.Def.Model;
-        Node3D model = ModelUtil.SpawnModel(path, root, u.IsAir ? 1.3f : 1.05f, 0, out _,
+        float modelWidth = u.DefId switch
+        {
+            "carrier" => 1.55f,
+            "destroyer" => 1.4f,
+            "submarine" => 1.2f,
+            _ => u.IsAir ? 1.3f : 1.05f,
+        };
+        Node3D model = ModelUtil.SpawnModel(path, root, modelWidth, 0, out _,
             outlineColor: ToonMaterial.OutlineFor(u.Owner));
         if (model != null)
         {
             model.Name = u.DefId;
             _unitMaterials[u.Id] = (path, model.Scale.X, u.Owner);
 
-            UnitAnimator animator = UnitAnimator.Build(model);
+            UnitAnimator animator = UnitAnimator.Build(model, u.DefId);
             if (animator.HasAnimations)
             {
                 // 空中单位的移动片段（盘旋/俯冲循环）本来就慢，加快播放才像在飞：
@@ -937,6 +981,14 @@ public partial class HexMapView : Node3D
         }
 
         RotateToward(root, u.Owner);
+
+        if (u.DefId == "submarine")
+        {
+            PrepareSubmarineMaterials(u.Id, root);
+            float initial = u.Submerged ? (u.Owner == PlayerId.Player ? 0.5f : 0.0f) : 1.0f;
+            ApplySubmarineAlpha(u.Id, initial);
+        }
+
         PopIn(root, 0.32f);
         return root;
     }
@@ -946,6 +998,99 @@ public partial class HexMapView : Node3D
     {
         bool rightFacing = (owner == PlayerId.Player) ^ _mirrored;
         node.RotationDegrees = new Vector3(0, rightFacing ? 90 : -90, 0);
+    }
+
+    /// <summary>
+    /// 给潜艇的材质做实例副本（含描边 next_pass），这样才能单独调透明度，
+    /// 不影响到同类型的其它潜艇。
+    /// </summary>
+    private void PrepareSubmarineMaterials(int unitId, Node3D view)
+    {
+        var list = new List<ShaderMaterial>();
+        var meshes = new List<MeshInstance3D>();
+        foreach (MeshInstance3D mi in view.FindChildren("*", "MeshInstance3D", true, false)
+                     .Cast<MeshInstance3D>())
+        {
+            if (mi.MaterialOverride is not ShaderMaterial sm)
+                continue;
+
+            var copy = (ShaderMaterial)sm.Duplicate(true);
+            copy.Shader = CelNormal;
+            if (copy.NextPass is ShaderMaterial outline)
+                outline.Shader = OutlineNormal;
+
+            mi.MaterialOverride = copy;
+            list.Add(copy);
+            meshes.Add(mi);
+        }
+
+        _subMats[unitId] = list;
+        _subMeshes[unitId] = meshes;
+        _subAlpha[unitId] = 1f;
+    }
+
+    private void ApplySubmarineAlpha(int unitId, float alpha)
+    {
+        if (!_subMats.TryGetValue(unitId, out List<ShaderMaterial> mats))
+            return;
+
+        _subAlpha[unitId] = alpha;
+
+        bool transparent = alpha < 0.999f;
+        foreach (ShaderMaterial m in mats)
+        {
+            if (!IsInstanceValid(m))
+                continue;
+
+            // 只有真正需要透明时才换成潜艇专用的透明 shader，
+            // 浮出后换回普通材质，避免影响其它模型的渲染。
+            Shader target = transparent ? CelSub : CelNormal;
+            if (m.Shader != target)
+            {
+                m.Shader = target;
+            }
+
+            if (transparent)
+                m.SetShaderParameter("alpha", alpha);
+
+            if (m.NextPass is ShaderMaterial outline)
+            {
+                Shader outlineTarget = transparent ? OutlineSub : OutlineNormal;
+                if (outline.Shader != outlineTarget)
+                    outline.Shader = outlineTarget;
+
+                if (transparent)
+                    outline.SetShaderParameter("alpha", alpha);
+            }
+        }
+
+        // 完全透明（敌方深潜）时连影子也不要留
+        if (_subMeshes.TryGetValue(unitId, out List<MeshInstance3D> meshes))
+        {
+            foreach (MeshInstance3D mi in meshes)
+            {
+                if (IsInstanceValid(mi))
+                    mi.CastShadow = alpha < 0.99f
+                        ? GeometryInstance3D.ShadowCastingSetting.Off
+                        : GeometryInstance3D.ShadowCastingSetting.On;
+            }
+        }
+    }
+
+    private float CurrentSubmarineAlpha(int unitId) =>
+        _subAlpha.TryGetValue(unitId, out float alpha) ? alpha : 1f;
+
+    /// <summary>潜艇外观：浮出 = 不透明；深潜时己方 0.5、敌方 0（连描边一起消失）。</summary>
+    public void SetSubmarineLook(int unitId, bool submerged, bool isLocalOwner, float duration = 0.35f)
+    {
+        if (!_subMats.ContainsKey(unitId))
+            return;
+
+        float target = submerged ? (isLocalOwner ? 0.5f : 0.0f) : 1.0f;
+        var tween = CreateTween();
+        tween.TweenMethod(Callable.From<float>(v => ApplySubmarineAlpha(unitId, v)),
+                CurrentSubmarineAlpha(unitId), target, duration)
+            .SetTrans(Tween.TransitionType.Sine).SetEase(Tween.EaseType.InOut);
     }
 
     /// <summary>让单位转向某个世界坐标（模型的正面是本地 +Z）。</summary>
@@ -971,6 +1116,40 @@ public partial class HexMapView : Node3D
             .SetTrans(Tween.TransitionType.Cubic)
             .SetEase(Tween.EaseType.Out);
     }
+
+    /// <summary>调试：潜艇各网格/材质的透明状态。</summary>
+    public string DebugSubmarineMaterials(int unitId)
+    {
+        var sb = new System.Text.StringBuilder();
+        if (_subMeshes.TryGetValue(unitId, out List<MeshInstance3D> meshes))
+        {
+            foreach (MeshInstance3D mi in meshes)
+            {
+                var sm = mi.MaterialOverride as ShaderMaterial;
+                string shader = sm?.Shader?.ResourcePath ?? "null";
+                string alpha = sm != null ? sm.GetShaderParameter("alpha").ToString() : "-";
+                string outline = sm?.NextPass is ShaderMaterial op
+                    ? (op.Shader?.ResourcePath ?? "null") + ":" + op.GetShaderParameter("alpha")
+                    : "none";
+                sb.Append($"[{mi.Name} mesh={mi.Mesh?.GetSurfaceCount() ?? 0} shader={shader.GetFile()} a={alpha} outline={outline}]");
+            }
+            if (_subMats.TryGetValue(unitId, out List<ShaderMaterial> mats))
+            {
+                int i = 0;
+                foreach (ShaderMaterial m in mats)
+                {
+                    bool same = i < meshes.Count && ReferenceEquals(m, meshes[i].MaterialOverride);
+                    sb.Append($"[list{i}:{m.Shader?.ResourcePath.GetFile()} a={m.GetShaderParameter("alpha")} same={same}]");
+                    i++;
+                }
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>调试：单位当前透明度（0=不透明）。</summary>
+    public float DebugUnitTransparency(int unitId) =>
+        _subMats.ContainsKey(unitId) ? CurrentSubmarineAlpha(unitId) : 0f;
 
     /// <summary>调试：单位当前朝向（度）。</summary>
     public float DebugUnitYaw(int unitId) =>
@@ -1237,7 +1416,28 @@ public partial class HexMapView : Node3D
             ? ToonMaterial.SelectedOutline
             : ToonMaterial.OutlineFor(info.Owner);
 
+        // 潜艇有独立的材质副本（透明度/描边 alpha）：只改描边颜色，
+        // 不能用 ToonMaterial.Apply 重新套共享材质，否则会把透明状态覆盖掉。
+        if (_subMats.ContainsKey(unitId))
+        {
+            ApplySubmarineOutlineColor(unitId, color);
+            return;
+        }
+
         ToonMaterial.Apply(view, info.Path, info.Scale, color);
+    }
+
+    private void ApplySubmarineOutlineColor(int unitId, Color? color)
+    {
+        if (!_subMats.TryGetValue(unitId, out List<ShaderMaterial> mats) || color == null)
+            return;
+
+        var rgb = new Vector3(color.Value.R, color.Value.G, color.Value.B);
+        foreach (ShaderMaterial m in mats)
+        {
+            if (IsInstanceValid(m) && m.NextPass is ShaderMaterial outline)
+                outline.SetShaderParameter("outline_color", rgb);
+        }
     }
 
     /// <summary>设置当前选中建筑（-1 = 取消）：选中的用黄色描边，其余恢复阵营色。</summary>

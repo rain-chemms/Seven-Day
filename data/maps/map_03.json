@@ -1,0 +1,61 @@
+{
+  "id": "map_03",
+  "nameZh": "海战试验场",
+  "nameEn": "Naval Test Range",
+  "descZh": "海战测试地图：两侧陆地、中央宽阔水域与一座小岛，适合测试海军基地、潜艇潜航、航母雷达与驱逐舰火力。",
+  "descEn": "Naval test map: land on both flanks, a wide central sea and one island. Ideal for testing naval bases, submarine diving, carrier radar and destroyer fire.",
+  "width": 13,
+  "height": 11,
+  "startGold": 800,
+  "terrainRows": [
+    "gggggwwwwgggg",
+    "ggggwwwwwgggg",
+    "gggwwwwwwwggg",
+    "ggwwwwwwwwwgg",
+    "ggwwwwgwwwwgg",
+    "gwwwwwgwwwwwg",
+    "ggwwwwgwwwwgg",
+    "ggwwwwwwwwwgg",
+    "gggwwwwwwwggg",
+    "ggggwwwwwgggg",
+    "gggggwwwwgggg"
+  ],
+  "playerHq": [
+    -1,
+    3
+  ],
+  "enemyHq": [
+    11,
+    3
+  ],
+  "playerDeck": [
+    "unit_submarine",
+    "unit_submarine",
+    "unit_destroyer",
+    "unit_destroyer",
+    "unit_carrier",
+    "unit_infantry",
+    "unit_infantry",
+    "unit_tank",
+    "unit_missile_launcher",
+    "unit_helicopter",
+    "unit_fighter",
+    "magic_repair",
+    "magic_boost"
+  ],
+  "enemyDeck": [
+    "unit_submarine",
+    "unit_submarine",
+    "unit_destroyer",
+    "unit_destroyer",
+    "unit_carrier",
+    "unit_infantry",
+    "unit_infantry",
+    "unit_tank",
+    "unit_missile_launcher",
+    "unit_helicopter",
+    "unit_fighter",
+    "magic_missile",
+    "magic_boost"
+  ]
+}

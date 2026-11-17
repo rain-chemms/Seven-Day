@@ -1786,7 +1786,7 @@ public partial class MainMenu : Node3D
         grid.AddThemeConstantOverride("separation", 8);
         outer.AddChild(grid);
 
-        string[] ids = { "hq", "city", "barracks", "gunTurret", "aaGun", "missileSilo", "helipad" };
+        string[] ids = { "hq", "city", "barracks", "gunTurret", "aaGun", "missileSilo", "helipad", "navyBase" };
         foreach (string id in ids)
         {
             Data.BuildingDef def = Data.GameDatabase.Building(id);

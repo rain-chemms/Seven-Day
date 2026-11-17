@@ -76,6 +76,18 @@ public sealed class UnitInst
     /// <summary>本回合刚由建筑出兵：登场当回合不能行动，下回合恢复。</summary>
     public bool SpawnedThisTurn;
 
+    /// <summary>潜艇：当前是否深潜（默认浮出）。</summary>
+    public bool Submerged;
+
+    /// <summary>潜艇：本回合是否已经切换过潜浮。</summary>
+    public bool DiveUsed;
+
+    /// <summary>航母：本回合是否已经用过雷达搜索。</summary>
+    public bool RadarUsed;
+
+    /// <summary>航母：本回合是否已经出过兵。</summary>
+    public bool CarrierSpawnUsed;
+
     public int MaxHp => Def.Hp;
     public bool IsAir => Def.IsAir;
     public bool Alive => Hp > 0;
@@ -281,16 +293,36 @@ public sealed class BattleState
 
     public BuildingInst BuildingAt(HexCoord c) => Cell(c)?.Building;
 
-    /// <summary>该格是否可以被 player 建造：非水面、无建筑、在己方控制区、不在敌方控制区。</summary>
-    public bool CanBuildAt(HexCoord coord, PlayerId player)
+    /// <summary>
+    /// 该格是否可以被 player 建造：陆地建筑要非水面；海军基地要「临接陆地的水面」。
+    /// 都要求无建筑、己方控制区且不与敌方重叠。
+    /// </summary>
+    public bool CanBuildAt(HexCoord coord, PlayerId player, string defId = "")
     {
         Cell cell = Cell(coord);
         if (cell == null || cell.Building != null)
             return false;
 
-        // 水面不能建造
-        if (cell.Terrain == TerrainType.Water)
+        bool navyBase = defId == "navyBase";
+        if (navyBase)
+        {
+            if (cell.Terrain != TerrainType.Water)
+                return false;
+
+            // 四周全是水面的格子不能建海军基地
+            bool nearLand = coord.Neighbors().Any(nb =>
+            {
+                Cell n = Cell(nb);
+                return n != null && n.Terrain != TerrainType.Water;
+            });
+            if (!nearLand)
+                return false;
+        }
+        else if (cell.Terrain == TerrainType.Water)
+        {
+            // 陆军建筑不能建在水面
             return false;
+        }
 
         // 敌方单位站着的格子不能造（否则会出现「陆军停在敌方建筑上」）
         PlayerId foe = player == PlayerId.Player ? PlayerId.Enemy : PlayerId.Player;
@@ -299,10 +331,13 @@ public sealed class BattleState
 
         if (!cell.ControlPlayer && !cell.ControlEnemy)
             return false;
-        bool mine = player == PlayerId.Player ? cell.ControlPlayer : cell.ControlEnemy;
-        bool theirs = player == PlayerId.Player ? cell.ControlEnemy : cell.ControlPlayer;
-        return mine && !theirs;
+        // 争夺区（双方控制区重叠）也允许双方建造
+        return player == PlayerId.Player ? cell.ControlPlayer : cell.ControlEnemy;
     }
+
+    /// <summary>这一格能否建造任意建筑（含海军基地）。</summary>
+    public bool CanBuildAnythingAt(HexCoord coord, PlayerId player) =>
+        CanBuildAt(coord, player) || CanBuildAt(coord, player, "navyBase");
 
     public bool TryBuild(PlayerId player, string defId, HexCoord coord, out string error)
     {
@@ -314,11 +349,24 @@ public sealed class BattleState
             return false;
         }
 
-        if (!CanBuildAt(coord, player))
+        if (!CanBuildAt(coord, player, defId))
         {
-            error = Cell(coord)?.Terrain == TerrainType.Water
-                ? "水面不能建造"
-                : "只能建在自己的控制区内，且不能与敌方控制区重叠";
+            Cell target = Cell(coord);
+            if (defId == "navyBase")
+            {
+                error = target == null || target.Terrain != TerrainType.Water
+                    ? "海军基地只能建在水面上"
+                    : !coord.Neighbors().Any(nb => Cell(nb) != null && Cell(nb).Terrain != TerrainType.Water)
+                        ? "海军基地必须临接陆地"
+                        : "只能建在自己或争夺区的控制区内";
+            }
+            else
+            {
+                error = target?.Terrain == TerrainType.Water
+                    ? "水面不能建造（海军基地除外）"
+                    : "只能建在自己或争夺区的控制区内";
+            }
+
             return false;
         }
 
@@ -525,6 +573,123 @@ public sealed class BattleState
         reason = "";
         return spawned;
     }
+    // ─────────────────────────── 海军特殊能力 ───────────────────────────
+    /// <summary>航母可出动的舰载机卡。</summary>
+    public static readonly string[] CarrierAircraft = { "unit_fighter", "unit_helicopter" };
+
+    /// <summary>切换潜艇潜浮状态（每回合一次）。</summary>
+    public bool ToggleSubmarineDive(UnitInst u, out string error)
+    {
+        error = "";
+        if (u == null || !u.Alive || u.DefId != "submarine")
+        {
+            error = "不是潜水艇";
+            return false;
+        }
+
+        if (u.DiveUsed)
+        {
+            error = "本回合已经切换过潜浮状态";
+            return false;
+        }
+
+        u.Submerged = !u.Submerged;
+        u.DiveUsed = true;
+        return true;
+    }
+
+    /// <summary>航母雷达搜索：射程内敌方潜艇全部浮出（每回合一次）。</summary>
+    public bool UseCarrierRadar(UnitInst carrier, out string error, out int revealed)
+    {
+        error = "";
+        revealed = 0;
+        if (carrier == null || !carrier.Alive || carrier.DefId != "carrier")
+        {
+            error = "不是航空母舰";
+            return false;
+        }
+
+        if (carrier.RadarUsed)
+        {
+            error = "本回合已经搜索过";
+            return false;
+        }
+
+        int range = AttackRangeOf(carrier);
+        foreach (UnitInst other in Units)
+        {
+            if (!other.Alive || other.Owner == carrier.Owner || other.DefId != "submarine")
+                continue;
+            if (!other.Submerged)
+                continue;
+            if (HexCoord.Distance(carrier.Coord, other.Coord) > range)
+                continue;
+
+            other.Submerged = false;
+            revealed++;
+        }
+
+        carrier.RadarUsed = true;
+        return true;
+    }
+
+    public bool CanCarrierSpawn(UnitInst carrier, string cardId, out string error)
+    {
+        error = "";
+        if (carrier == null || !carrier.Alive || carrier.DefId != "carrier")
+        {
+            error = "不是航空母舰";
+            return false;
+        }
+
+        if (System.Array.IndexOf(CarrierAircraft, cardId) < 0)
+        {
+            error = "航母只能出动战斗机或武装直升机";
+            return false;
+        }
+
+        if (carrier.CarrierSpawnUsed)
+        {
+            error = "本回合已经出过兵";
+            return false;
+        }
+
+        int cost = UnitCost(cardId);
+        if (StateOf(carrier.Owner).Gold < cost)
+        {
+            error = "金币不足";
+            return false;
+        }
+
+        return true;
+    }
+
+    public UnitInst TryCarrierSpawn(UnitInst carrier, string cardId, out string error)
+    {
+        if (!CanCarrierSpawn(carrier, cardId, out error))
+            return null;
+
+        CardDef card = GameDatabase.Card(cardId);
+        UnitDef def = GameDatabase.Unit(card?.Unit);
+        if (def == null)
+        {
+            error = "找不到兵种";
+            return null;
+        }
+
+        StateOf(carrier.Owner).Gold -= UnitCost(cardId);
+        UnitInst spawned = SpawnUnit(def.Id, carrier.Owner, carrier.Coord);
+        if (spawned != null)
+        {
+            spawned.SpawnedThisTurn = true;
+            spawned.Moved = true;
+            spawned.Attacked = true;
+        }
+
+        carrier.CarrierSpawnUsed = true;
+        error = "";
+        return spawned;
+    }
     // ─────────────────────────── 地形效果 ───────────────────────────
 
     /// <summary>该格地形（越界按泥土处理）。</summary>
@@ -630,7 +795,15 @@ public sealed class BattleState
                 Cell cell = Cell(nb);
                 if (cell == null)
                     continue;
-                if (!u.IsAir && !cell.CanGroundEnter(u.Owner))
+                if (u.Def.Navy)
+                {
+                    // 海军只能在水面移动；有建筑时只能停自家建筑
+                    if (cell.Terrain != TerrainType.Water)
+                        continue;
+                    if (cell.Building != null && cell.Building.Owner != u.Owner)
+                        continue;
+                }
+                else if (!u.IsAir && !cell.CanGroundEnter(u.Owner))
                     continue;
                 if (visited.ContainsKey(nb))
                     continue;
@@ -730,6 +903,10 @@ public sealed class BattleState
         if (u == null || !u.Alive || u.Attacked)
             yield break;
 
+        // 深潜状态只能移动，不能攻击
+        if (u.DefId == "submarine" && u.Submerged)
+            yield break;
+
         foreach (HexCoord h in HexCoord.Spiral(u.Coord, AttackRangeOf(u)))
         {
             Cell cell = Cell(h);
@@ -744,6 +921,11 @@ public sealed class BattleState
                     continue;
                 if (!other.IsAir && !u.Def.CanHitGround)
                     continue;
+
+                // 敌方深潜潜艇不可见、不可被瞄准
+                if (other.DefId == "submarine" && other.Submerged)
+                    continue;
+
                 yield return (other, null);
             }
 
@@ -915,22 +1097,33 @@ public sealed class BattleState
             return false;
         }
 
-        // 陆军不能部署到水面（空军可以）
         UnitDef unitDef = GameDatabase.Unit(card.Unit);
-        if (unitDef != null && !unitDef.IsAir && cell.Terrain == TerrainType.Water)
+        if (unitDef != null)
         {
-            error = "陆军不能部署在水面上";
-            return false;
+            if (unitDef.Navy)
+            {
+                // 海军只能部署在水面
+                if (cell.Terrain != TerrainType.Water)
+                {
+                    error = "海军只能部署在水面上";
+                    return false;
+                }
+            }
+            else if (!unitDef.IsAir && cell.Terrain == TerrainType.Water)
+            {
+                error = "陆军不能部署在水面上";
+                return false;
+            }
         }
 
         bool mine = player == PlayerId.Player ? cell.ControlPlayer : cell.ControlEnemy;
-        bool theirs = player == PlayerId.Player ? cell.ControlEnemy : cell.ControlPlayer;
-        if (!mine || theirs)
+        if (!mine)
         {
-            error = "只能部署在自己的控制区内";
+            error = "只能部署在自己的控制区内（争夺区双方都可以出兵）";
             return false;
         }
 
+        // 争夺区（双方控制区重叠）允许双方出兵
         return true;
     }
 
@@ -1272,6 +1465,9 @@ public sealed class BattleState
             u.Moved = false;
             u.Attacked = false;
             u.SpawnedThisTurn = false;
+            u.DiveUsed = false;
+            u.RadarUsed = false;
+            u.CarrierSpawnUsed = false;
         }
 
         foreach (BuildingInst b in Buildings.Where(b => b.Owner == who))
@@ -1490,7 +1686,7 @@ public sealed class BattleState
 
     /// <summary>这座建筑会不会产卡（指挥部抽牌 / 兵营、机坪发兵种卡 / 导弹井发导弹卡）。</summary>
     public static bool IsCardProducer(string defId) =>
-        defId is "hq" or "barracks" or "helipad" or "missileSilo";
+        defId is "hq" or "barracks" or "helipad" or "missileSilo" or "navyBase";
 
     private void GrantBuildingCards(BuildingInst b, PlayerState st)
     {
@@ -1523,6 +1719,16 @@ public sealed class BattleState
                 }
                 break;
             }
+            case "navyBase":
+                // 每 3 回合给一张潜水艇（虚无 + 消耗）
+                if (TurnNumber % 3 == 0 && AddToHand(st, "unit_submarine"))
+                {
+                    st.Ethereal.Add("unit_submarine");
+                    st.Produced.Add((b.Id, "unit_submarine"));
+                    st.ProducedExhaust.Add("unit_submarine");
+                    ProducedThisTurn.Add(("unit_submarine", b.Coord, st.Hand.Count - 1));
+                }
+                break;
             case "missileSilo":
                 int every = Mathf.Max(1, 4 - b.Level);
                 if (TurnNumber % every == 0 && AddToHand(st, "magic_missile"))

@@ -661,6 +661,16 @@ public sealed class AIController
         if (_difficulty == AIDifficulty.Easy)
             return;
 
+        // 海军基地优先：海战地图上先拿到制海权，再执行常规建造计划
+        if (MyBuildingCount("navyBase") == 0 && _me.Gold >= BuildingCost("navyBase"))
+        {
+            if (TryBuildFirst("navyBase"))
+                return;
+        }
+
+        if (MyBuildingCount("navyBase") > 0 && _me.Gold >= 600 && TryUpgradeFirst("navyBase"))
+            return;
+
         BuildPlan plan = NextBuildPlan();
         if (plan != null && _me.Gold >= plan.Cost)
         {
@@ -689,10 +699,10 @@ public sealed class AIController
         if (def == null || _me.Gold < def.UpgradeCostAt(0))
             return false;
 
-        bool production = defId is "city" or "barracks" or "helipad" or "missileSilo";
+        bool production = defId is "city" or "barracks" or "helipad" or "missileSilo" or "navyBase";
 
         var cells = _s.Cells.Values
-            .Where(c => c.Building == null && _s.CanBuildAt(c.Coord, _id))
+            .Where(c => c.Building == null && _s.CanBuildAt(c.Coord, _id, defId))
             .Select(c => c.Coord)
             .ToList();
 

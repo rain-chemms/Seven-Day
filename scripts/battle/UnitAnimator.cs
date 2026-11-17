@@ -42,6 +42,14 @@ public partial class UnitAnimator : Node
     private float _idleDelay = -1f;
     private float _moveLoopLength;
 
+    private Node3D _model;
+    private bool _procedural;         // 没有动画片段的舰艇：用程序化浮动/后坐
+    private bool _navy;               // 海军舰艇：没有 Attack 片段时用程序化后坐
+    private float _bobPhase;
+    private float _recoil;
+    private Vector3 _basePos = Vector3.Zero;
+    private Vector3 _baseRot = Vector3.Zero;
+
     private Node3D _turret;
     private Vector3 _turretRest = Vector3.Zero;
     private float _turretYaw;
@@ -54,7 +62,7 @@ public partial class UnitAnimator : Node
     /// <summary>炮塔当前相对车体的角度（度）。</summary>
     public float TurretYaw => _turret == null ? 0f : _turret.RotationDegrees.Y - _turretRest.Y;
 
-    public static UnitAnimator Build(Node3D model)
+    public static UnitAnimator Build(Node3D model, string defId = "")
     {
         var animator = new UnitAnimator { Name = "UnitAnimator" };
         model.AddChild(animator);
@@ -64,7 +72,8 @@ public partial class UnitAnimator : Node
         {
             if (n is not Node3D n3 || n is AnimationPlayer)
                 continue;
-            if (!n3.Name.ToString().Contains("Turret"))
+            string nodeName = n3.Name.ToString();
+            if (!nodeName.Contains("Turret") && !nodeName.Contains("DDG_Gun"))
                 continue;
 
             animator._turret = n3;
@@ -137,6 +146,13 @@ public partial class UnitAnimator : Node
             model.AddChild(animator._player);
             animator._hasAny = true;
         }
+
+        // 海军舰艇：素材里没有动画片段时用程序化浮动 + 开火后坐
+        animator._model = model;
+        animator._basePos = model.Position;
+        animator._baseRot = model.RotationDegrees;
+        animator._navy = defId is "carrier" or "destroyer" or "submarine";
+        animator._procedural = !animator._hasAny && animator._navy;
 
         // 旋翼：从片段里读出「转轴 + 平均角速度」，之后自己匀速转
         animator.BuildRotorSpins(model, rotorClips);
@@ -381,7 +397,11 @@ public partial class UnitAnimator : Node
     public void PlayAttack()
     {
         if (_player == null || !_player.HasAnimation("Attack"))
+        {
+            if (_navy)
+                _recoil = 1f;      // 舰艇没有攻击片段：程序化后坐
             return;
+        }
 
         PlayState("Attack", BlendIntoAttack);
         _attackLeft = Mathf.Max(_attackDuration, 0.35f);
@@ -517,6 +537,22 @@ public partial class UnitAnimator : Node
 
     public override void _Process(double delta)
     {
+        if (_navy && !_procedural && _model != null && IsInstanceValid(_model) && _recoil > 0f)
+        {
+            _recoil = Mathf.Max(0f, _recoil - (float)delta * 3.5f);
+            _model.RotationDegrees = _baseRot + new Vector3(-_recoil * 5f, 0f, 0f);
+        }
+
+        if (_procedural && _model != null && IsInstanceValid(_model))
+        {
+            _bobPhase += (float)delta;
+            _recoil = Mathf.Max(0f, _recoil - (float)delta * 3.5f);
+            float bob = Mathf.Sin(_bobPhase * 1.6f) * 0.035f;
+            float roll = Mathf.Sin(_bobPhase * 1.05f) * 1.1f;
+            _model.Position = _basePos + new Vector3(0f, bob, 0f);
+            _model.RotationDegrees = _baseRot + new Vector3(-_recoil * 7f, 0f, roll);
+        }
+
         // 旋翼匀速转
         foreach (RotorSpin rotor in _rotors)
         {

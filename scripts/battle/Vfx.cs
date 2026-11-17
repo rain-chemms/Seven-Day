@@ -689,6 +689,75 @@ public partial class Vfx : Node3D
         KillAfter(root, duration + 1f);
     }
 
+    /// <summary>
+    /// 鱼雷：贴水面直线冲向目标，带白色尾迹与浪花，命中后爆炸（伤害由调用方在命中时结算）。
+    /// </summary>
+    public void Torpedo(Vector3 from, Vector3 to, float duration = 0.5f)
+    {
+        var root = new Node3D();
+        AddChild(root);
+
+        Vector3 start = new Vector3(from.X, TileTopLike(from.Y), from.Z);
+        Vector3 end = new Vector3(to.X, TileTopLike(to.Y), to.Z);
+
+        var body = new MeshInstance3D
+        {
+            Mesh = new CapsuleMesh { Radius = 0.11f, Height = 0.62f },
+            MaterialOverride = new StandardMaterial3D
+            {
+                AlbedoColor = new Color("38545C"),
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            },
+            Position = start,
+        };
+        root.AddChild(body);
+        body.LookAt(end, Vector3.Up);
+        body.RotateObjectLocal(Vector3.Right, Mathf.Pi * 0.5f);
+
+        // 尾迹泡沫：沿路径逐渐出现、淡出
+        var foam = new System.Collections.Generic.List<Node3D>();
+        float elapsed = 0f;
+        Tween fly = CreateTween();
+        fly.TweenMethod(Callable.From<float>(p =>
+        {
+            if (!IsInstanceValid(body))
+                return;
+
+            body.Position = start.Lerp(end, p);
+
+            elapsed += 0.05f;
+            var bubble = new MeshInstance3D
+            {
+                Mesh = new SphereMesh { Radius = 0.10f, Height = 0.16f },
+                MaterialOverride = new StandardMaterial3D
+                {
+                    AlbedoColor = new Color(0.92f, 0.97f, 1f, 0.75f),
+                    ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                    Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                },
+                Position = body.Position + new Vector3(0f, 0.05f, 0f),
+            };
+            root.AddChild(bubble);
+            foam.Add(bubble);
+            var fade = CreateTween();
+            fade.TweenProperty(bubble, "scale", Vector3.One * 0.2f, 0.4f);
+            fade.Parallel().TweenProperty(bubble, "transparency", 1f, 0.4f);
+            fade.Finished += () => { if (IsInstanceValid(bubble)) bubble.QueueFree(); };
+        }), 0f, 1f, duration).SetTrans(Tween.TransitionType.Linear);
+
+        fly.Finished += () =>
+        {
+            Explosion(end + Vector3.Up * 0.12f, 0.85f);
+            if (IsInstanceValid(body))
+                body.QueueFree();
+            if (IsInstanceValid(root))
+                root.QueueFree();
+        };
+
+        KillAfter(root, duration + 1f);
+    }
+
+    private static float TileTopLike(float y) => y;
     private static Vector3 Bezier(Vector3 a, Vector3 b, Vector3 c, float t)
     {
         float u = 1f - t;

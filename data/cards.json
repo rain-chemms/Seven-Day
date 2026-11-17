@@ -58,9 +58,12 @@
     "kind": "unit",
     "unit": "fpvDrone",
     "cost": 75
-  },  {
+  },
+  {
     "id": "magic_airstrike",
-    "keywords": ["exhaust"],
+    "keywords": [
+      "exhaust"
+    ],
     "nameZh": "空袭",
     "nameEn": "Air Strike",
     "descriptionZh": "对一格内敌军造成 250 伤害。防空炮范围内无效。",
@@ -72,7 +75,9 @@
   },
   {
     "id": "magic_missile",
-    "keywords": ["retain"],
+    "keywords": [
+      "retain"
+    ],
     "nameZh": "导弹袭击",
     "nameEn": "Missile Strike",
     "descriptionZh": "对一格内敌军造成 350 伤害。",
@@ -84,7 +89,9 @@
   },
   {
     "id": "magic_repair",
-    "keywords": ["retain"],
+    "keywords": [
+      "retain"
+    ],
     "nameZh": "维修",
     "nameEn": "Repair",
     "descriptionZh": "维修一格内所有己方单位，恢复 200 点生命。",
@@ -104,9 +111,12 @@
     "cost": 250,
     "effect": "supply",
     "power": 3
-  },  {
+  },
+  {
     "id": "magic_boost",
-    "keywords": ["exhaust"],
+    "keywords": [
+      "exhaust"
+    ],
     "nameZh": "强行军",
     "nameEn": "Forced March",
     "descriptionZh": "本回合地面单位移动 +1。",
@@ -115,7 +125,8 @@
     "cost": 100,
     "effect": "boost",
     "power": 1
-  },  {
+  },
+  {
     "id": "magic_exchange_rate",
     "keywords": [],
     "nameZh": "汇率调节",
@@ -127,7 +138,8 @@
     "effect": "gold_percent",
     "power": 5,
     "unit": "exchange_rate"
-  },  {
+  },
+  {
     "id": "magic_reclaim",
     "keywords": [],
     "nameZh": "战场扫荡",
@@ -138,5 +150,35 @@
     "cost": 150,
     "effect": "reclaim_exhaust",
     "power": 1
+  },
+  {
+    "id": "unit_submarine",
+    "nameZh": "潜水艇",
+    "nameEn": "Submarine",
+    "descriptionZh": "只能部署在水面。可切换深潜/浮出：深潜时不可攻击、敌方看不见。",
+    "descriptionEn": "Water only. Toggle dive/surface: submerged submarines cannot attack and are hidden from the enemy.",
+    "kind": "unit",
+    "unit": "submarine",
+    "cost": 350
+  },
+  {
+    "id": "unit_destroyer",
+    "nameZh": "驱逐舰",
+    "nameEn": "Destroyer",
+    "descriptionZh": "水面主力舰，可对陆/海/空，炮塔可旋转。",
+    "descriptionEn": "Navy capital ship. Hits land, sea and air; rotating turret.",
+    "kind": "unit",
+    "unit": "destroyer",
+    "cost": 550
+  },
+  {
+    "id": "unit_carrier",
+    "nameZh": "航空母舰",
+    "nameEn": "Aircraft Carrier",
+    "descriptionZh": "水面巨舰：可雷达搜索敌方潜艇，并每回合出一架战斗机/武装直升机。",
+    "descriptionEn": "Huge carrier: radar sweeps enemy submarines, and launches one fighter or attack helicopter each turn.",
+    "kind": "unit",
+    "unit": "carrier",
+    "cost": 1250
   }
 ]

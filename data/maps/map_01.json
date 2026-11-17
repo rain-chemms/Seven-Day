@@ -18,8 +18,14 @@
     "ssggggddddg",
     "sggggggddds"
   ],
-  "playerHq": [-1, 4],
-  "enemyHq": [7, 4],
+  "playerHq": [
+    -1,
+    4
+  ],
+  "enemyHq": [
+    7,
+    4
+  ],
   "playerDeck": [
     "unit_infantry",
     "unit_infantry",
@@ -31,7 +37,9 @@
     "unit_fighter",
     "magic_airstrike",
     "magic_repair",
-    "magic_boost"
+    "magic_boost",
+    "unit_submarine",
+    "unit_destroyer"
   ],
   "enemyDeck": [
     "unit_infantry",
@@ -44,6 +52,8 @@
     "unit_fighter",
     "magic_missile",
     "magic_repair",
-    "magic_boost"
+    "magic_boost",
+    "unit_submarine",
+    "unit_destroyer"
   ]
 }

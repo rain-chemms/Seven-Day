@@ -547,6 +547,26 @@ public partial class BattleScene
             case NetIntentType.Repair: { BuildingInst b = OwnBuildingAt(to, side); if (b != null) _state.TryRepair(b, out _); break; }
             case NetIntentType.Demolish: { BuildingInst b = OwnBuildingAt(to, side); if (b != null) _state.Demolish(b); break; }
 
+            case NetIntentType.Dive:
+            {
+                UnitInst u = _state.UnitsAt(to).FirstOrDefault(x => x.Owner == side && x.Alive);
+                if (u != null) _state.ToggleSubmarineDive(u, out _);
+                break;
+            }
+
+            case NetIntentType.Radar:
+            {
+                UnitInst u = _state.UnitsAt(to).FirstOrDefault(x => x.Owner == side && x.Alive);
+                if (u != null) _state.UseCarrierRadar(u, out _, out _);
+                break;
+            }
+
+            case NetIntentType.CarrierSpawn:
+            {
+                UnitInst u = _state.UnitsAt(to).FirstOrDefault(x => x.Owner == side && x.Alive);
+                if (u != null) _state.TryCarrierSpawn(u, it.Card, out _);
+                break;
+            }
             case NetIntentType.EndTurn:
                 _state.EndTurn();
                 break;
@@ -1032,7 +1052,7 @@ public partial class BattleScene
 
             case NetIntentType.Build:
             {
-                if (!_state.CanBuildAt(to, side))
+                if (!_state.CanBuildAt(to, side, it.Id))
                 {
                     why = "这里不能建造";
                     return false;
@@ -1120,6 +1140,54 @@ public partial class BattleScene
                 return true;
             }
 
+            case NetIntentType.Dive:
+            {
+                UnitInst u = _state.UnitsAt(to).FirstOrDefault(x => x.Owner == side && x.Alive);
+                if (u == null || u.DefId != "submarine")
+                {
+                    why = "没有可切换的潜水艇";
+                    return false;
+                }
+
+                if (u.DiveUsed)
+                {
+                    why = "本回合已经切换过潜浮状态";
+                    return false;
+                }
+
+                return true;
+            }
+
+            case NetIntentType.Radar:
+            {
+                UnitInst u = _state.UnitsAt(to).FirstOrDefault(x => x.Owner == side && x.Alive);
+                if (u == null || u.DefId != "carrier")
+                {
+                    why = "没有航空母舰";
+                    return false;
+                }
+
+                if (u.RadarUsed)
+                {
+                    why = "本回合已经搜索过";
+                    return false;
+                }
+
+                return true;
+            }
+
+            case NetIntentType.CarrierSpawn:
+            {
+                UnitInst u = _state.UnitsAt(to).FirstOrDefault(x => x.Owner == side && x.Alive);
+                if (u == null || u.DefId != "carrier")
+                {
+                    why = "没有航空母舰";
+                    return false;
+                }
+
+                return _state.CanCarrierSpawn(u, it.Card, out why);
+            }
+
             case NetIntentType.EndTurn:
                 if (_state.CurrentPlayer != side)
                 {
@@ -1178,6 +1246,11 @@ public partial class BattleScene
                 actorUnit = _state.UnitsAt(from).FirstOrDefault(x => x.Owner == side && x.Alive);
                 break;
 
+            case NetIntentType.Dive:
+            case NetIntentType.Radar:
+            case NetIntentType.CarrierSpawn:
+                actorUnit = _state.UnitsAt(to).FirstOrDefault(x => x.Owner == side && x.Alive);
+                break;
             case NetIntentType.EndTurn:
                 if (local)
                 {
@@ -1350,6 +1423,20 @@ public partial class BattleScene
             case NetIntentType.Repair: { BuildingInst b = OwnBuildingAt(to, side); if (b != null) _state.TryRepair(b, out _); break; }
             case NetIntentType.Demolish: { BuildingInst b = OwnBuildingAt(to, side); if (b != null) _state.Demolish(b); break; }
 
+            case NetIntentType.Dive:
+                if (actorUnit != null)
+                    _state.ToggleSubmarineDive(actorUnit, out _);
+                break;
+
+            case NetIntentType.Radar:
+                if (actorUnit != null)
+                    _state.UseCarrierRadar(actorUnit, out _, out _);
+                break;
+
+            case NetIntentType.CarrierSpawn:
+                if (actorUnit != null)
+                    _state.TryCarrierSpawn(actorUnit, it.Card, out _);
+                break;
             case NetIntentType.EndTurn:
                 _state.EndTurn();
                 break;
@@ -1451,9 +1538,25 @@ public partial class BattleScene
 
             case NetIntentType.Move:
             {
-                if (actorUnit != null)
+                // 敌方深潜潜艇：本体已完全透明，任何起点/终点/脚下反馈都会暴露航迹，
+                // 所以这一整段表现（音效、脉冲环、闪光）都跳过。
+                bool hiddenMove = !local && actorUnit != null &&
+                                  actorUnit.DefId == "submarine" && actorUnit.Submerged;
+
+                if (actorUnit != null && !hiddenMove)
+                {
                     AudioManager.PlayMove(actorUnit.DefId);
-                _map.FlashCell(to, new Color("7FD35B"));
+                    if (!local)
+                    {
+                        // 对手移动：脚下扩散环 + 起点/终点闪光，明确“谁从哪走到哪”
+                        GD.Print($"[NetFx] remote-move unit={actorUnit.Id} {from}->{to}");
+                        _map.PulseUnit(actorUnit.Id, new Color("F2C230"), 0.8f);
+                        _map.FlashCell(from, new Color("5BC0EB"), 0.5f);
+                    }
+                }
+
+                if (!hiddenMove)
+                    _map.FlashCell(to, new Color("7FD35B"), 0.55f);
                 break;
             }
 
@@ -1537,6 +1640,19 @@ public partial class BattleScene
                 _map.FlashCell(to, new Color("E8563F"));
                 break;
 
+            case NetIntentType.Dive:
+                AudioManager.PlayUi("dive_submarine");
+                RefreshSubmarineVisuals();
+                break;
+
+            case NetIntentType.Radar:
+                AudioManager.PlayUi("radar_carrier");
+                RefreshSubmarineVisuals();
+                break;
+
+            case NetIntentType.CarrierSpawn:
+                AudioManager.PlayDeploy("fighter");
+                break;
             case NetIntentType.EndTurn:
             {
                 PlayVolleys();
@@ -1654,6 +1770,41 @@ public partial class BattleScene
         return true;
     }
 
+    private bool NetSendDive(HexCoord at)
+    {
+        if (!NetMode)
+            return false;
+
+        if (NetBlockIfNotMyTurn())
+            return true;
+
+        NetSendLocal(NetIntent.Dive(NetLocalActor, at));
+        return true;
+    }
+
+    private bool NetSendRadar(HexCoord at)
+    {
+        if (!NetMode)
+            return false;
+
+        if (NetBlockIfNotMyTurn())
+            return true;
+
+        NetSendLocal(NetIntent.Radar(NetLocalActor, at));
+        return true;
+    }
+
+    private bool NetSendCarrierSpawn(HexCoord at, string cardId)
+    {
+        if (!NetMode)
+            return false;
+
+        if (NetBlockIfNotMyTurn())
+            return true;
+
+        NetSendLocal(NetIntent.CarrierSpawn(NetLocalActor, at, cardId));
+        return true;
+    }
     private bool NetSendBuild(string defId, HexCoord coord)
     {
         if (!NetMode)
