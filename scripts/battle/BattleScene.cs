@@ -35,6 +35,11 @@ public partial class BattleScene : Node3D
 
     /// <summary>正在等玩家选一张手牌弃掉（物资运输）。</summary>
     private bool _discardMode;
+    private bool _duplicateMode;
+    private bool _exhaustMode;
+    private bool _retainMode;
+    private readonly List<int> _retainSelected = new();
+    private Rect2 _handPickRect;
     private HexCoord? _buildTarget;
     private bool _dragPan;
     private readonly System.Collections.Generic.Dictionary<long, Vector2> _touches = new();
@@ -275,7 +280,19 @@ public partial class BattleScene : Node3D
         if (OS.GetCmdlineUserArgs().Contains("--demo-hand-retract"))
             CallDeferred(nameof(DemoHandRetract));
 
-        // 开发调试：--demo-reclaim 验证战场扫荡
+        // 开发调试：--demo-random-card 世界如此变幻莫测
+    if (OS.GetCmdlineUserArgs().Contains("--demo-random-card"))
+        CallDeferred(nameof(DemoRandomCard));
+
+    // 开发调试：--demo-survey 战场勘测
+    if (OS.GetCmdlineUserArgs().Contains("--demo-survey"))
+        CallDeferred(nameof(DemoSurvey));
+
+    // 开发调试：--demo-reclaim-ui 战场扫荡多选界面
+    if (OS.GetCmdlineUserArgs().Contains("--demo-reclaim-ui"))
+        CallDeferred(nameof(DemoReclaimUi));
+
+    // 开发调试：--demo-reclaim 验证战场扫荡
         if (OS.GetCmdlineUserArgs().Contains("--demo-reclaim"))
             CallDeferred(nameof(DemoReclaim));
 
@@ -495,6 +512,54 @@ public partial class BattleScene : Node3D
     // 开发调试：--demo-contested-build 争夺区建造
     if (OS.GetCmdlineUserArgs().Contains("--demo-contested-build"))
         CallDeferred(nameof(DemoContestedBuild));
+
+    // 开发调试：--demo-keyword-targets 关键字实例目标测试
+    if (OS.GetCmdlineUserArgs().Contains("--demo-keyword-targets"))
+        CallDeferred(nameof(DemoKeywordTargets));
+
+    // 开发调试：--demo-housing 房屋补贴能力图标
+    if (OS.GetCmdlineUserArgs().Contains("--demo-housing"))
+        CallDeferred(nameof(DemoHousing));
+
+    // 开发调试：--demo-dup-keywords 验证复制卡牌携带关键字
+    if (OS.GetCmdlineUserArgs().Contains("--demo-dup-keywords"))
+        CallDeferred(nameof(DemoDupKeywords));
+
+    // 开发调试：--demo-conscription-ui 验证强制兵役出兵价格为 0
+    if (OS.GetCmdlineUserArgs().Contains("--demo-conscription-ui"))
+        CallDeferred(nameof(DemoConscriptionUi));
+
+    // 开发调试：--demo-corruption 整改反贪：临时选择 + 确认 + 烧牌
+    if (OS.GetCmdlineUserArgs().Contains("--demo-corruption"))
+        CallDeferred(nameof(DemoCorruption));
+
+    // 开发调试：--demo-attrition 延时决策（两张保留）选择界面
+    if (OS.GetCmdlineUserArgs().Contains("--demo-attrition"))
+        CallDeferred(nameof(DemoAttrition));
+
+    // 开发调试：--demo-tactical-ui 战术偏好的手牌选择界面
+    if (OS.GetCmdlineUserArgs().Contains("--demo-tactical-ui"))
+        CallDeferred(nameof(DemoTacticalUi));
+
+    // 开发调试：--demo-choice-multi 多选/确认/眼睛按钮验证
+    if (OS.GetCmdlineUserArgs().Contains("--demo-choice-multi"))
+        CallDeferred(nameof(DemoChoiceMulti));
+
+    // 开发调试：--demo-reinforce-ui 三选一界面验证
+    if (OS.GetCmdlineUserArgs().Contains("--demo-reinforce-ui"))
+        CallDeferred(nameof(DemoReinforceUi));
+
+    // 开发调试：--demo-extra 新增卡牌效果验证
+    if (OS.GetCmdlineUserArgs().Contains("--demo-extra"))
+        CallDeferred(nameof(DemoExtraCards));
+
+    // 开发调试：--demo-debt 金币不足时建造，验证负债与红色金钱
+    if (OS.GetCmdlineUserArgs().Contains("--demo-debt"))
+        CallDeferred(nameof(DemoDebt));
+
+    // 开发调试：--demo-ability 打出强行军，验证左上角效果图标
+    if (OS.GetCmdlineUserArgs().Contains("--demo-ability"))
+        CallDeferred(nameof(DemoAbility));
 
     // 开发调试：--lan-demo-move 联机时由主机自动走一步（验证对手移动反馈）
     if (OS.GetCmdlineUserArgs().Contains("--lan-demo-move"))
@@ -3564,6 +3629,500 @@ public partial class BattleScene : Node3D
         GD.Print($"[LanMove] host move unit={u.Id} {u.Coord}->{to}");
         NetSendMove(u.Coord, to);
     }
+    /// <summary>调试：实际打出「强行军」，检查左上角效果图标与悬浮说明。</summary>
+    private async void DemoAbility()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+
+        _state.Player.Hand.Add("magic_boost");
+        string log = _state.PlayGlobalCard(_state.Player, "magic_boost", HexCoord.Zero, out string error);
+        _state.Player.Hand.Add("magic_boost");
+        string log2 = _state.PlayGlobalCard(_state.Player, "magic_boost", HexCoord.Zero, out string error2);
+        RefreshAll();
+        GD.Print($"[Ability] 打出强行军 {log} / {log2} err={error}{error2} " +
+                 $"持续回合={_state.Player.ForcedMarchTurns}（应为 2） 图标数={_hud.DebugAbilityIconCount}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--ability-tip") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+            _hud.DebugShowAbilityTip();
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--ability-hover") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
+            Vector2 iconCenter = new(40f, 82f);
+            Input.WarpMouse(iconCenter);
+            Input.ParseInputEvent(new InputEventMouseMotion
+            {
+                Position = iconCenter, GlobalPosition = iconCenter,
+            });
+            _hud.DebugHoverFirstAbility();
+            await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+            GD.Print($"[Ability] 悬停图标缩放={_hud.DebugAbilityIconScale:F2}（应大于 1）");
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--ability-expire") >= 0)
+        {
+            _state.EndTurn();
+            GD.Print($"[Ability] 结束我方回合并开始敌方回合后 持续={_state.Player.ForcedMarchTurns}（应为 1）");
+            _state.EndTurn();
+            GD.Print($"[Ability] 敌方结束、回到我方后 持续={_state.Player.ForcedMarchTurns}（应为 1）");
+            _state.EndTurn();
+            GD.Print($"[Ability] 再结束我方回合后 持续={_state.Player.ForcedMarchTurns}（应为 0）");
+            RefreshAll();
+            GD.Print($"[Ability] 过期后图标数={_hud.DebugAbilityIconCount}（应为 0）");
+        }
+    }
+    /// <summary>调试：负债状态（金币为负显示红色）。</summary>
+    private async void DemoDebt()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+
+        HexCoord? spot = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Building == null && _state.CanBuildAt(c.Coord, PlayerId.Player, "barracks"))
+            {
+                spot = c.Coord;
+                break;
+            }
+        }
+
+        if (spot == null)
+        {
+            GD.Print("[Debt] 没有可建造的格子");
+            return;
+        }
+
+        _state.Player.Gold = 50;
+        bool ok = _state.TryBuild(PlayerId.Player, "barracks", spot.Value, out string error);
+        RefreshAll();
+
+        _state.Player.Hand.Add("magic_boost");
+        bool cardOk = _state.CanPlayGlobalCard(_state.Player, "magic_boost", null, out string cardError);
+        GD.Print($"[Debt] 建造={ok} err={error} 金币={_state.Player.Gold}（应保持 50） " +
+                 $"打出强行军={cardOk} err={cardError}（应为 False / 金币不足）");
+    }
+    /// <summary>调试：强制兵役下建筑出兵面板应显示 0$。</summary>
+    private async void DemoConscriptionUi()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 500;
+        st.Conscription = true;
+
+        HexCoord? spot = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.Building == null && _state.CanBuildAt(c.Coord, PlayerId.Player, "barracks"))
+            {
+                spot = c.Coord;
+                break;
+            }
+        }
+
+        if (spot == null)
+            return;
+
+        BuildingInst barracks = _state.SpawnBuilding("barracks", PlayerId.Player, spot.Value);
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        SelectBuilding(barracks);
+
+        // 手牌单位卡同样 0 费
+        st.Gold = 100;
+        st.Hand.Add("unit_infantry");
+        int handIndex = st.Hand.Count - 1;
+        int shown = _state.CostAt(st, handIndex);
+        HexCoord? deployAt = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (_state.CanDeployCard("unit_infantry", PlayerId.Player, c.Coord, out _))
+            {
+                deployAt = c.Coord;
+                break;
+            }
+        }
+
+        if (deployAt != null)
+        {
+            _state.PlayIndex = handIndex;
+            bool played = _state.PlayUnitCard(st, "unit_infantry", deployAt.Value, out string err);
+            _state.PlayIndex = -1;
+            GD.Print($"[ConscriptionUI] 手牌费用={shown} 打出={played} 金币={st.Gold}（应为 100） err={err}");
+        }
+
+        // 留一张单位卡在手里，截图确认手牌价格也是 0
+        st.Hand.Add("unit_tank");
+        RefreshAll();
+        GD.Print($"[ConscriptionUI] 选中兵营，出兵面板应显示 0$");
+    }
+    /// <summary>调试：整改反贪的临时选择、确认与烧牌。</summary>
+    private async void DemoCorruption()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 5000;
+        st.Hand.Clear();
+        st.Hand.Add("fightCorruption");
+        st.Hand.Add("unit_infantry");
+        st.Hand.Add("unit_tank");
+        st.Hand.Add("magic_repair");
+
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "fightCorruption", null, out string error);
+        _state.PlayIndex = -1;
+        if (_state.PendingExhaustPick)
+            EnterExhaustMode();
+
+        await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+        StageHandPick(1, 1, null);
+        GD.Print($"[Corruption] err={error} 临时选择={string.Join(",", _retainSelected)}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--corruption-confirm") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+            OnHandPickConfirmed();
+            GD.Print($"[Corruption] 确认后 手牌={st.Hand.Count} 消耗堆={st.Exhaust.Count}");
+        }
+    }
+    /// <summary>调试：延时决策给两张手牌添加保留。</summary>
+    private async void DemoAttrition()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 5000;
+        st.Hand.Clear();
+        st.Retained.Clear();
+        st.Hand.Add("attrition");
+        st.Hand.Add("unit_infantry");
+        st.Hand.Add("unit_tank");
+        st.Hand.Add("unit_helicopter");
+        st.Hand.Add("magic_repair");
+
+        // 只有 1~2 张可选时自动生效，不显示 UI
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--attrition-auto") >= 0)
+        {
+            st.Hand.RemoveAt(st.Hand.Count - 1);
+            st.Hand.RemoveAt(st.Hand.Count - 1);
+            _state.PlayIndex = 0;
+            _state.PlayGlobalCard(st, "attrition", null, out string autoError);
+            _state.PlayIndex = -1;
+            GD.Print($"[Attrition] 自动 err={autoError} 待选={_state.PendingRetainPick} " +
+                     $"保留标记={st.Retained.Count}（应为 2）");
+            RefreshAll();
+            return;
+        }
+
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "attrition", null, out string error);
+        _state.PlayIndex = -1;
+        if (_state.PendingRetainPick)
+            EnterRetainMode();
+
+        GD.Print($"[Attrition] err={error} 待选={_state.PendingRetainPick} " +
+                 $"可选={_state.RetainTargetIndices(st).Count}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--attrition-select") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
+            TryRetainHandCard(1);
+            TryRetainHandCard(2);
+            GD.Print($"[Attrition] 已选={_retainSelected.Count}/2");
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--attrition-confirm") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+            OnHandPickConfirmed();
+            GD.Print($"[Attrition] 确认后 保留标记={st.Retained.Count} 待选={_state.PendingRetainPick} " +
+                     $"保留牌={string.Join(",", st.Hand)}");
+
+            if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--attrition-endturn") >= 0)
+            {
+                int beforeHand = st.Hand.Count;
+                _state.EndTurn();
+                GD.Print($"[Attrition] 回合结束后 手牌 {beforeHand}->{st.Hand.Count} " +
+                         $"保留标记={st.Retained.Count}（保留牌应留在手里）");
+            }
+        }
+    }
+    /// <summary>调试：同名卡关键字只落在正确实例上。</summary>
+    private async void DemoKeywordTargets()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Hand.Clear();
+        st.Retained.Clear();
+        st.Ethereal.Clear();
+        st.ProducedExhaust.Clear();
+        st.ZeroCost.Clear();
+
+        st.Hand.Add("unit_tank");
+        st.Hand.Add("unit_tank");
+        _state.GrantRetainAt(st, 1);
+        GD.Print($"[KwTarget] 保留 0={_state.HasRetainAt(st, 0)} 1={_state.HasRetainAt(st, 1)}（应 False/True）");
+
+        st.Hand.Add("unit_infantry");
+        _state.AddCardWithMarkers(st, "unit_infantry");
+        GD.Print($"[KwTarget] 虚无 旧步兵={_state.IsEtherealAt(2)} 新步兵={_state.IsEtherealAt(3)}（应 False/True）");
+
+        _state.DuplicateHandCard(st, 1, 1);
+        int last = st.Hand.Count - 1;
+        GD.Print($"[KwTarget] 复制坦克 保留={_state.HasRetainAt(st, last)} 数量={st.Retained.Count}");
+
+        _state.DiscardOne(st, 0);
+        GD.Print($"[KwTarget] 移除首张后 保留0={_state.HasRetainAt(st, 0)}（应 True）");
+
+        _state.MoveCardInHand(st, 0, st.Hand.Count - 1);
+        GD.Print($"[KwTarget] 移动后 末张保留={_state.HasRetainAt(st, st.Hand.Count - 1)}（应 True）");
+
+        // 三张同名卡的中间实例标记与移除位移
+        st.Hand.Clear();
+        st.Retained.Clear();
+        st.Ethereal.Clear();
+        st.ProducedExhaust.Clear();
+        st.Hand.Add("unit_tank");
+        st.Hand.Add("unit_tank");
+        st.Hand.Add("unit_tank");
+        _state.GrantRetainAt(st, 2);
+        GD.Print($"[KwTarget] 三张 保留={_state.HasRetainAt(st, 0)}/{_state.HasRetainAt(st, 1)}/{_state.HasRetainAt(st, 2)}（应 F/F/T）");
+        _state.DiscardOne(st, 0);
+        GD.Print($"[KwTarget] 移除首张 保留={_state.HasRetainAt(st, 0)}/{_state.HasRetainAt(st, 1)}（应 F/T）");
+        _state.AddCardWithMarkers(st, "unit_tank");
+        GD.Print($"[KwTarget] 追加新卡 末张虚无={_state.IsEtherealAt(st.Hand.Count - 1)} 中张虚无={_state.IsEtherealAt(0)}（应 T/F）");
+        RefreshAll();
+    }
+    /// <summary>调试：房屋补贴能力图标（数值=下回合升级数量）。</summary>
+    private async void DemoHousing()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 1000;
+        st.Hand.Clear();
+        st.Hand.Add("housingSubsidy");
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "housingSubsidy", null, out string error);
+        _state.PlayIndex = -1;
+        RefreshAll();
+        GD.Print($"[Housing] err={error} 待升级={st.PendingHousingUpgrades} 图标数={_hud.DebugAbilityIconCount}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--housing-timing") >= 0)
+        {
+            int before = _state.Buildings.Where(b => b.Owner == PlayerId.Player).Sum(b => b.Level);
+            int due = st.HousingUpgradeDueTurn;
+            _state.EndTurn();
+            _state.EndTurn();
+            int after = _state.Buildings.Where(b => b.Owner == PlayerId.Player).Sum(b => b.Level);
+            int upgraded = _state.LastFreeUpgradedBuildings.Count;
+            PlayHousingUpgradeAnimations();
+            GD.Print($"[Housing] 打出时等级和={before} 下回合={after} 生效回合={due} 当前回合={_state.TurnNumber} " +
+                     $"待升级={st.PendingHousingUpgrades} 动画建筑={upgraded}");
+            RefreshAll();
+        }
+    }
+    /// <summary>调试：战术偏好复制时保留实例关键字。</summary>
+    private async void DemoDupKeywords()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 5000;
+        st.Hand.Clear();
+        st.Hand.Add("tacticalPreference");
+        st.Hand.Add("unit_tank");
+        st.Retained.Add("unit_tank");
+        st.Ethereal.Add("unit_tank");
+        st.ProducedExhaust.Add("unit_tank");
+
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "tacticalPreference", null, out _);
+        _state.PlayIndex = -1;
+        _state.ResolveDuplicatePick(st, 0);
+
+        int tanks = st.Hand.Count(id => id == "unit_tank");
+        GD.Print($"[DupKeywords] 坦克={tanks} 保留={st.Retained.Count(id => id == "unit_tank")} " +
+                 $"虚无={st.Ethereal.Count(id => id == "unit_tank")} " +
+                 $"消耗标记={st.ProducedExhaust.Count(id => id == "unit_tank")}");
+        RefreshAll();
+    }
+    /// <summary>调试：战术偏好使用手牌选择模式。</summary>
+    private async void DemoTacticalUi()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 5000;
+        st.Hand.Clear();
+        st.Hand.Add("tacticalPreference");
+        st.Hand.Add("unit_infantry");
+        st.Hand.Add("unit_tank");
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "tacticalPreference", null, out string error);
+        _state.PlayIndex = -1;
+        if (_state.PendingDuplicatePick)
+            EnterDuplicateMode();
+
+        GD.Print($"[TacticalUI] err={error} 待复制={_state.PendingDuplicatePick} 手牌={st.Hand.Count}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--choice-auto") >= 0)
+        {
+            await ToSignal(GetTree().CreateTimer(0.35), SceneTreeTimer.SignalName.Timeout);
+            TryDuplicateHandCard(0);
+            GD.Print($"[TacticalUI] 自动复制后 手牌={st.Hand.Count} 待复制={_state.PendingDuplicatePick}");
+        }
+    }
+    /// <summary>调试：多选界面（2 张）、确认按钮、眼睛隐藏。</summary>
+    private async void DemoChoiceMulti()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+        var ids = new List<string> { "unit_infantry", "unit_tank", "unit_helicopter", "unit_submarine" };
+        _hud.ShowCardChoiceMulti("测试多选", "选择 2 张卡牌（多选时显示确定按钮）", ids,
+            picked => GD.Print($"[ChoiceMulti] 确定选择={string.Join(",", picked)}"), 2);
+
+        await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--choice-select") >= 0)
+            _hud.DebugChoiceSelect(0, 2);
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--choice-hidden") >= 0)
+            _hud.DebugChoiceHidden();
+    }
+    /// <summary>调试：打开呼叫增援的三选一卡牌界面。</summary>
+    private async void DemoReinforceUi()
+    {
+        await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 5000;
+        st.Hand.Add("reinforce");
+        _state.PlayGlobalCard(st, "reinforce", null, out string error);
+        if (_state.PendingReinforceChoices.Count > 0)
+            OpenReinforcePicker();
+        GD.Print($"[ReinforceUI] err={error} 候选={_state.PendingReinforceChoices.Count}");
+    }
+    /// <summary>调试：验证新增卡牌（呼叫增援/债券/反贪/战术偏好/房屋补贴/兵役/医疗）。</summary>
+    private async void DemoExtraCards()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 5000;
+
+        // 呼叫增援
+        st.Hand.Clear();
+        st.ZeroCost.Clear();
+        st.Hand.Add("reinforce");
+        string r1 = _state.PlayGlobalCard(st, "reinforce", null, out string e1);
+        int choices = _state.PendingReinforceChoices.Count;
+        bool took = _state.TakeReinforceChoice(st, 0);
+        int lastIndex = st.Hand.Count - 1;
+        int shownCost = _state.CostAt(st, lastIndex);
+        int effCost = _state.EffectiveCost(st, st.Hand[lastIndex]);
+        GD.Print($"[Extra] 增援 {r1} err={e1} 候选={choices} 选择={took} " +
+                 $"最后一张={st.Hand[lastIndex]} 费用={shownCost} 实际={effCost} 虚无={st.Ethereal.Contains(st.Hand[lastIndex])} " +
+                 $"消耗标记={st.ProducedExhaust.Contains(st.Hand[lastIndex])}");
+
+        // 验证 0 费打出后恢复原价
+        string chosen = st.Hand[lastIndex];
+        HexCoord? deployAt = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (_state.CanDeployCard(chosen, PlayerId.Player, c.Coord, out _))
+            {
+                deployAt = c.Coord;
+                break;
+            }
+        }
+
+        if (deployAt != null)
+        {
+            int goldBeforePlay = st.Gold;
+            _state.PlayIndex = lastIndex;
+            bool playedZero = _state.PlayUnitCard(st, chosen, deployAt.Value, out _);
+            _state.PlayIndex = -1;
+            GD.Print($"[Extra] 增援 0 费打出={playedZero} 金币 {goldBeforePlay}->{st.Gold} " +
+                     $"剩余0费标记={st.ZeroCost.Count}");
+
+            st.Hand.Add(chosen);
+            GD.Print($"[Extra] 增援 新一张同名牌费用={_state.CostAt(st, st.Hand.Count - 1)}（应恢复原价）");
+            st.Hand.RemoveAt(st.Hand.Count - 1);
+        }
+
+        // 发行债券
+        st.Gold = 100;
+        st.Hand.Add("issueBonds");
+        string r2 = _state.PlayGlobalCard(st, "issueBonds", null, out string e2);
+        GD.Print($"[Extra] 债券 {r2} err={e2} 金币={st.Gold} 待负债={st.PendingBondDebt}");
+        _state.BeginTurn(PlayerId.Player);
+        GD.Print($"[Extra] 债券下回合 金币={st.Gold} 待负债={st.PendingBondDebt}");
+
+        // 整改反贪
+        st.Gold = 2000;
+        st.Hand.Add("fightCorruption");
+        st.Hand.Add("unit_infantry");
+        int before = st.Hand.Count;
+        string r3 = _state.PlayGlobalCard(st, "fightCorruption", null, out string e3);
+        bool resolved = _state.PendingExhaustPick && _state.ResolveExhaustPick(st, 0);
+        GD.Print($"[Extra] 反贪 {r3} err={e3} 手牌 {before}->{st.Hand.Count} 结算={resolved}");
+
+        // 战术偏好
+        st.Gold = 2000;
+        st.Hand.Add("tacticalPreference");
+        st.Hand.Add("unit_tank");
+        before = st.Hand.Count;
+        string r4 = _state.PlayGlobalCard(st, "tacticalPreference", null, out string e4);
+        bool dup = _state.PendingDuplicatePick && _state.ResolveDuplicatePick(st, 0);
+        GD.Print($"[Extra] 战术 {r4} err={e4} 手牌 {before}->{st.Hand.Count} 复制={dup}");
+
+        // 房屋补贴
+        st.Gold = 2000;
+        st.Hand.Add("housingSubsidy");
+        string r5 = _state.PlayGlobalCard(st, "housingSubsidy", null, out string e5);
+        int lvBefore = _state.Buildings.Where(b => b.Owner == PlayerId.Player).Sum(b => b.Level);
+        _state.BeginTurn(PlayerId.Player);
+        int lvAfter = _state.Buildings.Where(b => b.Owner == PlayerId.Player).Sum(b => b.Level);
+        GD.Print($"[Extra] 补贴 {r5} err={e5} 建筑等级和 {lvBefore}->{lvAfter}");
+
+        // 强制兵役：建兵营免费出兵，阵亡负债
+        st.Gold = 2000;
+        while (st.Hand.Count > 0) st.Hand.RemoveAt(st.Hand.Count - 1);
+        st.Hand.Add("conscription");
+        string r6 = _state.PlayGlobalCard(st, "conscription", null, out string e6);
+        Cell spot = _state.Cells.Values.FirstOrDefault(c => c.Building == null &&
+            _state.CanBuildAt(c.Coord, PlayerId.Player, "barracks"));
+        BuildingInst barracks = spot != null ? _state.SpawnBuilding("barracks", PlayerId.Player, spot.Coord) : null;
+        int goldBefore = st.Gold;
+        UnitInst spawned = barracks != null ? _state.TrySpawnFromBuilding(barracks, "unit_infantry", out _) : null;
+        int goldAfterSpawn = st.Gold;
+        _state.KillUnit(spawned);
+        GD.Print($"[Extra] 兵役 {r6} err={e6} 出兵金币 {goldBefore}->{goldAfterSpawn} " +
+                 $"阵亡后金币={st.Gold}（应为召唤价 110% 负债）");
+
+        // 医疗保障
+        st.Gold = 2000;
+        st.Hand.Add("medicalCare");
+        string r7 = _state.PlayGlobalCard(st, "medicalCare", null, out string e7);
+        GD.Print($"[Extra] 医疗卡 r={r7} err={e7} 金币={st.Gold} 手牌={st.Hand.Count} 层数={st.MedicalStacks}");
+        var hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Player && b.IsHq);
+        UnitInst hurt = hq != null ? _state.SpawnUnit("infantry", PlayerId.Player, hq.Coord) : null;
+        GD.Print($"[Extra] 医疗 hq={hq?.Coord.ToString() ?? "null"} hurt={hurt?.Id.ToString() ?? "null"}");
+
+        if (hurt != null)
+        {
+            hurt.Hp = Mathf.Max(1, hurt.MaxHp / 2);
+            int hpBefore = hurt.Hp;
+            _state.BeginTurn(PlayerId.Player);
+            GD.Print($"[Extra] 医疗 {r7} err={e7} 层数={st.MedicalStacks} HP {hpBefore}->{hurt.Hp}");
+        }
+
+        // 展示新卡面与能力图标
+        st.Gold = 5000;
+        while (st.Hand.Count > 0)
+            st.Hand.RemoveAt(st.Hand.Count - 1);
+        foreach (string id in new[] { "reinforce", "issueBonds", "fightCorruption",
+                     "tacticalPreference", "housingSubsidy", "conscription", "medicalCare" })
+            st.Hand.Add(id);
+
+        st.PendingBondDebt = Mathf.Max(st.PendingBondDebt, 675);
+        RefreshAll();
+    }
     /// <summary>调试：争夺区双方都能建造建筑。</summary>
     private async void DemoContestedBuild()
     {
@@ -5031,6 +5590,129 @@ public partial class BattleScene : Node3D
         GD.Print($"[Reclaim] 取回后 手牌={string.Join(",", me.Hand)} 消耗堆={string.Join(",", me.Exhaust)} " +
                  $"虚无={string.Join(",", me.Ethereal)} 手牌下标={handIndex}");
     }
+    /// <summary>调试：世界如此变幻莫测（5 选 2，消耗 + 虚无）。</summary>
+    private async void DemoRandomCard()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 1000;
+        st.Hand.Clear();
+        st.Hand.Add("unPredictableWorld");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--random-repeat") >= 0)
+        {
+            st.Hand.Add("unPredictableWorld");
+            _state.PlayIndex = 0;
+            _state.PlayGlobalCard(st, "unPredictableWorld", null, out _);
+            _state.PlayIndex = -1;
+            string first = string.Join(",", _state.PendingRandomChoices);
+            _state.TakeRandomChoices(st, new List<int> { 0, 1 });
+
+            st.Hand.Add("unPredictableWorld");
+            _state.PlayIndex = st.Hand.Count - 1;
+            _state.PlayGlobalCard(st, "unPredictableWorld", null, out _);
+            _state.PlayIndex = -1;
+            string second = string.Join(",", _state.PendingRandomChoices);
+            GD.Print($"[RandomRepeat] 第一次={first}");
+            GD.Print($"[RandomRepeat] 第二次={second}");
+            GD.Print($"[RandomRepeat] 相同={first == second} 次数={st.RandomCardPlays}");
+            return;
+        }
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--resolve-random") >= 0)
+        {
+            _pendingCardIndex = 0;
+            ResolveCardNow("unPredictableWorld", null);
+            GD.Print($"[RandomResolve] pending={_state.PendingRandomChoices.Count}");
+            return;
+        }
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "unPredictableWorld", null, out string error);
+        _state.PlayIndex = -1;
+        GD.Print($"[RandomCard] err={error} 候选={_state.PendingRandomChoices.Count} " +
+                 $"手牌={st.Hand.Count}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--random-open") >= 0)
+        {
+            OpenRandomCardPicker();
+            return;
+        }
+
+        int got = _state.TakeRandomChoices(st, new List<int> { 0, 1 });
+        bool eth = st.Ethereal.Count > 0;
+        bool exh = st.ProducedExhaust.Count > 0;
+        GD.Print($"[RandomCard] 取={got} 虚无={eth} 消耗标记={exh} 手牌={string.Join(",", st.Hand)}");
+        RefreshAll();
+    }
+
+    /// <summary>调试：战场勘测（抽牌堆 2 张）。</summary>
+    private async void DemoSurvey()
+    {
+        await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Gold = 1000;
+        st.Hand.Clear();
+        st.Hand.Add("battlefieldSurvey");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--resolve-survey") >= 0)
+        {
+            while (st.Deck.Count < 4)
+                st.Deck.Add("unit_infantry");
+            _pendingCardIndex = 0;
+            ResolveCardNow("battlefieldSurvey", null);
+            GD.Print($"[SurveyResolve] pending={_state.PendingDeckPick} deck={st.Deck.Count}");
+            return;
+        }
+
+        while (st.Deck.Count < 4)
+            st.Deck.Add("unit_infantry");
+
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "battlefieldSurvey", null, out string error);
+        _state.PlayIndex = -1;
+        GD.Print($"[Survey] err={error} 待选={_state.PendingDeckPick} 抽牌堆={st.Deck.Count}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--survey-open") >= 0)
+        {
+            EnterDeckPick();
+            return;
+        }
+
+        int got = _state.TakeDeckCards(st, new List<int> { 0, 1 });
+        GD.Print($"[Survey] 取={got} 手牌={string.Join(",", st.Hand)} " +
+                 $"抽牌堆={st.Deck.Count} 弃牌堆={st.Discard.Count}");
+        RefreshAll();
+    }
+    /// <summary>调试：战场扫荡多选牌堆界面（关闭按钮应隐藏）。</summary>
+    private async void DemoReclaimUi()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        PlayerState me = _state.Player;
+        me.Hand.Clear();
+        me.Exhaust.Clear();
+        me.EtherealExhausted.Clear();
+        me.Hand.Add("magic_reclaim");
+        me.Gold = 1000;
+        me.Exhaust.Add("magic_airstrike");
+        me.Exhaust.Add("unit_tank");
+        me.Exhaust.Add("unit_infantry");
+        me.Exhaust.Add("magic_repair");
+        me.EtherealExhausted.Add("unit_tank");
+        me.Ethereal.Add("unit_tank");
+        me.Ethereal.RemoveAt(me.Ethereal.Count - 1);
+
+        _state.PendingReclaimExhaust = true;
+        OpenReclaimPicker();
+        GD.Print("[ReclaimUI] 打开消耗堆多选，关闭按钮应隐藏");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--reclaim-many") >= 0)
+        {
+            int got = _state.ReclaimManyFromExhaust(me, new List<int> { 0, 2 });
+            _hud.ClosePile();
+            RefreshAll();
+            GD.Print($"[ReclaimUI] 多选取回={got} 手牌={string.Join(",", me.Hand)} 消耗堆={string.Join(",", me.Exhaust)}");
+        }
+    }
     /// <summary>验证牌堆查看器层级：打开选择面板时飞牌不能盖在它上面。</summary>
     private async void DemoPileLayers()
     {
@@ -5560,6 +6242,8 @@ public partial class BattleScene : Node3D
         _hud.SpawnClicked += OnSpawnClicked;
         _hud.ProduceToggled += OnProduceToggled;
         _hud.ExtraFireClicked += OnExtraFireClicked;
+        _hud.PickConfirmed += OnHandPickConfirmed;
+        _hud.PickSelectionRemoved += OnHandPickSelectionRemoved;
         _hud.BuildHovered += OnBuildHovered;
         _hud.UpgradeHovered += OnUpgradeHovered;
         _hud.PreviewUnhovered += OnPreviewUnhovered;
@@ -5680,6 +6364,117 @@ public partial class BattleScene : Node3D
 
         return indices;
     }
+    /// <summary>「呼叫增援」：三张随机军队单位牌选一张加入手牌。</summary>
+    private void OpenReinforcePicker()
+    {
+        List<string> choices = _state.PendingReinforceChoices;
+        if (choices.Count == 0)
+            return;
+
+        _hud.ShowCardChoice("呼叫增援", "选择一张军队单位牌加入手牌（费用临时为 0）",
+            choices, index =>
+        {
+            if (!_state.TakeReinforceChoice(_state.Player, index))
+            {
+                _hud.Toast("选择失败");
+                return;
+            }
+
+            RefreshAll();
+            _hud.Toast("增援已加入手牌（费用 0 · 虚无 · 消耗）");
+        });
+    }
+
+    /// <summary>「整改反贪」：选择一张手牌消耗，然后抽 2 张。</summary>
+    private void OpenExhaustPicker()
+    {
+        if (_state.Player.Hand.Count == 0)
+        {
+            _state.PendingExhaustPick = false;
+            return;
+        }
+
+        _hud.ShowPile("整改反贪：选择一张消耗", _state.Player.Hand, null, null, index =>
+        {
+            if (!_state.ResolveExhaustPick(_state.Player, index))
+            {
+                _hud.Toast("选择失败");
+                return;
+            }
+
+            _hud.ClosePile();
+            RefreshAll();
+            _hud.Toast("已消耗 1 张，抽 2 张");
+        });
+    }
+
+    /// <summary>「战术偏好」：选择一张手牌，加入两张复制品。</summary>
+    private void OpenDuplicatePicker()
+    {
+        if (_state.Player.Hand.Count == 0)
+        {
+            _state.PendingDuplicatePick = false;
+            return;
+        }
+
+        _hud.ShowPile("战术偏好：选择一张复制", _state.Player.Hand, null, null, index =>
+        {
+            if (!_state.ResolveDuplicatePick(_state.Player, index))
+            {
+                _hud.Toast("选择失败");
+                return;
+            }
+
+            _hud.ClosePile();
+            RefreshAll();
+            _hud.Toast("已加入 2 张复制品");
+        });
+    }
+    /// <summary>「世界如此变幻莫测」：5 张随机卡选 2 张。</summary>
+    private void OpenRandomCardPicker()
+    {
+        List<string> choices = _state.PendingRandomChoices;
+        if (choices.Count == 0)
+            return;
+
+        _hud.ShowCardChoiceMulti("世界如此变幻莫测", "选择 2 张加入手牌（消耗·虚无）",
+            choices, picked =>
+            {
+                int got = _state.TakeRandomChoices(_state.Player, picked);
+                RefreshAll();
+                _hud.Toast($"获得 {got} 张随机卡（消耗·虚无）");
+            }, 2);
+    }
+
+    /// <summary>「战场勘测」：从抽牌堆选择两张加入手牌（放不下进弃牌堆）。</summary>
+    private void EnterDeckPick()
+    {
+        List<string> deck = _state.Player.Deck;
+        if (deck.Count == 0)
+        {
+            _state.PendingDeckPick = false;
+            return;
+        }
+
+        if (deck.Count <= 2)
+        {
+            var picked = new List<int>();
+            for (int i = 0; i < deck.Count; i++)
+                picked.Add(i);
+            _state.TakeDeckCards(_state.Player, picked);
+            RefreshAll();
+            _hud.Toast("已取走抽牌堆的牌");
+            return;
+        }
+
+        _hud.ShowPileMulti("抽牌堆", deck, picked =>
+        {
+            int got = _state.TakeDeckCards(_state.Player, picked);
+            _hud.ClosePile();
+            RefreshAll();
+            _hud.Toast($"取 {got} 张牌加入手牌");
+        }, 2, 2);
+    }
     /// <summary>「战场扫荡」：从消耗堆里选一张拿回手牌。</summary>
     private void OpenReclaimPicker()
     {
@@ -5691,17 +6486,14 @@ public partial class BattleScene : Node3D
             return;
         }
 
-        _hud.ShowPile("消耗堆", ids, null, null, index =>
+        _hud.ShowPileMulti("消耗堆", ids, picked =>
         {
-            int handIndex = _state.ReclaimFromExhaust(_state.Player, index);
+            int got = _state.ReclaimManyFromExhaust(_state.Player, picked);
             _hud.ClosePile();
-
-            if (handIndex >= 0)
+            if (got > 0)
             {
                 RefreshAll();
-                CardDef def = GameDatabase.Card(_state.Player.Hand[handIndex]);
-                _hud.PlayProduceAnimation(def, _hud.PileCenter(PileView.PileKind.Exhaust), handIndex, 0.05f);
-                _hud.Toast($"取回 {def?.NameZh}");
+                _hud.Toast($"取回 {got} 张牌");
             }
         });
     }
@@ -5736,10 +6528,29 @@ public partial class BattleScene : Node3D
         if (index < 0 || index >= _state.Player.Hand.Count)
             return;
 
-        // 「物资运输」的弃牌阶段：点哪张弃哪张
+        // 手牌选择：先放入临时区，确认后才执行
         if (_discardMode)
         {
-            TryDiscardHandCard(index);
+            StageHandPick(index, 1, null);
+            return;
+        }
+
+        // 「战术偏好」：点一张手牌复制两张
+        if (_duplicateMode)
+        {
+            StageHandPick(index, 1, null);
+            return;
+        }
+
+        if (_exhaustMode)
+        {
+            StageHandPick(index, 1, null);
+            return;
+        }
+
+        if (_retainMode)
+        {
+            StageHandPick(index, 2, _state.RetainTargetIndices(_state.Player));
             return;
         }
 
@@ -6303,6 +7114,19 @@ public partial class BattleScene : Node3D
             return;
         }
 
+        if (_state.PendingReinforceChoices.Count > 0)
+            OpenReinforcePicker();
+        else if (_state.PendingExhaustPick)
+            EnterExhaustMode();
+        else if (_state.PendingDuplicatePick)
+            EnterDuplicateMode();
+        else if (_state.PendingRetainPick)
+            EnterRetainMode();
+        else if (_state.PendingRandomChoices.Count > 0)
+            OpenRandomCardPicker();
+        else if (_state.PendingDeckPick)
+            EnterDeckPick();
+
         // 进入弃牌阶段时不再弹小提示（有大号横幅）
         if (_state.PendingDiscard <= 0)
             _hud.Toast(result);
@@ -6381,10 +7205,28 @@ public partial class BattleScene : Node3D
             return;
         }
 
+        if (_state.Player.Hand.Count <= _state.PendingDiscard)
+        {
+            while (_state.PendingDiscard > 0 && _state.Player.Hand.Count > 0)
+            {
+                if (!_state.DiscardOne(_state.Player, _state.Player.Hand.Count - 1))
+                    break;
+                _state.PendingDiscard--;
+            }
+
+            _state.PendingDiscard = 0;
+            ExitDiscardMode();
+            RefreshAll();
+            return;
+        }
+
         _discardMode = true;
+        _retainSelected.Clear();
+        _handPickRect = default;
         ClearSelection();
         _hud.SetSelectedCard(-1);
-        _hud.SetHandPickMode(true);
+        _hud.SetHandPickMode(true, null, null, null, 1);
+        _hud.SetHandPickSelection(_retainSelected);
         RefreshAll();
     }
 
@@ -6394,6 +7236,225 @@ public partial class BattleScene : Node3D
         _hud?.SetHandPickMode(false);
     }
 
+    /// <summary>「整改反贪」：手牌点选消耗（与其它手牌选择一致）。</summary>
+    private void EnterExhaustMode()
+    {
+        if (_state.Player.Hand.Count == 0)
+        {
+            _state.PendingExhaustPick = false;
+            return;
+        }
+
+        if (_state.Player.Hand.Count <= 1)
+        {
+            _state.ResolveExhaustPick(_state.Player, 0);
+            RefreshAll();
+            _hud.Toast("已消耗 1 张，抽 2 张");
+            return;
+        }
+
+        _exhaustMode = true;
+        _retainSelected.Clear();
+        _handPickRect = default;
+        ClearSelection();
+        _hud.SetSelectedCard(-1);
+        _hud.SetHandPickMode(true, "选择一张手牌消耗", "先选一张牌", null, 1);
+        _hud.SetHandPickSelection(_retainSelected);
+        RefreshAll();
+    }
+
+    private void ExitExhaustMode()
+    {
+        _exhaustMode = false;
+        _hud?.SetHandPickMode(false);
+    }
+
+    private void TryExhaustHandCard(int index)
+    {
+        if (!_state.ResolveExhaustPick(_state.Player, index))
+            return;
+
+        ExitExhaustMode();
+        RefreshAll();
+        _hud.Toast("已消耗 1 张，抽 2 张");
+    }
+
+    /// <summary>「延时决策」：只允许没有「保留」的手牌可点。</summary>
+    private void EnterRetainMode()
+    {
+        List<int> targets = _state.RetainTargetIndices(_state.Player);
+        if (targets.Count == 0)
+        {
+            _state.PendingRetainPick = false;
+            return;
+        }
+
+        if (targets.Count <= 2)
+        {
+            foreach (int index in targets)
+                _state.GrantRetainAt(_state.Player, index);
+            _state.PendingRetainPick = false;
+            RefreshAll();
+            _hud.Toast($"{targets.Count} 张手牌获得「保留」");
+            return;
+        }
+
+        _retainMode = true;
+        _retainSelected.Clear();
+        _handPickRect = default;
+        ClearSelection();
+        _hud.SetSelectedCard(-1);
+        _hud.SetHandPickMode(true, "选择两张手牌添加「保留」", "先选两张牌", targets, 2);
+        _hud.SetHandPickSelection(_retainSelected);
+        RefreshAll();
+    }
+
+    private void ExitRetainMode()
+    {
+        _retainMode = false;
+        _hud?.SetHandPickMode(false);
+    }
+
+    /// <summary>手牌选择：把牌放入临时区（可再次点击取消）。</summary>
+    private void TryRetainHandCard(int index) =>
+        StageHandPick(index, 2, _state.RetainTargetIndices(_state.Player));
+
+    private void StageHandPick(int index, int required, List<int> allowed)
+    {
+        if (index < 0 || index >= _state.Player.Hand.Count)
+            return;
+
+        if (allowed != null && !allowed.Contains(index))
+        {
+            _hud.Toast("这张牌不能被选择");
+            return;
+        }
+
+        if (_retainSelected.Count == 0 && _hud.TryGetHandCardRect(index, out Rect2 rect))
+            _handPickRect = rect;
+
+        if (_retainSelected.Contains(index))
+        {
+            _retainSelected.Remove(index);
+        }
+        else
+        {
+            if (_retainSelected.Count >= required)
+                _retainSelected.RemoveAt(0);
+            _retainSelected.Add(index);
+        }
+
+        _hud.SetHandPickSelection(_retainSelected);
+    }
+
+    private void OnHandPickSelectionRemoved(int index)
+    {
+        if (_retainSelected.Remove(index))
+            _hud.SetHandPickSelection(_retainSelected);
+    }
+    private void OnHandPickConfirmed()
+    {
+        if (_retainSelected.Count == 0)
+            return;
+
+        if (_discardMode)
+        {
+            int index = _retainSelected[0];
+            _retainSelected.Clear();
+            TryDiscardHandCard(index);
+            return;
+        }
+
+        if (_duplicateMode)
+        {
+            int index = _retainSelected[0];
+            _retainSelected.Clear();
+            if (_state.ResolveDuplicatePick(_state.Player, index))
+            {
+                ExitDuplicateMode();
+                RefreshAll();
+                _hud.Toast("已加入 2 张复制品");
+            }
+            return;
+        }
+
+        if (_exhaustMode)
+        {
+            int index = _retainSelected[0];
+            string id = _state.Player.Hand[index];
+            CardDef def = GameDatabase.Card(id);
+            Rect2 burnRect = _handPickRect;
+            _retainSelected.Clear();
+            if (_state.ResolveExhaustPick(_state.Player, index))
+            {
+                // 消耗的牌在临时区烧掉，再抽两张
+                if (def != null && burnRect.Size.X > 0 && burnRect.Size.Y > 0)
+                    _hud.BurnCardAt(def, burnRect, 0f, () => _hud.BumpPile(PileView.PileKind.Exhaust));
+                ExitExhaustMode();
+                RefreshAll();
+                _hud.Toast("已消耗 1 张，抽 2 张");
+            }
+            return;
+        }
+
+        if (!_retainMode || _retainSelected.Count != 2)
+            return;
+
+        foreach (int index in _retainSelected)
+            _state.GrantRetainAt(_state.Player, index);
+
+        _retainSelected.Clear();
+        _state.PendingRetainPick = false;
+        ExitRetainMode();
+        RefreshAll();
+        _hud.Toast("两张手牌获得「保留」");
+    }
+    /// <summary>「战术偏好」：进入手牌选择模式（与物资运输的弃牌选牌一致）。</summary>
+    private void EnterDuplicateMode()
+    {
+        if (_state.Player.Hand.Count == 0)
+        {
+            _state.PendingDuplicatePick = false;
+            return;
+        }
+
+        if (_state.Player.Hand.Count <= 1)
+        {
+            _state.ResolveDuplicatePick(_state.Player, 0);
+            RefreshAll();
+            _hud.Toast("已加入 2 张复制品");
+            return;
+        }
+
+        _duplicateMode = true;
+        _retainSelected.Clear();
+        _handPickRect = default;
+        ClearSelection();
+        _hud.SetSelectedCard(-1);
+        _hud.SetHandPickMode(true, Loc.T("battle.pick_duplicate"),
+            Loc.T("battle.pick_duplicate_first"), null, 1);
+        _hud.SetHandPickSelection(_retainSelected);
+        RefreshAll();
+    }
+
+    private void ExitDuplicateMode()
+    {
+        _duplicateMode = false;
+        _hud?.SetHandPickMode(false);
+    }
+
+    private void TryDuplicateHandCard(int index)
+    {
+        if (index < 0 || index >= _state.Player.Hand.Count)
+            return;
+
+        if (!_state.ResolveDuplicatePick(_state.Player, index))
+            return;
+
+        ExitDuplicateMode();
+        RefreshAll();
+        _hud.Toast("已加入 2 张复制品");
+    }
     private void TryDiscardHandCard(int index)
     {
         if (index < 0 || index >= _state.Player.Hand.Count)
@@ -6402,8 +7463,10 @@ public partial class BattleScene : Node3D
         string id = _state.Player.Hand[index];
         CardDef def = GameDatabase.Card(id);
 
-        Rect2 rect = default;
-        bool hasRect = _hud.TryGetHandCardRect(index, out rect);
+        Rect2 rect = _handPickRect;
+        bool hasRect = rect.Size.X > 0 && rect.Size.Y > 0;
+        if (!hasRect)
+            hasRect = _hud.TryGetHandCardRect(index, out rect);
 
         if (!_state.DiscardOne(_state.Player, index))
             return;
@@ -6431,6 +7494,24 @@ public partial class BattleScene : Node3D
             return;
         }
 
+        if (_duplicateMode)
+        {
+            _hud.Toast("请先选择一张手牌复制");
+            return;
+        }
+
+        if (_exhaustMode)
+        {
+            _hud.Toast("请先选择一张手牌消耗");
+            return;
+        }
+
+        if (_retainMode)
+        {
+            _hud.Toast("请先选择一张手牌添加保留");
+            return;
+        }
+
         if (NetSendEndTurn())
             return;
 
@@ -6448,6 +7529,7 @@ public partial class BattleScene : Node3D
         PlayVolleys();
         AudioManager.SetIntensity(_state.TurnNumber < 4 ? 0 : _state.TurnNumber < 8 ? 1 : 2);
         RefreshAll();
+        PlayHousingUpgradeAnimations();
         AnimateEndOfTurnDiscards(handRects);
 
         if (_state.Phase == BattlePhase.EnemyTurn)
@@ -6491,6 +7573,7 @@ public partial class BattleScene : Node3D
         PlayVolleys();
         _enemyBusy = false;
         RefreshAll();
+        PlayHousingUpgradeAnimations();
 
         // 新回合抽牌：洗回提示 + 从抽牌堆飞进手牌
         if (_state.LastDrawReshuffled)
@@ -6510,6 +7593,35 @@ public partial class BattleScene : Node3D
         CheckGameOver();
     }
 
+    /// <summary>房屋补贴：下回合开始免费升级后，刷新模型并播放升级动画。</summary>
+    private void PlayHousingUpgradeAnimations()
+    {
+        List<int> ids = _state.LastFreeUpgradedBuildings;
+        if (ids.Count == 0)
+            return;
+
+        _map.SyncEntities();
+        foreach (int id in ids)
+        {
+            BuildingInst b = _state.Buildings.FirstOrDefault(x => x.Id == id && !x.IsDead);
+            if (b == null)
+                continue;
+
+            _map.PunchBuilding(id);
+            AudioManager.PlayUpgrade(b.DefId);
+            if (b.Owner == PlayerId.Player)
+                _map.FlashCell(b.Coord, new Color("F0D98A"));
+        }
+
+        if (_selBuilding != null && !_selBuilding.IsDead)
+        {
+            _map.ReapplySelection();
+            ShowBuildingInfo(_selBuilding);
+        }
+
+        _hud.Toast($"房屋补贴：升级了 {ids.Count} 栋建筑");
+        ids.Clear();
+    }
     /// <summary>AI 单位开火：播开火特效 → 命中瞬间结算。</summary>
     private async Task PlayAiAttackAsync(UnitInst attacker, HexCoord target)
     {
@@ -7504,9 +8616,11 @@ public partial class BattleScene : Node3D
             bool ready = _state.CanSpawnFrom(b, cardId, out string reason);
             string icon = "res://gameAsset/textures/cardface/cardface_" + card.Unit + ".png";
             string name = Loc.Name(card.NameZh, card.NameEn);
-            string tip = ready ? $"{name}  {card.Cost}$" : $"{name}：{reason}";
+            // 强制兵役：建筑出兵免费，面板显示 0$
+            int shownCost = _state.Player.Conscription ? 0 : card.Cost;
+            string tip = ready ? $"{name}  {shownCost}$" : $"{name}：{reason}";
 
-            options.Add((cardId, name, card.Cost, icon, ready, tip));
+            options.Add((cardId, name, shownCost, icon, ready, tip));
         }
 
         string title = $"{Loc.Name(b.Def.NameZh, b.Def.NameEn)}  Lv.{b.Level}";

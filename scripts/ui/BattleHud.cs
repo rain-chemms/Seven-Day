@@ -82,6 +82,15 @@ public partial class BattleHud : CanvasLayer
     private GridContainer _spawnList;
     private string _spawnSignature = "";
     private PanelContainer _terrainPanel;
+
+    // 左上角：本回合持续增益/减益图标 + 悬浮说明
+    private HBoxContainer _abilityBar;
+    private PanelContainer _abilityTip;
+    private Label _abilityTipTitle;
+    private RichTextLabel _abilityTipBody;
+    private Label _abilityTipDuration;
+    private readonly List<ActiveEffect> _abilityEffects = new();
+    private string _abilitySignature = "";
     private TextureRect _terrainImage;
     private Label _terrainTitle;
     private Label _terrainBody;
@@ -245,6 +254,7 @@ public partial class BattleHud : CanvasLayer
         _infoPanel.OffsetRight = -16;
         _root.AddChild(_infoPanel);
         BuildTerrainPanel();
+        BuildAbilityBar();
         BuildSpawnPanel();
 
         var infoBox = new VBoxContainer();
@@ -516,6 +526,43 @@ public partial class BattleHud : CanvasLayer
         _pickBanner.AddThemeColorOverride("font_outline_color", new Color("241C0E"));
         _root.AddChild(_pickBanner);
 
+        // 手牌多选时的「确定」按钮
+        _pickConfirm = NewButton(Loc.T("choice.confirm"));
+        _pickConfirm.Theme = UiTheme.Get();
+        _pickConfirm.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
+        _pickConfirm.OffsetLeft = -172;
+        _pickConfirm.OffsetRight = -18;
+        _pickConfirm.OffsetTop = -112;
+        _pickConfirm.OffsetBottom = -66;
+        _pickConfirm.Visible = false;
+        _pickConfirm.Pressed += () => PickConfirmed?.Invoke();
+        ButtonJuice.Attach(_pickConfirm);
+        _root.AddChild(_pickConfirm);
+
+        // 手牌多选的临时选择区：已选手牌离开手牌，暂存在这里
+        _pickStaging = new PanelContainer
+        {
+            Name = "PickStaging",
+            Visible = false,
+            MouseFilter = Control.MouseFilterEnum.Stop,
+        };
+        _pickStaging.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
+        _pickStaging.OffsetLeft = -360;
+        _pickStaging.OffsetRight = 360;
+        _pickStaging.OffsetTop = 208;
+        _pickStaging.OffsetBottom = 444;
+        // 临时区不画背景、不显示文字，只承载卡面
+        _pickStaging.AddThemeStyleboxOverride("panel", new StyleBoxEmpty());
+        _root.AddChild(_pickStaging);
+
+        // 透明容器，卡牌整体居中
+        var stagingCenter = new CenterContainer();
+        _pickStaging.AddChild(stagingCenter);
+
+        _pickStagingRow = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        _pickStagingRow.AddThemeConstantOverride("separation", 24);
+        stagingCenter.AddChild(_pickStagingRow);
+
         ButtonJuice.AttachAll(_root);
         UiSound.AttachAll(_root);
     }
@@ -655,6 +702,7 @@ public partial class BattleHud : CanvasLayer
         RefreshTop();
         RefreshHand();
         RefreshPiles();
+        RefreshAbilities();
     }
 
     public void RefreshPiles()
@@ -691,6 +739,37 @@ public partial class BattleHud : CanvasLayer
     }
 
     /// <summary>打开某个牌堆的查看器。</summary>
+    private CardChoiceOverlay _choiceOverlay;
+
+    /// <summary>调试：选中若干备选牌。</summary>
+    public void DebugChoiceSelect(params int[] indices) => _choiceOverlay?.DebugSelect(indices);
+
+    /// <summary>调试：切换选牌界面的隐藏状态。</summary>
+    public void DebugChoiceHidden() => _choiceOverlay?.DebugToggleHidden();
+
+    /// <summary>三选一卡牌界面（供「呼叫增援」等使用）。</summary>
+    public void ShowCardChoice(string title, string subtitle,
+                               System.Collections.Generic.List<string> cardIds,
+                               System.Action<int> onPick, int pickCount = 1)
+    {
+        ShowCardChoiceMulti(title, subtitle, cardIds, picked =>
+        {
+            if (picked.Count > 0)
+                onPick?.Invoke(picked[0]);
+        }, pickCount, zeroCostDisplay: true);
+    }
+
+    /// <summary>多选版：返回所有选中下标（按选择顺序）。</summary>
+    public void ShowCardChoiceMulti(string title, string subtitle,
+                                    System.Collections.Generic.List<string> cardIds,
+                                    System.Action<System.Collections.Generic.List<int>> onPick,
+                                    int pickCount, bool zeroCostDisplay = false)
+    {
+        var overlay = new CardChoiceOverlay();
+        _choiceOverlay = overlay;
+        _root.AddChild(overlay);
+        overlay.Open(title, subtitle, cardIds, onPick, pickCount, zeroCostDisplay);
+    }
     public void ShowPile(string title, System.Collections.Generic.IEnumerable<string> cards,
                          System.Collections.Generic.IReadOnlyList<int> etherealIndices = null,
                          System.Collections.Generic.IReadOnlyList<int> producedExhaustIndices = null,
@@ -698,6 +777,12 @@ public partial class BattleHud : CanvasLayer
         _pileViewer.Open(title, cards, etherealIndices, producedExhaustIndices, onPick);
 
     public void ClosePile() => _pileViewer.Close();
+
+    /// <summary>牌堆多选：确认后返回选中的下标列表。</summary>
+    public void ShowPileMulti(string title, System.Collections.Generic.IEnumerable<string> cards,
+                              System.Action<System.Collections.Generic.List<int>> onConfirm,
+                              int requiredPicks = 0, int maxPicks = 0) =>
+        _pileViewer.Open(title, cards, null, null, null, onConfirm, requiredPicks, maxPicks);
 
     /// <summary>调试：抽牌堆当前缩放（验证悬停动画）。</summary>
     public float DebugPileScale() => _deckPile.Scale.X;
@@ -869,11 +954,18 @@ public partial class BattleHud : CanvasLayer
     public void RefreshTop()
     {
         _turnLabel.Text = Loc.T("battle.turn", _state.TurnNumber);
-        _goldLabel.Text = $"{_state.Player.Gold}";
-        _enemyGoldLabel.Text = Loc.T("battle.enemy", _state.Enemy.Gold);
+        int gold = _state.Player.Gold;
+        _goldLabel.Text = $"{gold}";
+        _goldLabel.AddThemeColorOverride("font_color", gold < 0 ? new Color("D23B2F") : UiTheme.Ink);
+
+        int enemyGold = _state.Enemy.Gold;
+        _enemyGoldLabel.Text = Loc.T("battle.enemy", enemyGold);
+        _enemyGoldLabel.AddThemeColorOverride("font_color", enemyGold < 0 ? new Color("D23B2F") : UiTheme.Ink);
         _endTurnButton.Disabled = _state.Phase != BattlePhase.PlayerTurn || _handPickMode;
         _endTurnButton.Text = _handPickMode
-            ? Loc.T("battle.discard_first")
+            ? (string.IsNullOrEmpty(_pickEndTextOverride)
+                ? Loc.T("battle.discard_first")
+                : _pickEndTextOverride)
             : _state.Phase == BattlePhase.PlayerTurn
                 ? Loc.T("battle.end_turn")
                 : Loc.T("battle.enemy_turn");
@@ -1312,6 +1404,233 @@ public partial class BattleHud : CanvasLayer
 
     private static string TerrainDesc(TerrainType t) => Loc.T("terrain." + TerrainKey(t) + ".desc");
 
+    /// <summary>左上角持续效果图标条 + 悬浮说明面板。</summary>
+    private void BuildAbilityBar()
+    {
+        _abilityBar = new HBoxContainer { Name = "AbilityBar", Visible = false };
+        _abilityBar.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.TopLeft);
+        _abilityBar.OffsetLeft = 16;
+        _abilityBar.OffsetTop = 58;
+        _abilityBar.OffsetRight = 340;
+        _abilityBar.OffsetBottom = 114;
+        _abilityBar.AddThemeConstantOverride("separation", 6);
+        _abilityBar.MouseFilter = Control.MouseFilterEnum.Ignore;
+        _root.AddChild(_abilityBar);
+
+        _abilityTip = new PanelContainer
+        {
+            Name = "AbilityTip",
+            Visible = false,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            CustomMinimumSize = new Vector2(300, 0),
+        };
+        _abilityTip.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.TopLeft);
+        _abilityTip.OffsetLeft = 16;
+        _abilityTip.OffsetTop = 118;
+        _abilityTip.OffsetRight = 322;
+
+        var style = new StyleBoxFlat
+        {
+            BgColor = new Color("EFE3C8"),
+            BorderColor = UiTheme.Ink,
+            BorderWidthLeft = 2,
+            BorderWidthRight = 2,
+            BorderWidthTop = 2,
+            BorderWidthBottom = 2,
+        };
+        style.SetCornerRadiusAll(8);
+        _abilityTip.AddThemeStyleboxOverride("panel", style);
+        _root.AddChild(_abilityTip);
+
+        var box = new VBoxContainer();
+        box.AddThemeConstantOverride("separation", 3);
+        _abilityTip.AddChild(box);
+
+        _abilityTipTitle = new Label { Text = "" };
+        _abilityTipTitle.AddThemeFontSizeOverride("font_size", 18);
+        _abilityTipTitle.AddThemeColorOverride("font_color", new Color("3F7A34"));
+        box.AddChild(_abilityTipTitle);
+
+        _abilityTipBody = new RichTextLabel
+        {
+            BbcodeEnabled = true,
+            FitContent = true,
+            ScrollActive = false,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            CustomMinimumSize = new Vector2(276, 0),
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _abilityTipBody.AddThemeFontSizeOverride("normal_font_size", 14);
+        _abilityTipBody.AddThemeColorOverride("default_color", UiTheme.Ink);
+        box.AddChild(_abilityTipBody);
+
+        _abilityTipDuration = new Label { Text = "" };
+        _abilityTipDuration.AddThemeFontSizeOverride("font_size", 12);
+        _abilityTipDuration.AddThemeColorOverride("font_color", new Color("7A6A4A"));
+        box.AddChild(_abilityTipDuration);
+    }
+
+    /// <summary>按当前对局状态刷新左上角效果图标（打出/结束都会实时变化）。</summary>
+    private void RefreshAbilities()
+    {
+        if (_abilityBar == null || _state == null)
+            return;
+
+        _abilityEffects.Clear();
+        _abilityEffects.AddRange(ActiveEffects.Collect(_state.Player));
+
+        string signature = "";
+        foreach (ActiveEffect e in _abilityEffects)
+            signature += e.Id + ":" + e.Value + "|";
+
+        if (signature != _abilitySignature)
+        {
+            _abilitySignature = signature;
+
+            foreach (Node child in _abilityBar.GetChildren())
+            {
+                _abilityBar.RemoveChild(child);
+                child.QueueFree();
+            }
+
+            foreach (ActiveEffect effect in _abilityEffects)
+            {
+                var cell = new Control
+                {
+                    CustomMinimumSize = new Vector2(48, 48),
+                    MouseFilter = Control.MouseFilterEnum.Stop,
+                    PivotOffset = new Vector2(24, 24),
+                };
+
+                var icon = new TextureRect
+                {
+                    ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                    StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+                    MouseFilter = Control.MouseFilterEnum.Ignore,
+                };
+                icon.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+                if (ResourceLoader.Exists(effect.IconPath))
+                    icon.Texture = GD.Load<Texture2D>(effect.IconPath);
+                cell.AddChild(icon);
+
+                // 杀戮尖塔式能力角标：右下角显示能力数值
+                if (effect.HasValue)
+                {
+                    var value = new Label
+                    {
+                        Text = effect.Value.ToString(),
+                        MouseFilter = Control.MouseFilterEnum.Ignore,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        VerticalAlignment = VerticalAlignment.Bottom,
+                    };
+                    value.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomRight);
+                    value.OffsetLeft = -26;
+                    value.OffsetTop = -26;
+                    value.OffsetRight = -1;
+                    value.OffsetBottom = 0;
+                    value.AddThemeFontSizeOverride("font_size", 18);
+                    value.AddThemeColorOverride("font_color", new Color("FFE45C"));
+                    value.AddThemeConstantOverride("outline_size", 4);
+                    value.AddThemeColorOverride("font_outline_color", new Color("3B2E16"));
+                    cell.AddChild(value);
+                }
+
+                ActiveEffect captured = effect;
+                cell.MouseEntered += () =>
+                {
+                    AnimateAbilityHover(cell, true);
+                    ShowAbilityTip(captured);
+                };
+                cell.MouseExited += () =>
+                {
+                    AnimateAbilityHover(cell, false);
+                    HideAbilityTip();
+                };
+                _abilityBar.AddChild(cell);
+            }
+        }
+
+        bool any = _abilityEffects.Count > 0;
+        _abilityBar.Visible = any;
+        if (!any)
+            HideAbilityTip();
+
+        if (_terrainPanel != null)
+            _terrainPanel.OffsetTop = any ? 132 : 78;
+    }
+
+    /// <summary>能力图标悬停放大 / 移开恢复（带缓动，不改变布局）。</summary>
+    private void AnimateAbilityHover(Control cell, bool hover)
+    {
+        if (cell == null || !IsInstanceValid(cell))
+            return;
+
+        cell.ZIndex = hover ? 10 : 0;
+
+        // 同一图标上的旧动画先杀掉，快速移入移出不会叠加
+        if (cell.HasMeta("hover_tween"))
+        {
+            var old = cell.GetMeta("hover_tween").As<Tween>();
+            if (old != null && old.IsValid())
+                old.Kill();
+        }
+
+        Tween tween = cell.CreateTween();
+        cell.SetMeta("hover_tween", tween);
+        tween.TweenProperty(cell, "scale", hover ? Vector2.One * 1.18f : Vector2.One,
+                hover ? 0.12f : 0.16f)
+            .SetTrans(Tween.TransitionType.Back)
+            .SetEase(hover ? Tween.EaseType.Out : Tween.EaseType.InOut);
+    }
+    private void ShowAbilityTip(ActiveEffect effect)
+    {
+        if (_abilityTip == null || effect == null)
+            return;
+
+        _abilityTipTitle.Text = Loc.T(effect.NameKey);
+        _abilityTipTitle.AddThemeColorOverride("font_color",
+            effect.Positive ? new Color("3F7A34") : new Color("B0392E"));
+        string desc = Loc.T(effect.DescKey);
+        if (effect.HasValue)
+            desc = desc.Replace("{0}", $"[color=#B8860B][b]{effect.Value}[/b][/color]");
+        _abilityTipBody.Text = desc;
+
+        bool hasDuration = !string.IsNullOrEmpty(effect.DurationKey);
+        _abilityTipDuration.Visible = hasDuration;
+        if (hasDuration)
+            _abilityTipDuration.Text = Loc.T(effect.DurationKey);
+
+        _abilityTip.Visible = true;
+        _abilityTip.MoveToFront();
+    }
+
+    private void HideAbilityTip()
+    {
+        if (_abilityTip != null)
+            _abilityTip.Visible = false;
+    }
+
+    /// <summary>调试：直接展开第一个效果说明（截图/验证用）。</summary>
+    public void DebugShowAbilityTip()
+    {
+        if (_abilityEffects.Count > 0)
+            ShowAbilityTip(_abilityEffects[0]);
+    }
+
+    public int DebugAbilityIconCount => _abilityBar == null ? 0 : _abilityBar.GetChildCount();
+
+    /// <summary>调试：直接对第一个能力图标播放悬停放大。</summary>
+    public void DebugHoverFirstAbility()
+    {
+        if (_abilityBar != null && _abilityBar.GetChildCount() > 0 && _abilityBar.GetChild(0) is Control c)
+            AnimateAbilityHover(c, true);
+    }
+
+    /// <summary>调试：第一个能力图标的当前缩放。</summary>
+    public float DebugAbilityIconScale =>
+        _abilityBar != null && _abilityBar.GetChildCount() > 0 && _abilityBar.GetChild(0) is Control c
+            ? c.Scale.X
+            : -1f;
     private void BuildTerrainPanel()
     {
         _terrainPanel = new PanelContainer
@@ -1398,9 +1717,39 @@ public partial class BattleHud : CanvasLayer
     /// 「选一张手牌弃掉」阶段：整排手牌泛绿并轻轻起伏，
     /// 同时压暗 3D 场景（不遮 UI）并显示一条持续的大号提示。
     /// </summary>
-    public void SetHandPickMode(bool on)
+    private string _pickBannerOverride;
+    private string _pickEndTextOverride;
+
+    public void SetHandPickMode(bool on, string bannerText = null, string endTurnText = null,
+                               System.Collections.Generic.IReadOnlyList<int> selectable = null,
+                               int requiredCount = 1)
     {
         _handPickMode = on;
+        _pickBannerOverride = bannerText;
+        _pickEndTextOverride = endTurnText;
+        _pickRequired = Mathf.Max(1, requiredCount);
+        _hand.SetPickableIndices(on ? selectable : null);
+        _hand.SetPickSelection(null);
+
+        // 临时区：开启时显示，关闭时立刻清空残留卡面
+        if (_pickStaging != null)
+        {
+            _pickStaging.Visible = on;
+            ClearStagingClones();
+            if (on)
+            {
+                _pickStaging.Modulate = new Color(1, 1, 1, 0);
+                var fade = CreateTween();
+                fade.TweenProperty(_pickStaging, "modulate", Colors.White, 0.18f);
+            }
+        }
+
+        if (_pickConfirm != null)
+        {
+            _pickConfirm.Visible = on;
+            _pickConfirm.Disabled = true;
+            _pickConfirm.Text = $"{Loc.T("choice.confirm")}（0/{_pickRequired}）";
+        }
         _hand.Modulate = on ? new Color(0.82f, 1f, 0.86f) : Colors.White;
 
         if (on)
@@ -1418,6 +1767,83 @@ public partial class BattleHud : CanvasLayer
             RefreshTop();
     }
 
+    /// <summary>手牌多选：刷新选中高亮与确定按钮状态。</summary>
+    public void SetHandPickSelection(System.Collections.Generic.IReadOnlyList<int> indices)
+    {
+        _hand.SetPickSelection(indices);
+
+        int count = indices?.Count ?? 0;
+        if (_pickConfirm != null)
+        {
+            _pickConfirm.Text = $"{Loc.T("choice.confirm")}（{count}/{_pickRequired}）";
+            _pickConfirm.Disabled = count != _pickRequired;
+        }
+
+        RebuildStagingClones(indices);
+    }
+
+    private void ClearStagingClones()
+    {
+        if (_pickStagingRow == null)
+            return;
+
+        foreach (Node child in _pickStagingRow.GetChildren())
+        {
+            _pickStagingRow.RemoveChild(child);
+            child.QueueFree();
+        }
+    }
+
+    private void RebuildStagingClones(System.Collections.Generic.IReadOnlyList<int> indices)
+    {
+        if (_pickStagingRow == null || _state == null)
+            return;
+
+        ClearStagingClones();
+        if (_pickStaging != null)
+            _pickStaging.Visible = _handPickMode;
+
+        if (indices == null)
+            return;
+
+        for (int i = 0; i < indices.Count; i++)
+        {
+            int handIndex = indices[i];
+            if (handIndex < 0 || handIndex >= _state.Player.Hand.Count)
+                continue;
+
+            CardDef def = GameDatabase.Card(_state.Player.Hand[handIndex]);
+            if (def == null)
+                continue;
+
+            const float StagingScale = 0.95f;
+            var slot = new Control
+            {
+                CustomMinimumSize = new Vector2(CardView.CardWidth * StagingScale + 10f,
+                                                CardView.CardHeight * StagingScale + 8f),
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+            };
+            _pickStagingRow.AddChild(slot);
+
+            var card = new CardView
+            {
+                Position = Vector2.Zero,
+                PivotOffset = Vector2.Zero,
+                Scale = Vector2.One * StagingScale,
+            };
+            card.Setup(def, handIndex, affordable: true, costOverride: _state.CostAt(_state.Player, handIndex));
+            slot.AddChild(card);
+
+            int captured = handIndex;
+            card.Clicked += _ => PickSelectionRemoved?.Invoke(captured);
+
+            // 入场弹出
+            card.Scale = Vector2.One * 0.82f;
+            var pop = card.CreateTween();
+            pop.TweenProperty(card, "scale", Vector2.One * StagingScale, 0.16f)
+                .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        }
+    }
     private void ShowPickHint()
     {
         if (_pickDim != null)
@@ -1430,7 +1856,9 @@ public partial class BattleHud : CanvasLayer
         if (_pickBanner == null)
             return;
 
-        _pickBanner.Text = Loc.T("battle.pick_discard");
+        _pickBanner.Text = string.IsNullOrEmpty(_pickBannerOverride)
+            ? Loc.T("battle.pick_discard")
+            : _pickBannerOverride;
         _pickBanner.Visible = true;
         _pickBanner.Modulate = new Color(1f, 1f, 1f, 1f);
         _pickBanner.Scale = Vector2.One;
@@ -1455,6 +1883,13 @@ public partial class BattleHud : CanvasLayer
     }
 
     private bool _handPickMode;
+    private Button _pickConfirm;
+    private PanelContainer _pickStaging;
+    private HBoxContainer _pickStagingRow;
+    private Label _pickStagingTitle;
+    private int _pickRequired = 1;
+    public event Action PickConfirmed;
+    public event Action<int> PickSelectionRemoved;
     private ColorRect _pickDim;
     private Label _pickBanner;
 

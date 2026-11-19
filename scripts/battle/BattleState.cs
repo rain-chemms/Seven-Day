@@ -82,6 +82,9 @@ public sealed class UnitInst
     /// <summary>潜艇：本回合是否已经切换过潜浮。</summary>
     public bool DiveUsed;
 
+    /// <summary>召唤这个单位时支付的价格（强制兵役阵亡负债用）。</summary>
+    public int SummonCost;
+
     /// <summary>航母：本回合是否已经用过雷达搜索。</summary>
     public bool RadarUsed;
 
@@ -101,6 +104,12 @@ public sealed class PlayerState
     public readonly List<string> Deck = new();
     public readonly List<string> Hand = new();
     public readonly List<string> Discard = new();
+
+    /// <summary>延时决策等赋予的「保留」实例标记（不改变卡牌定义）。</summary>
+    public readonly List<string> Retained = new();
+
+    /// <summary>呼叫增援拿到的卡：手牌实例费用临时为 0（打出后消失）。</summary>
+    public readonly List<string> ZeroCost = new();
 
     /// <summary>消耗堆：打出「消耗」关键字的卡进这里，永远不会洗回牌库。</summary>
     public readonly List<string> Exhaust = new();
@@ -135,7 +144,27 @@ public sealed class PlayerState
     /// <summary>抽牌堆里那些「发射井产出、打出即消耗」的卡。</summary>
     public readonly List<string> ProducedExhaustDeck = new();
 
-    public bool BonusMove;
+    /// <summary>「强行军」能力剩余回合数：&gt;0 时地面单位移动 +1。</summary>
+    public int ForcedMarchTurns;
+
+    /// <summary>发行债券：下回合开始时需要扣除的负债金额。</summary>
+    public int PendingBondDebt;
+
+    /// <summary>房屋补贴：下回合开始时要免费升级的建筑数量。</summary>
+    public int PendingHousingUpgrades;
+
+    /// <summary>房屋补贴生效的回合号（打出后的下一回合）。</summary>
+    public int HousingUpgradeDueTurn;
+
+
+    /// <summary>强制兵役：建筑召唤军队免费，阵亡时按召唤价 110% 负债。</summary>
+    public bool Conscription;
+
+    /// <summary>战时医疗层数：每层回合开始恢复已损生命 25%。</summary>
+    public int MedicalStacks;
+
+    /// <summary>「世界如此变幻莫测」的累计打出次数，用于让每次随机候选不同。</summary>
+    public int RandomCardPlays;
 
     public bool IsPlayer => Id == PlayerId.Player;
 }
@@ -447,8 +476,17 @@ public sealed class BattleState
 
             for (int i = 0; i < owned; i++)
             {
-                if (st.Hand.Remove("magic_missile"))
-                    RemovedCards.Add((b.Owner, "magic_missile"));
+                int at = st.Hand.IndexOf("magic_missile");
+                if (at < 0)
+                    break;
+
+                int occurrence = OccurrenceAt(st.Hand, at);
+                st.Hand.RemoveAt(at);
+                TakeOccurrence(st.Ethereal, "magic_missile", occurrence);
+                TakeOccurrence(st.ProducedExhaust, "magic_missile", occurrence);
+                TakeOccurrence(st.ZeroCost, "magic_missile", occurrence);
+                TakeOccurrence(st.Retained, "magic_missile", occurrence);
+                RemovedCards.Add((b.Owner, "magic_missile"));
             }
         }
 
@@ -530,7 +568,7 @@ public sealed class BattleState
             return false;
         }
 
-        if (StateOf(b.Owner).Gold < UnitCost(cardId))
+        if (!StateOf(b.Owner).Conscription && StateOf(b.Owner).Gold < UnitCost(cardId))
         {
             reason = "金币不足";
             return false;
@@ -559,9 +597,11 @@ public sealed class BattleState
             return null;
         }
 
-        StateOf(b.Owner).Gold -= UnitCost(cardId);
+        PlayerState spawner = StateOf(b.Owner);
+        if (!spawner.Conscription)
+            spawner.Gold -= UnitCost(cardId);
 
-        UnitInst spawned = SpawnUnit(def.Id, b.Owner, b.Coord);
+        UnitInst spawned = SpawnUnit(def.Id, b.Owner, b.Coord, UnitCost(cardId));
         if (spawned != null)
         {
             spawned.SpawnedThisTurn = true;
@@ -678,7 +718,7 @@ public sealed class BattleState
         }
 
         StateOf(carrier.Owner).Gold -= UnitCost(cardId);
-        UnitInst spawned = SpawnUnit(def.Id, carrier.Owner, carrier.Coord);
+        UnitInst spawned = SpawnUnit(def.Id, carrier.Owner, carrier.Coord, UnitCost(cardId));
         if (spawned != null)
         {
             spawned.SpawnedThisTurn = true;
@@ -710,7 +750,7 @@ public sealed class BattleState
             return 0;
 
         int steps = u.Def.Move;
-        if (StateOf(u.Owner).BonusMove && !u.IsAir)
+        if (StateOf(u.Owner).ForcedMarchTurns > 0 && !u.IsAir)
             steps += 1;
 
         if (!u.IsAir)
@@ -748,7 +788,7 @@ public sealed class BattleState
     }
     // ─────────────────────────── 单位 ───────────────────────────
 
-    public UnitInst SpawnUnit(string defId, PlayerId owner, HexCoord coord)
+    public UnitInst SpawnUnit(string defId, PlayerId owner, HexCoord coord, int summonCost = 0)
     {
         UnitDef def = GameDatabase.Unit(defId);
         Cell cell = Cell(coord);
@@ -763,12 +803,400 @@ public sealed class BattleState
             Owner = owner,
             Coord = coord,
             Hp = def.Hp,
+            SummonCost = summonCost,
         };
         cell.Units.Add(u);
         Units.Add(u);
         return u;
     }
 
+    /// <summary>单位阵亡：移除并结算「强制兵役」的召唤金额 110% 负债。</summary>
+    public void KillUnit(UnitInst u, Cell cell = null)
+    {
+        if (u == null)
+            return;
+
+        (cell ?? Cell(u.Coord))?.Units.Remove(u);
+        Units.Remove(u);
+
+        PlayerState st = StateOf(u.Owner);
+        if (st.Conscription && u.SummonCost > 0)
+            st.Gold -= Mathf.CeilToInt(u.SummonCost * 1.1f);
+    }
+
+    private const string MarkerPlaceholderPrefix = "\u0001";
+
+    private static string MarkerPlaceholder(string cardId) => MarkerPlaceholderPrefix + cardId;
+
+    private static bool IsMarkerSlot(string entry, string cardId) =>
+        entry == cardId || entry == MarkerPlaceholder(cardId);
+
+    private static bool HasOccurrenceAt(List<string> markers, string cardId, int occurrence)
+    {
+        int seen = 0;
+        foreach (string m in markers)
+        {
+            if (!IsMarkerSlot(m, cardId))
+                continue;
+            if (seen++ == occurrence)
+                return m == cardId;
+        }
+
+        return false;
+    }
+
+    /// <summary>给刚加入手牌最后一张的实例添加关键字。</summary>
+    private static void MarkLastOccurrence(PlayerState st, string cardId,
+        bool ethereal = false, bool producedExhaust = false,
+        bool retained = false, bool zeroCost = false)
+    {
+        if (st == null || st.Hand.Count == 0)
+            return;
+
+        int occurrence = OccurrenceAt(st.Hand, st.Hand.Count - 1);
+        if (ethereal)
+            GrantOccurrence(st.Ethereal, cardId, occurrence);
+        if (producedExhaust)
+            GrantOccurrence(st.ProducedExhaust, cardId, occurrence);
+        if (retained)
+            GrantOccurrence(st.Retained, cardId, occurrence);
+        if (zeroCost)
+            GrantOccurrence(st.ZeroCost, cardId, occurrence);
+    }
+
+    /// <summary>把「第 occurrence 次出现的 cardId」标记为真；不足的槽位补占位符。</summary>
+    private static bool GrantOccurrence(List<string> markers, string cardId, int occurrence)
+    {
+        if (occurrence < 0)
+            return false;
+
+        int seen = 0;
+        for (int i = 0; i < markers.Count; i++)
+        {
+            if (!IsMarkerSlot(markers[i], cardId))
+                continue;
+
+            if (seen == occurrence)
+            {
+                if (markers[i] == cardId)
+                    return false;
+                markers[i] = cardId;
+                return true;
+            }
+            seen++;
+        }
+
+        while (seen <= occurrence)
+        {
+            markers.Add(seen == occurrence ? cardId : MarkerPlaceholder(cardId));
+            seen++;
+        }
+        return true;
+    }
+
+    /// <summary>手牌第 index 张的显示费用（呼叫增援得到的牌为 0）。</summary>
+    public int CostAt(PlayerState st, int handIndex)
+    {
+        if (st == null || handIndex < 0 || handIndex >= st.Hand.Count)
+            return 0;
+
+        string id = st.Hand[handIndex];
+        CardDef card = GameDatabase.Card(id);
+        if (st.Conscription && card?.KindEnum == CardKind.Unit)
+            return 0;
+
+        int occurrence = OccurrenceAt(st.Hand, handIndex);
+        if (HasOccurrenceAt(st.ZeroCost, id, occurrence))
+            return 0;
+
+        return card?.Cost ?? 0;
+    }
+
+    /// <summary>这张手牌实际是否带「保留」：定义自带，或延时决策赋予。</summary>
+    public bool HasRetainAt(PlayerState st, int handIndex)
+    {
+        if (st == null || handIndex < 0 || handIndex >= st.Hand.Count)
+            return false;
+
+        string id = st.Hand[handIndex];
+        if (GameDatabase.Card(id)?.Retain == true)
+            return true;
+
+        int occurrence = OccurrenceAt(st.Hand, handIndex);
+        return HasOccurrenceAt(st.Retained, id, occurrence);
+    }
+
+    /// <summary>给这张手牌实例添加「保留」关键字。</summary>
+    public bool GrantRetainAt(PlayerState st, int handIndex)
+    {
+        if (st == null || handIndex < 0 || handIndex >= st.Hand.Count)
+            return false;
+
+        if (HasRetainAt(st, handIndex))
+            return false;
+
+        int occurrence = OccurrenceAt(st.Hand, handIndex);
+        return GrantOccurrence(st.Retained, st.Hand[handIndex], occurrence);
+    }
+
+    /// <summary>可以成为「延时决策」目标的手牌下标（过滤已有保留的牌）。</summary>
+    public List<int> RetainTargetIndices(PlayerState st)
+    {
+        var result = new List<int>();
+        for (int i = 0; i < st.Hand.Count; i++)
+        {
+            if (!HasRetainAt(st, i))
+                result.Add(i);
+        }
+
+        return result;
+    }
+    /// <summary>当前打出的这张牌的实际费用（临时 0 费在这里生效）。</summary>
+    public int EffectiveCost(PlayerState st, string cardId)
+    {
+        CardDef def = GameDatabase.Card(cardId);
+        int baseCost = def?.Cost ?? 0;
+        if (st == null)
+            return baseCost;
+
+        // 强制兵役：从手牌部署单位卡同样免费
+        if (st.Conscription && def?.KindEnum == CardKind.Unit)
+            return 0;
+
+        int at = PlayIndex;
+        if (at < 0 || at >= st.Hand.Count || st.Hand[at] != cardId)
+            at = st.Hand.IndexOf(cardId);
+        if (at < 0)
+            return baseCost;
+
+        int occurrence = OccurrenceAt(st.Hand, at);
+        return HasOccurrenceAt(st.ZeroCost, cardId, occurrence) ? 0 : baseCost;
+    }
+    /// <summary>把一张牌以「虚无 + 消耗」的实例标记加入手牌。</summary>
+    public bool AddCardWithMarkers(PlayerState st, string cardId, bool zeroCost = false)
+    {
+        if (st == null || st.Hand.Count >= HandLimit)
+            return false;
+
+        st.Hand.Add(cardId);
+        int occurrence = OccurrenceAt(st.Hand, st.Hand.Count - 1);
+        GrantOccurrence(st.Ethereal, cardId, occurrence);
+        GrantOccurrence(st.ProducedExhaust, cardId, occurrence);
+        if (zeroCost)
+            GrantOccurrence(st.ZeroCost, cardId, occurrence);
+        return true;
+    }
+
+    /// <summary>消耗手牌中的一张（不进弃牌堆，直接进消耗堆）。</summary>
+    public bool ExhaustCardFromHand(PlayerState st, int handIndex)
+    {
+        if (st == null || handIndex < 0 || handIndex >= st.Hand.Count)
+            return false;
+
+        string id = st.Hand[handIndex];
+        int occurrence = OccurrenceAt(st.Hand, handIndex);
+        st.Hand.RemoveAt(handIndex);
+
+        bool ethereal = TakeEtherealOccurrence(st, id, occurrence);
+        TakeOccurrence(st.ProducedExhaust, id, occurrence);
+        TakeOccurrence(st.ZeroCost, id, occurrence);
+        TakeOccurrence(st.Retained, id, occurrence);
+        st.Exhaust.Add(id);
+        if (ethereal)
+            st.EtherealExhausted.Add(id);
+        ExhaustedThisTurn.Add(id);
+        return true;
+    }
+
+    /// <summary>复制一张手牌（默认 2 张复制品，复制品不带原卡关键字）。</summary>
+    public int DuplicateHandCard(PlayerState st, int handIndex, int count = 2)
+    {
+        if (st == null || handIndex < 0 || handIndex >= st.Hand.Count)
+            return 0;
+
+        string id = st.Hand[handIndex];
+        int occurrence = OccurrenceAt(st.Hand, handIndex);
+
+        // 复制时连同实例关键字一起复制：虚无 / 消耗 / 保留 / 临时 0 费
+        bool ethereal = HasOccurrenceAt(st.Ethereal, id, occurrence);
+        bool producedExhaust = HasOccurrenceAt(st.ProducedExhaust, id, occurrence);
+        bool retained = HasOccurrenceAt(st.Retained, id, occurrence);
+        bool zeroCost = HasOccurrenceAt(st.ZeroCost, id, occurrence);
+
+        int added = 0;
+        for (int i = 0; i < count && st.Hand.Count < HandLimit; i++)
+        {
+            st.Hand.Add(id);
+            int copyOccurrence = OccurrenceAt(st.Hand, st.Hand.Count - 1);
+            if (ethereal)
+                GrantOccurrence(st.Ethereal, id, copyOccurrence);
+            if (producedExhaust)
+                GrantOccurrence(st.ProducedExhaust, id, copyOccurrence);
+            if (retained)
+                GrantOccurrence(st.Retained, id, copyOccurrence);
+            if (zeroCost)
+                GrantOccurrence(st.ZeroCost, id, copyOccurrence);
+            added++;
+        }
+
+        return added;
+    }
+
+    /// <summary>完全随机滚出 5 张卡（两端同种子，联机一致）。</summary>
+    public List<string> RollRandomCardChoices(PlayerState st)
+    {
+        var pool = GameDatabase.Cards.Values
+            .Select(c => c.Id)
+            .OrderBy(id => id)
+            .ToList();
+
+        var rng = new System.Random(91357 + TurnNumber * 197 + st.RandomCardPlays * 7919);
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        return pool.Take(5).ToList();
+    }
+
+    private void AddCardWithMarkersOrDiscard(PlayerState st, string cardId)
+    {
+        if (!AddCardWithMarkers(st, cardId))
+            st.Discard.Add(cardId);
+    }
+
+    /// <summary>从 5 张随机候选中取指定下标（最多 2 张）加入手牌。</summary>
+    public int TakeRandomChoices(PlayerState st, System.Collections.Generic.IReadOnlyList<int> indices)
+    {
+        if (st == null || indices == null)
+            return 0;
+
+        int added = 0;
+        foreach (int index in indices)
+        {
+            if (index < 0 || index >= PendingRandomChoices.Count)
+                continue;
+
+            string cardId = PendingRandomChoices[index];
+            AddCardWithMarkersOrDiscard(st, cardId);
+            added++;
+            if (added >= 2)
+                break;
+        }
+
+        PendingRandomChoices.Clear();
+        return added;
+    }
+
+    /// <summary>从抽牌堆取指定下标的牌：手牌放不下的进弃牌堆。</summary>
+    public int TakeDeckCards(PlayerState st, System.Collections.Generic.IReadOnlyList<int> indices)
+    {
+        if (st == null || indices == null)
+            return 0;
+
+        var sorted = new List<int>();
+        foreach (int index in indices)
+        {
+            if (index >= 0 && index < st.Deck.Count && !sorted.Contains(index))
+                sorted.Add(index);
+        }
+        sorted.Sort();
+        sorted.Reverse();
+
+        int moved = 0;
+        foreach (int index in sorted)
+        {
+            string id = st.Deck[index];
+            st.Deck.RemoveAt(index);
+            if (st.Hand.Count < HandLimit)
+                st.Hand.Add(id);
+            else
+                st.Discard.Add(id);
+            moved++;
+        }
+
+        PendingDeckPick = false;
+        return moved;
+    }
+
+    /// <summary>滚出三张随机的军队单位卡（同一局两端使用相同种子，联机一致）。</summary>
+    public List<string> RollReinforceChoices(PlayerState st)
+    {
+        var pool = GameDatabase.Cards.Values
+            .Where(c => c.KindEnum == CardKind.Unit)
+            .Select(c => c.Id)
+            .OrderBy(id => id)
+            .ToList();
+
+        var rng = new System.Random(31337 + TurnNumber * 131 + st.Hand.Count * 7);
+        for (int i = pool.Count - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            (pool[i], pool[j]) = (pool[j], pool[i]);
+        }
+
+        return pool.Take(3).ToList();
+    }
+
+    /// <summary>玩家从三张增援中选择一张。</summary>
+    public bool TakeReinforceChoice(PlayerState st, int index)
+    {
+        if (index < 0 || index >= PendingReinforceChoices.Count)
+            return false;
+
+        string cardId = PendingReinforceChoices[index];
+        PendingReinforceChoices.Clear();
+        return AddCardWithMarkers(st, cardId, zeroCost: true);
+    }
+
+    /// <summary>玩家选择一张手牌消耗，然后抽两张。</summary>
+    public bool ResolveExhaustPick(PlayerState st, int handIndex)
+    {
+        if (!PendingExhaustPick || !ExhaustCardFromHand(st, handIndex))
+            return false;
+
+        PendingExhaustPick = false;
+        DrawCard(st, 2);
+        return true;
+    }
+
+    /// <summary>玩家选择一张手牌，复制两张加入手牌。</summary>
+    public bool ResolveDuplicatePick(PlayerState st, int handIndex)
+    {
+        if (!PendingDuplicatePick)
+            return false;
+
+        DuplicateHandCard(st, handIndex, 2);
+        PendingDuplicatePick = false;
+        return true;
+    }
+
+    /// <summary>本回合免费升级过的建筑 id（表现层播升级动画）。</summary>
+    public readonly List<int> LastFreeUpgradedBuildings = new();
+
+    /// <summary>下回合免费升级若干己方建筑（房屋补贴）。</summary>
+    private void UpgradeBuildingsForFree(PlayerState st, int count)
+    {
+        // 坐标排序 + 与阵营无关的种子：联机两端挑选结果一致
+        var eligible = Buildings
+            .Where(b => b.Owner == st.Id && !b.IsDead && b.Level < b.Def.MaxLevel)
+            .OrderBy(b => b.Coord.Q)
+            .ThenBy(b => b.Coord.R)
+            .ToList();
+
+        LastFreeUpgradedBuildings.Clear();
+        var rng = new System.Random(7919 + TurnNumber * 97 + eligible.Count * 13);
+        for (int i = 0; i < count && eligible.Count > 0; i++)
+        {
+            int pick = rng.Next(eligible.Count);
+            BuildingInst b = eligible[pick];
+            eligible.RemoveAt(pick);
+            b.Level++;
+            b.Hp = b.MaxHp;
+            LastFreeUpgradedBuildings.Add(b.Id);
+        }
+    }
     public IEnumerable<UnitInst> UnitsAt(HexCoord c) =>
         Cell(c)?.Units.Where(u => u.Alive) ?? Enumerable.Empty<UnitInst>();
 
@@ -1039,8 +1467,7 @@ public sealed class BattleState
             log.Add($"{t.Def.NameZh} -{dmg}");
             if (t.Hp <= 0)
             {
-                cell.Units.Remove(t);
-                Units.Remove(t);
+                KillUnit(t, cell);
                 log.Add($"{t.Def.NameZh} 被消灭");
             }
         }
@@ -1062,8 +1489,7 @@ public sealed class BattleState
         // 自爆：打完自己也报销（无人机撞上去就没了）
         if (suicide)
         {
-            cell.Units.Remove(u);
-            Units.Remove(u);
+            KillUnit(u, cell);
             u.Hp = 0;
             log.Add($"{u.Def.NameZh} 自爆");
         }
@@ -1140,16 +1566,17 @@ public sealed class BattleState
         if (!CanDeployCard(cardId, st.Id, coord, out error))
             return false;
 
-        if (st.Gold < card.Cost)
+        int playCost = EffectiveCost(st, cardId);
+        if (st.Gold < playCost)
         {
             error = "金币不足";
             return false;
         }
 
-        st.Gold -= card.Cost;
+        st.Gold -= playCost;
         RemoveCardFromHand(st, cardId);
         SendToPlayedPile(st, card);
-        SpawnUnit(card.Unit, st.Id, coord);
+        SpawnUnit(card.Unit, st.Id, coord, card.Cost);
         error = "";
         return true;
     }
@@ -1169,7 +1596,7 @@ public sealed class BattleState
             return false;
         }
 
-        if (st.Gold < card.Cost)
+        if (st.Gold < EffectiveCost(st, cardId))
         {
             error = "金币不足";
             return false;
@@ -1178,6 +1605,31 @@ public sealed class BattleState
         if (card.KindEnum == CardKind.Unit)
         {
             error = "这张卡需要指定部署地块";
+            return false;
+        }
+
+        // 需要「选择一张手牌」的卡：手里至少还要有另一张牌
+        if (card.Effect is "fight_corruption" or "tactical_preference" && st.Hand.Count <= 1)
+        {
+            error = "手里没有可选择的其它卡牌";
+            return false;
+        }
+
+        if (card.Effect == "conscription" && st.Conscription)
+        {
+            error = "已经拥有「强制兵役」能力";
+            return false;
+        }
+
+        if (card.Effect == "attrition" && RetainTargetIndices(st).Count == 0)
+        {
+            error = "没有可添加「保留」的手牌";
+            return false;
+        }
+
+        if (card.Effect == "battlefield_survey" && st.Deck.Count == 0)
+        {
+            error = "抽牌堆是空的";
             return false;
         }
 
@@ -1232,7 +1684,8 @@ public sealed class BattleState
             return "";
         }
 
-        if (st.Gold < card.Cost)
+        int playCost = EffectiveCost(st, card.Id);
+        if (st.Gold < playCost)
         {
             error = "金币不足";
             return "";
@@ -1247,7 +1700,7 @@ public sealed class BattleState
             healed.Add(delta > 0 ? $"{u.Def.NameZh} +{delta}" : $"{u.Def.NameZh} 已满血");
         }
 
-        st.Gold -= card.Cost;
+        st.Gold -= playCost;
         RemoveCardFromHand(st, card.Id);
         SendToPlayedPile(st, card);
 
@@ -1281,7 +1734,8 @@ public sealed class BattleState
                 return PlayRepairCard(st, card, strikeCell, out error);
         }
 
-        if (st.Gold < card.Cost)
+        int playCost = EffectiveCost(st, cardId);
+        if (st.Gold < playCost)
         {
             error = "金币不足";
             return "";
@@ -1320,8 +1774,7 @@ public sealed class BattleState
                 hits.Add($"{u.Def.NameZh} -{power}");
                 if (u.Hp <= 0)
                 {
-                    cell.Units.Remove(u);
-                    Units.Remove(u);
+                    KillUnit(u, cell);
                     hits.Add($"{u.Def.NameZh} 被消灭");
                 }
             }
@@ -1338,7 +1791,7 @@ public sealed class BattleState
                 }
             }
 
-            st.Gold -= card.Cost;
+            st.Gold -= playCost;
             RemoveCardFromHand(st, cardId);
             SendToPlayedPile(st, card);
             CheckVictory();
@@ -1357,15 +1810,16 @@ public sealed class BattleState
             }
             case "boost":
             {
-                st.BonusMove = true;
-                st.Gold -= card.Cost;
+                // 强行军是持续能力：每次打出延长 1 回合，能力本身提供地面单位移动 +1
+                st.ForcedMarchTurns += Mathf.Max(1, card.Power);
+                st.Gold -= playCost;
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
-                return $"{card.NameZh}：本回合地面单位移动 +{card.Power}";
+                return $"{card.NameZh}：地面单位移动 +1，持续 {st.ForcedMarchTurns} 回合";
             }
             case "supply":
             {
-                st.Gold -= card.Cost;
+                st.Gold -= playCost;
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
                 DrawCard(st, card.Power);
@@ -1394,7 +1848,7 @@ public sealed class BattleState
                     return "";
                 }
 
-                st.Gold -= card.Cost;
+                st.Gold -= playCost;
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
 
@@ -1406,7 +1860,7 @@ public sealed class BattleState
             case "gold_percent":
             {
                 // 汇率调节：按「当前资金」的比例追加（先扣费用再加，费用为 0 时等价）
-                st.Gold -= card.Cost;
+                st.Gold -= playCost;
                 int gain = Mathf.Max(0, Mathf.FloorToInt(st.Gold * card.Power / 100f));
                 st.Gold += gain;
 
@@ -1415,7 +1869,156 @@ public sealed class BattleState
 
                 return $"{card.NameZh}：获得 {gain}$";
             }
-            default:                st.Gold -= card.Cost;
+            case "unpredictable_world":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                st.RandomCardPlays++;
+                List<string> choices = RollRandomCardChoices(st);
+                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                if (interactive)
+                {
+                    PendingRandomChoices.Clear();
+                    PendingRandomChoices.AddRange(choices);
+                    return $"{card.NameZh}：从 5 张随机卡中选择 2 张";
+                }
+
+                for (int i = 0; i < 2 && i < choices.Count; i++)
+                    AddCardWithMarkersOrDiscard(st, choices[i]);
+                return $"{card.NameZh}：获得 2 张随机卡";
+            }
+            case "battlefield_survey":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                if (interactive && st.Deck.Count > 2)
+                {
+                    PendingDeckPick = true;
+                    return $"{card.NameZh}：从抽牌堆选择两张";
+                }
+
+                int take = Mathf.Min(2, st.Deck.Count);
+                var picked = new List<int>();
+                for (int i = 0; i < take; i++)
+                    picked.Add(i);
+                TakeDeckCards(st, picked);
+                return $"{card.NameZh}：取 {take} 张牌";
+            }
+            case "attrition":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                List<int> targets = RetainTargetIndices(st);
+                const int RetainCount = 2;
+                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                if (interactive && targets.Count > RetainCount)
+                {
+                    PendingRetainPick = true;
+                    return $"{card.NameZh}：选择两张手牌添加「保留」";
+                }
+
+                int applied = Mathf.Min(RetainCount, targets.Count);
+                for (int i = 0; i < applied; i++)
+                    GrantRetainAt(st, targets[i]);
+                return applied >= 2
+                    ? $"{card.NameZh}：两张手牌获得「保留」"
+                    : $"{card.NameZh}：{applied} 张手牌获得「保留」";
+            }            case "reinforce":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                List<string> choices = RollReinforceChoices(st);
+                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                if (interactive)
+                {
+                    PendingReinforceChoices.Clear();
+                    PendingReinforceChoices.AddRange(choices);
+                    return $"{card.NameZh}：选择一张军队单位牌";
+                }
+
+                AddCardWithMarkers(st, choices[0], zeroCost: true);
+                return $"{card.NameZh}：获得 {GameDatabase.Card(choices[0])?.NameZh}";
+            }
+            case "issue_bonds":
+            {
+                st.Gold += 500;
+                st.PendingBondDebt += 675;
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+                return $"{card.NameZh}：获得 500$，下回合开始负债 {st.PendingBondDebt}$";
+            }
+            case "fight_corruption":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                if (interactive && st.Hand.Count > 0)
+                {
+                    PendingExhaustPick = true;
+                    return $"{card.NameZh}：选择一张手牌消耗，然后抽 2 张";
+                }
+
+                if (st.Hand.Count > 0)
+                    ExhaustCardFromHand(st, 0);
+                DrawCard(st, 2);
+                return $"{card.NameZh}：消耗 1 张，抽 2 张";
+            }
+            case "tactical_preference":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                if (interactive && st.Hand.Count > 0)
+                {
+                    PendingDuplicatePick = true;
+                    return $"{card.NameZh}：选择一张手牌，复制 2 张";
+                }
+
+                if (st.Hand.Count > 0)
+                    DuplicateHandCard(st, 0, 2);
+                return $"{card.NameZh}：复制 2 张手牌";
+            }
+            case "housing_subsidy":
+            {
+                st.PendingHousingUpgrades += 2;
+                st.HousingUpgradeDueTurn = st.HousingUpgradeDueTurn <= 0
+                    ? TurnNumber + 1
+                    : Mathf.Min(st.HousingUpgradeDueTurn, TurnNumber + 1);
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+                return $"{card.NameZh}：下回合开始随机升级 2 栋建筑";
+            }
+            case "conscription":
+            {
+                st.Conscription = true;
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+                return $"{card.NameZh}：获得「强制兵役」能力";
+            }
+            case "medical_care":
+            {
+                st.MedicalStacks++;
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+                return $"{card.NameZh}：战时医疗提升至 {st.MedicalStacks * 25}%";
+            }            default:                st.Gold -= playCost;
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
                 return card.NameZh;
@@ -1440,11 +2043,38 @@ public sealed class BattleState
         Phase = who == PlayerId.Player ? BattlePhase.PlayerTurn : BattlePhase.EnemyTurn;
 
         PlayerState st = StateOf(who);
-        st.BonusMove = false;
+        // 强行军的持续时间在 EndTurn 递减，不在这里清空
         DrawnThisTurn = 0;
         LastDrawReshuffled = false;
         ProducedThisTurn.Clear();
         DrawnIndicesThisTurn.Clear();
+
+        // ── 上回合挂起的能力结算（发行债券 / 房屋补贴 / 战时医疗）──
+        if (st.PendingBondDebt > 0)
+        {
+            st.Gold -= st.PendingBondDebt;
+            st.PendingBondDebt = 0;
+        }
+
+        if (st.PendingHousingUpgrades > 0)
+        {
+            int upgrades = st.PendingHousingUpgrades;
+            st.PendingHousingUpgrades = 0;
+            UpgradeBuildingsForFree(st, upgrades);
+        }
+
+        if (st.MedicalStacks > 0)
+        {
+            int percent = 25 * st.MedicalStacks;
+            foreach (UnitInst u in Units.Where(u => u.Alive && u.Owner == who))
+            {
+                int missing = u.MaxHp - u.Hp;
+                if (missing <= 0)
+                    continue;
+
+                u.Hp = Mathf.Min(u.MaxHp, u.Hp + Mathf.CeilToInt(missing * percent / 100f));
+            }
+        }
 
         // 金币收入
         int income = 0;
@@ -1494,6 +2124,24 @@ public sealed class BattleState
 
     /// <summary>「战场扫荡」打出后等待玩家从消耗堆选一张。</summary>
     public bool PendingReclaimExhaust;
+
+    /// <summary>呼叫增援：等待玩家从三张随机单位卡里选一张。</summary>
+    public readonly List<string> PendingReinforceChoices = new();
+
+    /// <summary>整改反贪：等待玩家选择一张手牌消耗。</summary>
+    public bool PendingExhaustPick;
+
+    /// <summary>战术偏好：等待玩家选择一张手牌复制。</summary>
+    public bool PendingDuplicatePick;
+
+    /// <summary>延时决策：等待玩家选择一张手牌添加保留。</summary>
+    public bool PendingRetainPick;
+
+    /// <summary>世界如此变幻莫测：5 张随机候选，等待选择 2 张。</summary>
+    public readonly List<string> PendingRandomChoices = new();
+
+    /// <summary>战场勘测：等待从抽牌堆选择两张。</summary>
+    public bool PendingDeckPick;
 
     /// <summary>刚从手牌移除的那张是不是「虚无」实例。</summary>
     public bool LastRemovedEthereal { get; private set; }
@@ -1556,8 +2204,7 @@ public sealed class BattleState
                 log.Add($"{b.Def.NameZh} 击中 {target.Def.NameZh} -{dmg}");
                 if (target.Hp <= 0)
                 {
-                    Cell(target.Coord)?.Units.Remove(target);
-                    Units.Remove(target);
+                    KillUnit(target);
                     log.Add($"{target.Def.NameZh} 被消灭");
                 }
 
@@ -1647,8 +2294,7 @@ public sealed class BattleState
             message = $"{b.Def.NameZh} 额外开炮命中 {target.Def.NameZh} -{dmg}";
             if (target.Hp <= 0)
             {
-                Cell(target.Coord)?.Units.Remove(target);
-                Units.Remove(target);
+                KillUnit(target);
                 message += $"，{target.Def.NameZh} 被消灭";
             }
         }
@@ -1704,7 +2350,7 @@ public sealed class BattleState
                 string card = b.Level >= 3 ? "unit_tank" : "unit_infantry";
                 if (AddToHand(st, card))
                 {
-                    st.Ethereal.Add(card);      // 建筑发的兵种卡带「虚无」
+                    MarkLastOccurrence(st, card, ethereal: true);   // 建筑发的兵种卡带「虚无」
                     ProducedThisTurn.Add((card, b.Coord, st.Hand.Count - 1));
                 }
                 break;
@@ -1714,7 +2360,7 @@ public sealed class BattleState
                 string card = b.Level >= 3 ? "unit_fighter" : "unit_helicopter";
                 if (AddToHand(st, card))
                 {
-                    st.Ethereal.Add(card);
+                    MarkLastOccurrence(st, card, ethereal: true);
                     ProducedThisTurn.Add((card, b.Coord, st.Hand.Count - 1));
                 }
                 break;
@@ -1723,9 +2369,8 @@ public sealed class BattleState
                 // 每 3 回合给一张潜水艇（虚无 + 消耗）
                 if (TurnNumber % 3 == 0 && AddToHand(st, "unit_submarine"))
                 {
-                    st.Ethereal.Add("unit_submarine");
                     st.Produced.Add((b.Id, "unit_submarine"));
-                    st.ProducedExhaust.Add("unit_submarine");
+                    MarkLastOccurrence(st, "unit_submarine", ethereal: true, producedExhaust: true);
                     ProducedThisTurn.Add(("unit_submarine", b.Coord, st.Hand.Count - 1));
                 }
                 break;
@@ -1734,7 +2379,7 @@ public sealed class BattleState
                 if (TurnNumber % every == 0 && AddToHand(st, "magic_missile"))
                 {
                     st.Produced.Add((b.Id, "magic_missile"));   // 记住这张卡是哪座井产出的
-                    st.ProducedExhaust.Add("magic_missile");    // 这张打出后进消耗堆
+                    MarkLastOccurrence(st, "magic_missile", producedExhaust: true);
                     ProducedThisTurn.Add(("magic_missile", b.Coord, st.Hand.Count - 1));
                 }
                 break;
@@ -1763,12 +2408,38 @@ public sealed class BattleState
         if (eth >= 0)
         {
             st.EtherealExhausted.RemoveAt(eth);
-            st.Ethereal.Add(id);
+            MarkLastOccurrence(st, id, ethereal: true);
         }
 
         st.Hand.Add(id);
         PendingReclaimExhaust = false;
         return st.Hand.Count - 1;
+    }
+    /// <summary>从消耗堆回收多张牌（序号按当前消耗堆顺序，内部从后往前清）。</summary>
+    public int ReclaimManyFromExhaust(PlayerState st, System.Collections.Generic.IReadOnlyList<int> indices)
+    {
+        if (st == null || indices == null)
+            return 0;
+
+        var sorted = new List<int>();
+        foreach (int index in indices)
+        {
+            if (index >= 0 && index < st.Exhaust.Count && !sorted.Contains(index))
+                sorted.Add(index);
+        }
+        sorted.Sort();
+        sorted.Reverse();
+
+        int got = 0;
+        foreach (int index in sorted)
+        {
+            if (st.Hand.Count >= HandLimit)
+                break;
+            if (ReclaimFromExhaust(st, index) >= 0)
+                got++;
+        }
+
+        return got;
     }
     /// <summary>从手牌移除一张卡，同时清掉它的「来源建筑 / 虚无」记录。</summary>
     private void RemoveCardFromHand(PlayerState st, string cardId)
@@ -1794,6 +2465,8 @@ public sealed class BattleState
         // 先判断这一张带哪些实例关键字，后面决定要不要保留到弃牌堆/消耗堆
         LastRemovedEthereal = TakeEtherealOccurrence(st, cardId, occurrence);
         LastRemovedProducedExhaust = TakeOccurrence(st.ProducedExhaust, cardId, occurrence);
+        TakeOccurrence(st.ZeroCost, cardId, occurrence);
+        TakeOccurrence(st.Retained, cardId, occurrence);
 
         int produced = 0;
         for (int i = 0; i < st.Produced.Count; i++)
@@ -1808,8 +2481,6 @@ public sealed class BattleState
             }
         }
 
-        if (occurrence == 0)
-            st.ProducedExhaust.Remove(cardId);   // 一次只消耗一张标记
     }
 
     /// <summary>移除列表里「第 occurrence 次出现的 cardId」。</summary>
@@ -1835,13 +2506,14 @@ public sealed class BattleState
         int seen = 0;
         for (int i = 0; i < list.Count; i++)
         {
-            if (list[i] != cardId)
+            if (!IsMarkerSlot(list[i], cardId))
                 continue;
 
             if (seen++ == occurrence)
             {
+                bool marked = list[i] == cardId;
                 list.RemoveAt(i);
-                return true;
+                return marked;
             }
         }
 
@@ -1943,14 +2615,14 @@ public sealed class BattleState
             if (deckEth >= 0)
             {
                 st.EtherealDeck.RemoveAt(deckEth);
-                st.Ethereal.Add(card);
+                MarkLastOccurrence(st, card, ethereal: true);
             }
 
             int deckPe = st.ProducedExhaustDeck.IndexOf(card);
             if (deckPe >= 0)
             {
                 st.ProducedExhaustDeck.RemoveAt(deckPe);
-                st.ProducedExhaust.Add(card);
+                MarkLastOccurrence(st, card, producedExhaust: true);
             }
         }
     }
@@ -1963,18 +2635,7 @@ public sealed class BattleState
             return false;
 
         string id = st.Hand[handIndex];
-        int marked = st.ProducedExhaust.Count(x => x == id);
-        if (marked <= 0)
-            return false;
-
-        int occurrence = 0;
-        for (int i = 0; i < handIndex; i++)
-        {
-            if (st.Hand[i] == id)
-                occurrence++;
-        }
-
-        return occurrence < marked;
+        return HasOccurrenceAt(st.ProducedExhaust, id, OccurrenceAt(st.Hand, handIndex));
     }
     /// <summary>手牌第 index 张是不是「虚无」实例（同种卡按出现顺序对应）。</summary>
     public bool IsEtherealAt(int handIndex)
@@ -1984,18 +2645,7 @@ public sealed class BattleState
             return false;
 
         string id = st.Hand[handIndex];
-        int etherealCount = st.Ethereal.Count(e => e == id);
-        if (etherealCount <= 0)
-            return false;
-
-        int occurrence = 0;
-        for (int i = 0; i < handIndex; i++)
-        {
-            if (st.Hand[i] == id)
-                occurrence++;
-        }
-
-        return occurrence < etherealCount;
+        return HasOccurrenceAt(st.Ethereal, id, OccurrenceAt(st.Hand, handIndex));
     }
 
     /// <summary>手牌换位（扇形手牌里左右拖动）。</summary>
@@ -2007,8 +2657,46 @@ public sealed class BattleState
             return;
 
         string card = st.Hand[from];
+        int oldOccurrence = OccurrenceAt(st.Hand, from);
+        int total = st.Hand.Count(id => id == card);
+
+        // 记录移动前每个同名实例的关键字
+        var rows = new List<(bool Eth, bool Pex, bool Ret, bool Zero)>();
+        for (int occurrence = 0; occurrence < total; occurrence++)
+        {
+            rows.Add((
+                HasOccurrenceAt(st.Ethereal, card, occurrence),
+                HasOccurrenceAt(st.ProducedExhaust, card, occurrence),
+                HasOccurrenceAt(st.Retained, card, occurrence),
+                HasOccurrenceAt(st.ZeroCost, card, occurrence)));
+        }
+
         st.Hand.RemoveAt(from);
         st.Hand.Insert(to, card);
+
+        if (total > 0)
+        {
+            int newOccurrence = OccurrenceAt(st.Hand, to);
+            var moved = rows[oldOccurrence];
+            rows.RemoveAt(oldOccurrence);
+            rows.Insert(newOccurrence, moved);
+            RebuildMarkerSlots(st.Ethereal, card, rows.Select(r => r.Eth).ToArray());
+            RebuildMarkerSlots(st.ProducedExhaust, card, rows.Select(r => r.Pex).ToArray());
+            RebuildMarkerSlots(st.Retained, card, rows.Select(r => r.Ret).ToArray());
+            RebuildMarkerSlots(st.ZeroCost, card, rows.Select(r => r.Zero).ToArray());
+        }
+    }
+
+    /// <summary>按新的同名实例顺序重写某个关键字的槽位。</summary>
+    private static void RebuildMarkerSlots(List<string> markers, string cardId, bool[] flags)
+    {
+        bool hadSlots = markers.Any(m => IsMarkerSlot(m, cardId));
+        if (!hadSlots && !flags.Any(f => f))
+            return;
+
+        markers.RemoveAll(m => IsMarkerSlot(m, cardId));
+        foreach (bool flag in flags)
+            markers.Add(flag ? cardId : MarkerPlaceholder(cardId));
     }
 
     /// <summary>按阵营的随机数洗牌：联机时同一阵营在两个客户端用同一颗种子。</summary>
@@ -2026,6 +2714,11 @@ public sealed class BattleState
     {
         if (Phase == BattlePhase.GameOver)
             return;
+
+        // 强行军等持续能力：结束自己的回合时消耗 1 回合持续时间
+        PlayerState ending = StateOf(CurrentPlayer);
+        if (ending.ForcedMarchTurns > 0)
+            ending.ForcedMarchTurns--;
 
         // 回合结束：把当前玩家手里「没有保留关键字」的卡弃掉
         DiscardHand(CurrentPlayer);
@@ -2059,6 +2752,9 @@ public sealed class BattleState
         string id = st.Hand[handIndex];
         int occurrence = OccurrenceAt(st.Hand, handIndex);
         st.Hand.RemoveAt(handIndex);
+
+        TakeOccurrence(st.ZeroCost, id, occurrence);
+        TakeOccurrence(st.Retained, id, occurrence);
 
         if (TakeEtherealOccurrence(st, id, occurrence))
         {
@@ -2131,11 +2827,12 @@ public sealed class BattleState
         {
             string id = st.Hand[i];
             CardDef card = GameDatabase.Card(id);
-            if (card != null && card.Retain)
+            int occurrence = OccurrenceAt(st.Hand, i);
+            if (card != null && (card.Retain || HasOccurrenceAt(st.Retained, id, occurrence)))
                 continue;                     // 保留：跨回合留在手里
 
-            int occurrence = OccurrenceAt(st.Hand, i);
             st.Hand.RemoveAt(i);
+            TakeOccurrence(st.ZeroCost, id, occurrence);
 
             // 虚无：进消耗堆，永不洗回
             if (TakeEtherealOccurrence(st, id, occurrence))

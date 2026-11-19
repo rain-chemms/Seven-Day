@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using SevenDay.Battle;
 using SevenDay.Core;
@@ -38,6 +39,8 @@ public partial class CardHandView : Control
     private const float ReorderThreshold = 55f;
 
     private readonly List<CardView> _cards = new();
+    private List<int> _pickableIndices;
+    private IReadOnlyList<int> _pickSelection;
     private readonly Dictionary<int, Tween> _tweens = new();
 
     private BattleState _state;
@@ -54,6 +57,30 @@ public partial class CardHandView : Control
 
     public void SetState(BattleState state) => _state = state;
 
+    /// <summary>手牌多选：给选中下标加金色边框。</summary>
+    public void SetPickSelection(IReadOnlyList<int> indices)
+    {
+        _pickSelection = indices;
+        for (int i = 0; i < _cards.Count; i++)
+        {
+            bool on = indices != null && indices.Contains(i);
+            _cards[i].SetChosen(on);
+            // 已选牌离开手牌区域，暂存到临时选择区
+            _cards[i].Visible = !on;
+        }
+
+        Relayout(true);
+    }
+    /// <summary>选牌模式：只允许这些下标可点（null = 全部可选）。</summary>
+    public void SetPickableIndices(IReadOnlyList<int> indices)
+    {
+        _pickableIndices = indices == null ? null : new List<int>(indices);
+        for (int i = 0; i < _cards.Count; i++)
+        {
+            if (i < _state?.Player.Hand.Count)
+                _cards[i].SetPickable(_pickableIndices == null || _pickableIndices.Contains(i));
+        }
+    }
     public void SetSelected(int index)
     {
         // 选中另一张手牌时也给一声（和悬停同源，稍响一点）
@@ -63,6 +90,14 @@ public partial class CardHandView : Control
         _selected = index;
         for (int i = 0; i < _cards.Count; i++)
             _cards[i].SetChosen(i == index);
+
+        // 手牌多选模式下，选中金框由选牌逻辑接管
+        if (_pickSelection != null)
+        {
+            for (int i = 0; i < _cards.Count; i++)
+                _cards[i].SetChosen(_pickSelection.Contains(i));
+        }
+
         Relayout(true);
     }
 
@@ -151,18 +186,19 @@ public partial class CardHandView : Control
     /// <summary>把手牌编号摆到每张卡的正上方。</summary>
     private void LayoutOrderBadges()
     {
+        int rank = 0;
         for (int i = 0; i < _orderBadges.Count && i < _cards.Count; i++)
         {
             PanelContainer badge = _orderBadges[i];
-            badge.Visible = _orderHintEnabled && _orderHintReady && i < _cards.Count;
+            CardView card = _cards[i];
+            badge.Visible = _orderHintEnabled && _orderHintReady && card.Visible;
 
             if (!badge.Visible)
                 continue;
 
             if (badge.GetChildCount() > 0 && badge.GetChild(0) is Label label)
-                label.Text = (i + 1).ToString();
-
-            CardView card = _cards[i];
+                label.Text = (rank + 1).ToString();
+            rank++;
             Vector2 size = badge.GetCombinedMinimumSize();
             Vector2 center = card.Position + card.Size * 0.5f;
             badge.Position = new Vector2(center.X - size.X * 0.5f, card.Position.Y - size.Y - 4f);
@@ -267,7 +303,8 @@ public partial class CardHandView : Control
                 // 新牌：出现在最右侧的位置，随后由 Relayout 平滑挪过去
                 card = new CardView();
                 AddChild(card);
-                card.Setup(def, i, _state.Player.Gold >= def.Cost);
+                int shownCost = _state.CostAt(_state.Player, i);
+                card.Setup(def, i, _state.Player.Gold >= shownCost, shownCost);
                 card.Position = BasePosition(Mathf.Max(0, next.Count - 1));
                 WireCard(card);
             }
@@ -279,12 +316,15 @@ public partial class CardHandView : Control
                 card.Visible = true;
                 card.Modulate = Colors.White;
                 card.Scale = Vector2.One;
-                card.Setup(def, i, _state.Player.Gold >= def.Cost);
+                int shownCost = _state.CostAt(_state.Player, i);
+                card.Setup(def, i, _state.Player.Gold >= shownCost, shownCost);
             }
 
             next.Add(card);
             card.SetEthereal(_state.IsEtherealAt(i));
         card.SetProducedExhaust(_state.IsProducedExhaustAt(i));
+            card.SetRetained(_state.HasRetainAt(_state.Player, i));
+            card.SetPickable(_pickableIndices == null || _pickableIndices.Contains(i));
         }
 
         // 没被复用的旧卡（确实离开了手牌）销毁
@@ -343,7 +383,7 @@ public partial class CardHandView : Control
         card.InspectRequested += idx =>
         {
             if (idx >= 0 && idx < _cards.Count)
-                CardInspectOverlay.Show(_cards[idx].Def, _state != null && _state.IsEtherealAt(idx));
+                CardInspectOverlay.Show(_cards[idx].Def, _state != null && _state.IsEtherealAt(idx), _state?.CostAt(_state.Player, idx) ?? -1);
         };
 
         card.MouseEntered += () =>
@@ -423,14 +463,16 @@ public partial class CardHandView : Control
         _cards[index].ZIndex = 300;
     }
 
-    private Vector2 BasePosition(int index)
+    private Vector2 BasePosition(int index) => BasePositionRank(index, _cards.Count);
+
+    private Vector2 BasePositionRank(int rank, int visibleCount)
     {
-        int n = _cards.Count;
+        int n = visibleCount;
         if (n == 0)
             return Vector2.Zero;
 
         float center = (n - 1) * 0.5f;
-        float t = index - center;
+        float t = rank - center;
         float width = Size.X > 1f ? Size.X : 1280f;
         float cx = width * 0.5f;
         // 留出底部边距，避免旋转后卡角被屏幕裁掉
@@ -449,16 +491,32 @@ public partial class CardHandView : Control
         if (n == 0)
             return;
 
-        float center = (n - 1) * 0.5f;
+        int visibleCount = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (_cards[i].Visible)
+                visibleCount++;
+        }
+
+        float center = (visibleCount - 1) * 0.5f;
+        int rank = 0;
 
         for (int i = 0; i < n; i++)
         {
             CardView card = _cards[i];
+            // 已选入临时区的牌不占手牌位置，也不显示编号
+            if (!card.Visible)
+            {
+                if (i < _orderBadges.Count)
+                    _orderBadges[i].Visible = false;
+                continue;
+            }
+
             bool isSelected = i == _selected;
             bool isHover = i == _hovered && _dragging < 0;
 
-            Vector2 pos = BasePosition(i);
-            float angle = (i - center) * AnglePerCard;
+            Vector2 pos = BasePositionRank(rank, visibleCount);
+            float angle = (rank - center) * AnglePerCard;
             float lift = 0f;
             float scale = 1f;
 
@@ -481,18 +539,20 @@ public partial class CardHandView : Control
             else if (_dragging != i)
                 card.ZIndex = i;
 
-            Animate(card, i, pos, Mathf.DegToRad(angle), scale, animate);
+            Animate(card, i, pos, Mathf.DegToRad(angle), scale, animate, rank);
+            rank++;
         }
     }
 
-    private void Animate(CardView card, int index, Vector2 pos, float rot, float scale, bool animate)
+    private void Animate(CardView card, int index, Vector2 pos, float rot, float scale, bool animate,
+                         int displayRank = -1)
     {
         PanelContainer badge = index >= 0 && index < _orderBadges.Count ? _orderBadges[index] : null;
         Vector2 badgePos = default;
         if (badge != null)
         {
             if (badge.GetChildCount() > 0 && badge.GetChild(0) is Label lbl)
-                lbl.Text = (index + 1).ToString();
+                lbl.Text = ((displayRank >= 0 ? displayRank : index) + 1).ToString();
 
             badge.Visible = _orderHintEnabled && _orderHintReady;
             Vector2 bsize = badge.GetCombinedMinimumSize();

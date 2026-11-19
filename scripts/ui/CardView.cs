@@ -103,6 +103,8 @@ public partial class CardView : Control
     private Panel _body;
     private Label _cost;
     private Label _title;
+    private Label _category;
+    private PanelContainer _categoryBadge;
     private Label _desc;
     private Label _keyword;
     private PanelContainer _keywordBadge;
@@ -126,10 +128,13 @@ public partial class CardView : Control
         SetProcessInput(true);
     }
 
-    public void Setup(CardDef def, int index, bool affordable)
+    private int _costOverride = -1;
+
+    public void Setup(CardDef def, int index, bool affordable, int costOverride = -1)
     {
         Def = def;
         Index = index;
+        _costOverride = costOverride;
         Build();
         Refresh(affordable);
     }
@@ -192,6 +197,39 @@ public partial class CardView : Control
         _title.AddThemeFontSizeOverride("font_size", ScaledFont(14f));
         _title.AddThemeColorOverride("font_color", UiTheme.Ink);
         top.AddChild(_title);
+
+        // 兵种大类：陆军 / 海军 / 空军（浮在卡图左上角，避免挤占卡名）
+        _categoryBadge = new PanelContainer { MouseFilter = MouseFilterEnum.Ignore, Visible = false };
+        var categoryStyle = new StyleBoxFlat
+        {
+            BgColor = new Color("2B2317"),
+            BorderColor = new Color("5F7A3A"),
+            BorderWidthLeft = 2,
+            BorderWidthRight = 2,
+            BorderWidthTop = 2,
+            BorderWidthBottom = 2,
+            CornerRadiusTopLeft = 5,
+            CornerRadiusTopRight = 5,
+            CornerRadiusBottomLeft = 5,
+            CornerRadiusBottomRight = 5,
+            ContentMarginLeft = 5,
+            ContentMarginRight = 5,
+            ContentMarginTop = 1,
+            ContentMarginBottom = 1,
+        };
+        _categoryBadge.AddThemeStyleboxOverride("panel", categoryStyle);
+
+        _category = new Label
+        {
+            Text = "",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            MouseFilter = MouseFilterEnum.Ignore,
+        };
+        _category.AddThemeFontSizeOverride("font_size", ScaledFont(10f));
+        _category.AddThemeColorOverride("font_color", new Color("F5EFE2"));
+        _categoryBadge.AddChild(_category);
+
+        // 放在内容流的最底部，靠左显示（左下角），由 Build 末尾加入 content
 
         // 关键字角标（保留 / 消耗 / 虚无）：浮在卡图右上角，长卡名也不会把它挤掉
         _keywordBadge = new PanelContainer { MouseFilter = MouseFilterEnum.Ignore };
@@ -257,6 +295,14 @@ public partial class CardView : Control
         _artPlaceholder.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         artHolder.AddChild(_artPlaceholder);
 
+        // 类别徽章放在卡面（卡图）左下角
+        _categoryBadge.SetAnchorsPreset(LayoutPreset.BottomLeft);
+        _categoryBadge.OffsetLeft = 4;
+        _categoryBadge.OffsetTop = -20;
+        _categoryBadge.OffsetRight = 58;
+        _categoryBadge.OffsetBottom = -4;
+        artHolder.AddChild(_categoryBadge);
+
         // 单位数值：生命 / 攻击，各占一行，数字用红字
         // 描述
         _desc = new Label
@@ -310,6 +356,7 @@ public partial class CardView : Control
 
         _statsRangeValue = AddStatRow(statsRight, Loc.T("card.range"), new Color("7B4FB5"), alignEnd: true);   // 射程紫字
         _statsMoveValue = AddStatRow(statsRight, Loc.T("card.move"), new Color("3E8E4A"), alignEnd: true);    // 移动绿字
+
     }
 
     /// <summary>这张牌是「发射井产出、打出即消耗」的实例（卡牌定义本身没有消耗关键字）。</summary>
@@ -322,6 +369,28 @@ public partial class CardView : Control
         ApplyKeyword();
     }
 
+    /// <summary>延时决策赋予的「保留」关键字（实例级）。</summary>
+    public void SetRetained(bool on)
+    {
+        if (_grantedRetain == on)
+            return;
+
+        _grantedRetain = on;
+        ApplyKeyword();
+    }
+
+    /// <summary>选牌阶段：false 时置灰并不可选。</summary>
+    public void SetPickable(bool on)
+    {
+        _pickable = on;
+        ApplyModulate();
+    }
+
+    private void ApplyModulate()
+    {
+        float alpha = !_pickable ? 0.32f : (_affordable ? 1f : 0.55f);
+        Modulate = new Color(1, 1, 1, alpha);
+    }
     public void SetEthereal(bool on)
     {
         if (_ethereal == on)
@@ -334,6 +403,9 @@ public partial class CardView : Control
 
     private bool _ethereal;
     private bool _producedExhaust;
+    private bool _grantedRetain;
+    private bool _pickable = true;
+    private bool _affordable = true;
 
     /// <summary>
     /// 卡名放不下时自动缩小字号（例如「武装直升机」这种 5 字长名），
@@ -379,6 +451,10 @@ public partial class CardView : Control
     private string KeywordText()
     {
         string baseText = UiText.KeywordsOf(Def);
+        if (_grantedRetain && Def.Retain != true)
+            baseText = string.IsNullOrEmpty(baseText)
+                ? Loc.T("keyword.retain")
+                : baseText + " · " + Loc.T("keyword.retain");
         if (_producedExhaust)
             baseText = string.IsNullOrEmpty(baseText) ? Loc.T("keyword.exhaust") : baseText + " · " + Loc.T("keyword.exhaust");
 
@@ -409,13 +485,30 @@ public partial class CardView : Control
         _frame.SetCornerRadiusAll(8);
         _body.AddThemeStyleboxOverride("panel", _frame);
 
-        _cost.Text = Def.Cost.ToString();
+        _cost.Text = (_costOverride >= 0 ? _costOverride : Def.Cost).ToString();
         _title.Text = Loc.Name(Def.NameZh, Def.NameEn);
         CallDeferred(nameof(FitTitle));
 
         // 单位卡：显示生命 / 攻击（数字红字）
         UnitDef unitDef = string.IsNullOrEmpty(Def.Unit) ? null : GameDatabase.Unit(Def.Unit);
         bool showStats = unit && unitDef != null;
+        if (_category != null)
+        {
+            _categoryBadge.Visible = showStats;
+            if (showStats)
+            {
+                bool air = unitDef.IsAir;
+                bool navy = unitDef.Navy;
+                _category.Text = air ? Loc.T("card.category.air")
+                    : navy ? Loc.T("card.category.navy")
+                    : Loc.T("card.category.land");
+
+                Color color = air ? new Color("8FD3FF") : navy ? new Color("1E4E9C") : new Color("5F7A3A");
+                if (_categoryBadge.GetThemeStylebox("panel") is StyleBoxFlat sb)
+                    sb.BorderColor = color;
+            }
+        }
+
         if (_stats != null)
         {
             _stats.Visible = showStats;
@@ -450,7 +543,7 @@ public partial class CardView : Control
         _desc.Text = Loc.IsChinese ? Def.DescriptionZh : Def.DescriptionEn;
         ApplyKeyword();
 
-        string unitId = Def.Unit;
+        string unitId = string.IsNullOrEmpty(Def.Unit) ? Def.Id : Def.Unit;
         if (!string.IsNullOrEmpty(unitId) &&
             ResourceLoader.Exists("res://gameAsset/textures/cardface/cardface_" + unitId + ".png"))
         {
@@ -469,7 +562,8 @@ public partial class CardView : Control
             _artPlaceholder.AddThemeStyleboxOverride("panel", ps);
         }
 
-        Modulate = affordable ? Colors.White : new Color(1, 1, 1, 0.55f);
+        _affordable = affordable;
+        ApplyModulate();
     }
 
     /// <summary>选中态：加一圈金色描边。</summary>

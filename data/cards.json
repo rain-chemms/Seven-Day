@@ -61,9 +61,7 @@
   },
   {
     "id": "magic_airstrike",
-    "keywords": [
-      "exhaust"
-    ],
+    "keywords": [],
     "nameZh": "空袭",
     "nameEn": "Air Strike",
     "descriptionZh": "对一格内敌军造成 250 伤害。防空炮范围内无效。",
@@ -115,12 +113,12 @@
   {
     "id": "magic_boost",
     "keywords": [
-      "exhaust"
+      "retain"
     ],
     "nameZh": "强行军",
     "nameEn": "Forced March",
-    "descriptionZh": "本回合地面单位移动 +1。",
-    "descriptionEn": "Ground units get +1 move this turn.",
+    "descriptionZh": "使「强行军」额外持续 1 回合（地面单位移动 +1）。",
+    "descriptionEn": "Extend Forced March by 1 turn (ground units gain +1 movement).",
     "kind": "global",
     "cost": 100,
     "effect": "boost",
@@ -165,8 +163,8 @@
     "id": "unit_destroyer",
     "nameZh": "驱逐舰",
     "nameEn": "Destroyer",
-    "descriptionZh": "水面主力舰，可对陆/海/空，炮塔可旋转。",
-    "descriptionEn": "Navy capital ship. Hits land, sea and air; rotating turret.",
+    "descriptionZh": "水面主力舰，可对陆/海/空。",
+    "descriptionEn": "Navy capital ship. Hits land, sea and air.",
     "kind": "unit",
     "unit": "destroyer",
     "cost": 550
@@ -180,5 +178,111 @@
     "kind": "unit",
     "unit": "carrier",
     "cost": 1250
+  },
+  {
+    "id": "reinforce",
+    "nameZh": "呼叫增援",
+    "nameEn": "Reinforce",
+    "descriptionZh": "从随机 3 张军队单位牌中选择一张加入手牌，该牌具有虚无与消耗。",
+    "descriptionEn": "Choose one of 3 random unit cards; it gains Ethereal and Exhaust.",
+    "kind": "global",
+    "cost": 300,
+    "effect": "reinforce"
+  },
+  {
+    "id": "issueBonds",
+    "nameZh": "发行债券",
+    "nameEn": "Issue Bonds",
+    "descriptionZh": "获得 500$，下回合开始时失去 675$（算负债）。",
+    "descriptionEn": "Gain 500$. At the start of next turn, lose 675$ (counts as debt).",
+    "kind": "global",
+    "cost": 0,
+    "effect": "issue_bonds"
+  },
+  {
+    "id": "fightCorruption",
+    "nameZh": "整改反贪",
+    "nameEn": "Fight Corruption",
+    "descriptionZh": "消耗一张牌，抽两张牌。",
+    "descriptionEn": "Exhaust one card, then draw two.",
+    "kind": "global",
+    "cost": 200,
+    "effect": "fight_corruption"
+  },
+  {
+    "id": "tacticalPreference",
+    "nameZh": "战术偏好",
+    "nameEn": "Tactical Preference",
+    "descriptionZh": "选择手中的一张牌，将其两张复制品加入手中。",
+    "descriptionEn": "Choose a card in hand; add two copies of it.",
+    "kind": "global",
+    "cost": 275,
+    "effect": "tactical_preference",
+    "keywords": [
+      "exhaust"
+    ]
+  },
+  {
+    "id": "housingSubsidy",
+    "nameZh": "房屋补贴",
+    "nameEn": "Housing Subsidy",
+    "descriptionZh": "下个回合开始时，随机升级 2 栋己方建筑。",
+    "descriptionEn": "At the start of next turn, randomly upgrade 2 of your buildings.",
+    "kind": "global",
+    "cost": 300,
+    "effect": "housing_subsidy"
+  },
+  {
+    "id": "conscription",
+    "nameZh": "强制兵役",
+    "nameEn": "Conscription",
+    "descriptionZh": "获得「强制兵役」能力：建筑召唤与手牌出兵不消耗资金；己方军队阵亡时负债其召唤金额的 110%。",
+    "descriptionEn": "Gain Conscription: building summons and deploying unit cards cost no gold; when your unit dies, go into debt for 110% of its summon cost.",
+    "kind": "global",
+    "cost": 400,
+    "effect": "conscription",
+    "keywords": [
+      "exhaust"
+    ]
+  },
+  {
+    "id": "medicalCare",
+    "nameZh": "医疗保障",
+    "nameEn": "Medical Care",
+    "descriptionZh": "获得「战时医疗」能力：回合开始时恢复己方军队已损生命值的 25%，可叠加。",
+    "descriptionEn": "Gain Wartime Medical: at turn start, heal your units for 25% of missing HP; stacks.",
+    "kind": "global",
+    "cost": 250,
+    "effect": "medical_care"
+  },
+  {
+    "id": "attrition",
+    "nameZh": "延时决策",
+    "nameEn": "Attrition",
+    "descriptionZh": "选择两张手牌，为其添加「保留」关键字（已有保留的牌不可选）。",
+    "descriptionEn": "Choose two hand cards and give them Retain. Cards that already have Retain cannot be chosen.",
+    "kind": "global",
+    "cost": 200,
+    "effect": "attrition"
+  },
+  {
+    "id": "unPredictableWorld",
+    "nameZh": "世界如此变幻莫测",
+    "nameEn": "Unpredictable World",
+    "descriptionZh": "从完全随机的 5 张卡牌中选择 2 张加入手牌，它们具有「消耗」和「虚无」。",
+    "descriptionEn": "Choose 2 of 5 completely random cards; they gain Exhaust and Ethereal.",
+    "kind": "global",
+    "cost": 0,
+    "effect": "unpredictable_world"
+  },
+  {
+    "id": "battlefieldSurvey",
+    "nameZh": "战场勘测",
+    "nameEn": "Battlefield Survey",
+    "descriptionZh": "从抽牌堆选择 2 张牌加入手牌（手牌放不下时进入弃牌堆）。",
+    "descriptionEn": "Choose 2 cards from your draw pile to add to your hand (excess goes to the discard pile).",
+    "kind": "global",
+    "cost": 50,
+    "effect": "battlefield_survey"
   }
 ]

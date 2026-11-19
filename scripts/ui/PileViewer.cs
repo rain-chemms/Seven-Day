@@ -26,6 +26,15 @@ public partial class PileViewer : Control
     private ScrollContainer _scroll;
     private CenterContainer _center;
     private Label _title;
+    private Button _close;
+    private Button _confirm;
+    private Label _confirmLabel;
+    private bool _picking;
+    private int _maxPicks;
+    private int _requiredPicks;
+    private System.Action<List<int>> _multiConfirm;
+    private readonly List<int> _selected = new();
+    private readonly List<CardView> _pickCards = new();
     private readonly List<Control> _cells = new();
 
     private Tween _fade;
@@ -47,7 +56,8 @@ public partial class PileViewer : Control
         AddChild(dim);
         dim.GuiInput += e =>
         {
-            if (e is InputEventMouseButton mb && mb.Pressed)
+            // 选择模式下不允许点背景关闭，避免没选就退出
+            if (!_picking && e is InputEventMouseButton mb && mb.Pressed)
                 Close();
         };
 
@@ -88,11 +98,36 @@ public partial class PileViewer : Control
         _title.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         header.AddChild(_title);
 
-        Button close = new() { Text = "关闭" };
-        UiSound.Attach(close);
-        close.CustomMinimumSize = new Vector2(96, 40);
-        close.Pressed += Close;
-        header.AddChild(close);
+        _confirm = new Button
+        {
+            Text = "",
+            Visible = false,
+            CustomMinimumSize = new Vector2(120, 40),
+        };
+        _confirm.Pressed += () =>
+        {
+            if (_selected.Count > 0)
+                _multiConfirm?.Invoke(new List<int>(_selected));
+        };
+
+        _confirmLabel = new Label
+        {
+            Text = "确定（0）",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            MouseFilter = MouseFilterEnum.Ignore,
+        };
+        _confirmLabel.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        _confirmLabel.AddThemeFontSizeOverride("font_size", 17);
+        _confirmLabel.AddThemeColorOverride("font_color", new Color("241D12"));
+        _confirm.AddChild(_confirmLabel);
+        header.AddChild(_confirm);
+
+        _close = new Button { Text = "关闭" };
+        UiSound.Attach(_close);
+        _close.CustomMinimumSize = new Vector2(96, 40);
+        _close.Pressed += Close;
+        header.AddChild(_close);
 
         // 卡牌网格：竖向滚动（滚动条沿用主题里的 VScrollBar 样式）
         _scroll = new ScrollContainer
@@ -148,10 +183,33 @@ public partial class PileViewer : Control
         new(PanelWidth - ContentMargin * 2f, PanelHeight - ContentMargin * 2f - HeaderHeight - HeaderGap);
 
     public void Open(string title, IEnumerable<string> cardIds, IReadOnlyList<int> etherealIndices = null,
-        IReadOnlyList<int> producedExhaustIndices = null, System.Action<int> onPick = null)
+        IReadOnlyList<int> producedExhaustIndices = null, System.Action<int> onPick = null,
+        System.Action<List<int>> onMultiPick = null, int requiredPicks = 0, int maxPicks = 0)
     {
         List<string> list = cardIds.ToList();
-        _title.Text = onPick != null ? $"{title}（{list.Count}）· 点击选择一张" : $"{title}（{list.Count}）";
+        _picking = onPick != null || onMultiPick != null;
+        _multiConfirm = onMultiPick;
+        _requiredPicks = requiredPicks;
+        _maxPicks = maxPicks;
+        _selected.Clear();
+        _pickCards.Clear();
+
+        _title.Text = onMultiPick != null
+            ? (requiredPicks > 0
+                ? $"{title}（{list.Count}）· 选择 {requiredPicks} 张"
+                : $"{title}（{list.Count}）· 可选择多张")
+            : onPick != null ? $"{title}（{list.Count}）· 点击选择一张" : $"{title}（{list.Count}）";
+
+        if (_close != null)
+            _close.Visible = !_picking;
+        if (_confirm != null)
+        {
+            _confirm.Visible = onMultiPick != null;
+            _confirm.Disabled = true;
+            _confirmLabel.Text = requiredPicks > 0
+                ? $"确定（0/{requiredPicks}）"
+                : "确定（0）";
+        }
 
         var ethereal = new HashSet<int>(etherealIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
         var pexhaust = new HashSet<int>(producedExhaustIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
@@ -230,6 +288,34 @@ public partial class PileViewer : Control
                 if (mb.ButtonIndex == MouseButton.Right)
                 {
                     CardInspectOverlay.Show(def, isEthereal);
+                    cell.AcceptEvent();
+                    return;
+                }
+
+                if (mb.ButtonIndex == MouseButton.Left && onMultiPick != null)
+                {
+                    if (_selected.Contains(pickedIndex))
+                    {
+                        _selected.Remove(pickedIndex);
+                        card.SetChosen(false);
+                    }
+                    else
+                    {
+                        if (_maxPicks > 0 && _selected.Count >= _maxPicks)
+                        {
+                            cell.AcceptEvent();
+                            return;
+                        }
+                        _selected.Add(pickedIndex);
+                        card.SetChosen(true);
+                    }
+
+                    _confirm.Disabled = _requiredPicks > 0
+                        ? _selected.Count != _requiredPicks
+                        : _selected.Count == 0;
+                    _confirmLabel.Text = _requiredPicks > 0
+                        ? $"确定（{_selected.Count}/{_requiredPicks}）"
+                        : $"确定（{_selected.Count}）";
                     cell.AcceptEvent();
                     return;
                 }

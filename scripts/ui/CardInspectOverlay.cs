@@ -15,7 +15,9 @@ public partial class CardInspectOverlay : CanvasLayer
     public static bool IsOpen => _instance != null && IsInstanceValid(_instance);
 
     /// <summary>打开查看器；再次调用会替换当前展示的卡牌。</summary>
-    public static void Show(CardDef def, bool ethereal = false)
+    private int _costOverride = -1;
+
+    public static void Show(CardDef def, bool ethereal = false, int costOverride = -1)
     {
         if (def == null)
             return;
@@ -261,9 +263,10 @@ public partial class CardInspectOverlay : CanvasLayer
         if (def.Exhaust)
             keywords = string.IsNullOrEmpty(keywords) ? Loc.T("keyword.exhaust") : keywords + " · " + Loc.T("keyword.exhaust");
 
+        int shownCost = _costOverride >= 0 ? _costOverride : def.Cost;
         _body.Text = string.IsNullOrEmpty(keywords)
-            ? $"{kind} · {def.Cost}$"
-            : $"{kind} · {def.Cost}$ · {keywords}";
+            ? $"{kind} · {shownCost}$"
+            : $"{kind} · {shownCost}$ · {keywords}";
     }
 
     private void OnBackgroundInput(InputEvent @event)
