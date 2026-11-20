@@ -49,6 +49,9 @@ public partial class BattleScene
     private ulong _netBusySinceMsec;
     private readonly System.Collections.Generic.Queue<NetIntent> _netPending = new();
 
+    /// <summary>客户端已发出、等待主机广播的本地出牌（防止同一张牌被连续打出）。</summary>
+    private bool _netLocalDeployPending;
+
     public bool NetMode => Session.LanBattle && LanSession.Active;
 
 
@@ -178,6 +181,7 @@ public partial class BattleScene
             if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
                 GD.Print($"[Net] 收到拒绝：{reason}");
             _hud.Toast(string.IsNullOrEmpty(reason) ? "动作无效" : reason);
+            _netLocalDeployPending = false;
             // 被拒绝的动作不会被执行，清掉待重发队列，避免断线后反复补发无效动作
             if (!LanSession.IsHost)
                 LanSession.PendingIntents.Clear();
@@ -200,6 +204,7 @@ public partial class BattleScene
         if (_netHostRestored)
         {
             _netFrozen = true;
+        _netLocalDeployPending = false;
             ShowReconnectOverlay(
                 $"{Loc.T("lan.restore_loaded")}\n" +
                 $"{Loc.T("lan.reconnect_ip")}: {LanSession.LocalIpv4()}\n" +
@@ -277,11 +282,19 @@ public partial class BattleScene
         if (_state.CurrentPlayer != remoteSide)
             return;
 
+        // 出牌/攻击演出期间先排队，避免选择动作在待选状态建立前被判定
+        if (_netBusy)
+        {
+            it.NeedsValidation = true;
+            _netPending.Enqueue(it);
+            return;
+        }
+
         // 判定必须在任何动画之前：不合法直接拒绝，不广播、不播特效
         if (!ValidateNetIntent(it, out string why))
         {
             if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
-                GD.Print($"[Net] 拒绝 {it.Type}：{why}");
+                GD.Print($"[Net] 拒绝 {it.Type} choice={it.Choice} picks={string.Join(",", it.Picks ?? System.Array.Empty<int>())}：{why}");
 
             _netBattle.SendReject(Multiplayer.GetRemoteSenderId(), why);
             return;
@@ -965,6 +978,110 @@ public partial class BattleScene
     /// 动画只依赖已经发生的状态，不会反过来影响同步。
     /// </summary>
     /// <summary>动作合法性判定：必须在任何动画之前完成（联机时由主机把关）。</summary>
+    private bool ValidateCardChoice(NetIntent it, PlayerState st, out string why)
+    {
+        why = "";
+        int[] picks = it.Picks ?? System.Array.Empty<int>();
+        switch (it.Choice)
+        {
+            case "discard":
+                if (_state.PendingDiscard <= 0 || picks.Length != 1 ||
+                    picks[0] < 0 || picks[0] >= st.Hand.Count)
+                {
+                    why = "弃牌选择无效";
+                    return false;
+                }
+                return true;
+
+            case "duplicate":
+                if (!_state.PendingDuplicatePick || picks.Length != 1 ||
+                    picks[0] < 0 || picks[0] >= st.Hand.Count)
+                {
+                    why = "复制选择无效";
+                    return false;
+                }
+                return true;
+
+            case "exhaust":
+                if (!_state.PendingExhaustPick || picks.Length != 1 ||
+                    picks[0] < 0 || picks[0] >= st.Hand.Count)
+                {
+                    why = "消耗选择无效";
+                    return false;
+                }
+                return true;
+
+            case "retain":
+                if (!_state.PendingRetainPick || picks.Length != 2)
+                {
+                    why = "保留选择数量无效";
+                    return false;
+                }
+                foreach (int index in picks)
+                {
+                    if (index < 0 || index >= st.Hand.Count || _state.HasRetainAt(st, index))
+                    {
+                        why = "保留目标无效";
+                        return false;
+                    }
+                }
+                return true;
+
+            case "random":
+                if (_state.PendingRandomChoices.Count == 0 || picks.Length != 2)
+                {
+                    why = "随机卡选择无效";
+                    return false;
+                }
+                foreach (int index in picks)
+                {
+                    if (index < 0 || index >= _state.PendingRandomChoices.Count)
+                    {
+                        why = "随机卡下标无效";
+                        return false;
+                    }
+                }
+                return true;
+
+            case "deck":
+                if (!_state.PendingDeckPick || picks.Length != 2)
+                {
+                    why = "抽牌堆选择无效";
+                    return false;
+                }
+                foreach (int index in picks)
+                {
+                    if (index < 0 || index >= st.Deck.Count)
+                    {
+                        why = "抽牌堆下标无效";
+                        return false;
+                    }
+                }
+                return true;
+
+            case "reinforce":
+                if (_state.PendingReinforceChoices.Count == 0 || picks.Length != 1 ||
+                    picks[0] < 0 || picks[0] >= _state.PendingReinforceChoices.Count)
+                {
+                    why = "增援选择无效";
+                    return false;
+                }
+                return true;
+
+            case "reclaim":
+                if (!_state.PendingReclaimExhaust || picks.Length != 1 ||
+                    picks[0] < 0 || picks[0] >= st.Exhaust.Count)
+                {
+                    why = "消耗堆选择无效";
+                    return false;
+                }
+                return true;
+        }
+
+        why = "未知的卡牌选择";
+        return false;
+    }
+
     private bool ValidateNetIntent(NetIntent it, out string why)
     {
         why = "";
@@ -990,14 +1107,39 @@ public partial class BattleScene
                     return false;
                 }
 
-                if (card.KindEnum == CardKind.Unit)
-                    return _state.CanDeployCard(card.Id, side, to, out why);
+                // 校验费用时必须用这张手牌的真实实例序号，
+                // 否则同名卡里只有后面那张带 0 费标记时会误报金币不足。
+                int previousPlayIndex = _state.PlayIndex;
+                _state.PlayIndex = it.Hand;
+                try
+                {
+                    if (it.NoTarget)
+                    {
+                        if (card.KindEnum != CardKind.Global)
+                        {
+                            why = "这张牌需要选择地块";
+                            return false;
+                        }
 
-                if (!_state.CanPlayGlobalCard(st, card.Id, to, out why))
-                    return false;
+                        return _state.CanPlayGlobalCard(st, card.Id, null, out why);
+                    }
 
-                return true;
+                    if (card.KindEnum == CardKind.Unit)
+                        return _state.CanDeployCard(card.Id, side, to, out why);
+
+                    if (!_state.CanPlayGlobalCard(st, card.Id, to, out why))
+                        return false;
+
+                    return true;
+                }
+                finally
+                {
+                    _state.PlayIndex = previousPlayIndex;
+                }
             }
+
+            case NetIntentType.CardChoice:
+                return ValidateCardChoice(it, st, out why);
 
             case NetIntentType.Move:
             {
@@ -1273,7 +1415,8 @@ public partial class BattleScene
             delay = PlayAttackPreVisual(actorUnit, to);
             prePlayed = true;
         }
-        else if (it.Type == NetIntentType.Deploy && deployCard != null && deployCard.KindEnum != CardKind.Unit)
+        else if (it.Type == NetIntentType.Deploy && deployCard != null &&
+                 deployCard.KindEnum != CardKind.Unit && !it.NoTarget)
         {
             PlayDeployPreVisual(local, hasHandRect, handRect, deployCard, to);
             delay = PlayCardVfx(side, deployCard, to, deploySiloId);
@@ -1318,7 +1461,29 @@ public partial class BattleScene
     private void PumpNetPending()
     {
         while (!_netBusy && _netPending.Count > 0)
-            ExecuteNetIntent(_netPending.Dequeue());
+        {
+            NetIntent pending = _netPending.Dequeue();
+            if (pending.NeedsValidation)
+            {
+                pending.NeedsValidation = false;
+                if (LanSession.IsHost)
+                {
+                    PlayerId pendingSide = NetSideOfActor(pending.A);
+                    string why = "";
+                    if (_state.CurrentPlayer != pendingSide ||
+                        !ValidateNetIntent(pending, out why))
+                    {
+                        if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
+                            GD.Print($"[Net] queued rejected {pending.Type}：{why}");
+                        _netBattle?.SendReject(Multiplayer.GetRemoteSenderId(),
+                            string.IsNullOrEmpty(why) ? "动作顺序无效" : why);
+                        continue;
+                    }
+                }
+            }
+
+            ExecuteNetIntent(pending);
+        }
     }
     /// <summary>攻击的“命中前”表现：转向 + 开火动画 + 弹道，返回命中延迟。</summary>
     private float PlayAttackPreVisual(UnitInst attacker, HexCoord target)
@@ -1381,7 +1546,7 @@ public partial class BattleScene
                 if (deployCard.KindEnum == CardKind.Unit)
                     _state.PlayUnitCard(st, cardId, to, out _);
                 else
-                    _state.PlayGlobalCard(st, cardId, to, out _);
+                    _state.PlayGlobalCard(st, cardId, it.NoTarget ? (HexCoord?)null : to, out _);
                 _state.PlayIndex = -1;
 
                 if (local)
@@ -1390,6 +1555,12 @@ public partial class BattleScene
                     AnimateCardToPile(deployCard, it.Hand);
                 }
 
+                break;
+            }
+
+            case NetIntentType.CardChoice:
+            {
+                ApplyCardChoice(st, it.Choice, it.Picks);
                 break;
             }
 
@@ -1452,8 +1623,27 @@ public partial class BattleScene
         RefreshAll();
         RefreshNetSelection();
 
+        if (local && it.Type == NetIntentType.Deploy)
+            _netLocalDeployPending = false;
+
+        if (local && it.Type == NetIntentType.Deploy && HasPendingCardChoice)
+            OpenPendingCardChoiceForLocal();
+
         PlayIntentVisuals(it, side, local, to, from, actorUnit, deployCard, hasHandRect, handRect,
             discardRects, skipImpactVfx);
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--net-sync-log") >= 0)
+        {
+            string pBuild = string.Join(",", _state.Buildings.Where(b => b.Owner == PlayerId.Player)
+                .OrderBy(b => b.Id).Select(b => $"{b.DefId}{b.Level}"));
+            string eBuild = string.Join(",", _state.Buildings.Where(b => b.Owner == PlayerId.Enemy)
+                .OrderBy(b => b.Id).Select(b => $"{b.DefId}{b.Level}"));
+            GD.Print($"[Sync] actor={LanSession.LocalActor} type={it.Type} A={it.A} turn={_state.TurnNumber} " +
+                     $"cur={_state.CurrentPlayer} goldP={_state.Player.Gold} goldE={_state.Enemy.Gold} " +
+                     $"handP={string.Join(",", _state.Player.Hand)} handE={string.Join(",", _state.Enemy.Hand)} " +
+                     $"deckP={string.Join(",", _state.Player.Deck)} deckE={string.Join(",", _state.Enemy.Deck)} " +
+                     $"Pbuild={pBuild} Ebuild={eBuild}");
+        }
 
         if (!_netReplaying)
             _netHistory.Add(it);
@@ -1506,7 +1696,7 @@ public partial class BattleScene
         {
             case NetIntentType.Deploy:
             {
-                if (deployCard == null)
+                if (deployCard == null || it.NoTarget)
                     return;
 
                 _map.FlashCell(to, new Color("7FD35B"));
@@ -1722,7 +1912,26 @@ public partial class BattleScene
         return true;
     }
 
-    private bool NetSendDeploy(int handIndex, HexCoord coord)
+    private bool NetSendDeploy(int handIndex, HexCoord coord, bool noTarget = false)
+    {
+        if (!NetMode)
+            return false;
+
+        // 客户端等待上一张牌的广播期间，忽略后续出牌点击
+        if (!LanSession.IsHost && _netLocalDeployPending)
+            return true;
+
+        if (NetBlockIfNotMyTurn())
+            return true;
+
+        if (!LanSession.IsHost)
+            _netLocalDeployPending = true;
+
+        NetSendLocal(NetIntent.Deploy(NetLocalActor, handIndex, coord, noTarget));
+        return true;
+    }
+
+    private bool NetSendCardChoice(string kind, int[] picks)
     {
         if (!NetMode)
             return false;
@@ -1730,7 +1939,7 @@ public partial class BattleScene
         if (NetBlockIfNotMyTurn())
             return true;
 
-        NetSendLocal(NetIntent.Deploy(NetLocalActor, handIndex, coord));
+        NetSendLocal(NetIntent.CardChoice(NetLocalActor, kind, picks));
         return true;
     }
 

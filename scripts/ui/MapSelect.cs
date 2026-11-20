@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Godot;
 using SevenDay.Core;
 using SevenDay.Data;
+using SevenDay.Net;
 
 namespace SevenDay.UI;
 
@@ -483,8 +484,11 @@ public partial class MapSelect : Control
 
     private void StartBattle()
     {
-        // 人机对战：确保不残留联机标记
+        // 人机对战：彻底离开上一局联机会话，并清掉重连暂存
+        LanSession.Leave();
+        NetResumeStore.Clear();
         Session.LanBattle = false;
+        Session.SingleBattle = true;
         if (_leaving)
             return;
 

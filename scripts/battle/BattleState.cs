@@ -144,6 +144,19 @@ public sealed class PlayerState
     /// <summary>抽牌堆里那些「发射井产出、打出即消耗」的卡。</summary>
     public readonly List<string> ProducedExhaustDeck = new();
 
+    /// <summary>消耗堆里仍然带「消耗」关键字的实例（如发射井产出的导弹）。</summary>
+    public readonly List<string> ProducedExhaustExhausted = new();
+
+    /// <summary>各牌堆的「保留」实例标记。</summary>
+    public readonly List<string> RetainedExhausted = new();
+    public readonly List<string> RetainedDiscarded = new();
+    public readonly List<string> RetainedDeck = new();
+
+    /// <summary>各牌堆的「临时 0 费」实例标记。</summary>
+    public readonly List<string> ZeroCostExhausted = new();
+    public readonly List<string> ZeroCostDiscarded = new();
+    public readonly List<string> ZeroCostDeck = new();
+
     /// <summary>「强行军」能力剩余回合数：&gt;0 时地面单位移动 +1。</summary>
     public int ForcedMarchTurns;
 
@@ -190,6 +203,9 @@ public sealed class BattleState
     public BattlePhase Phase = BattlePhase.Setup;
     public int TurnNumber = 1;
     public PlayerId CurrentPlayer = PlayerId.Player;
+
+    /// <summary>当前回合是否还没走完双方（联机镜像下不能按 Player/Enemy 判断）。</summary>
+    public bool FirstHalf = true;
     public PlayerId Winner = PlayerId.None;
     public bool EnemyHqDestroyed;
     public bool PlayerHqDestroyed;
@@ -199,6 +215,13 @@ public sealed class BattleState
     // ── 随机数：按阵营分开，联机时由主机下发种子保证两端一致 ──
     public int PlayerSeed;
     public int EnemySeed;
+
+    /// <summary>联机双方的全局随机种子（两端一致）。</summary>
+    public int GlobalSeed;
+
+    /// <summary>全局随机卡牌生成序号（两端按同一出牌顺序递增）。</summary>
+    public int RandomRollSerial;
+
     private Random _rngPlayer;
     private Random _rngEnemy;
 
@@ -229,6 +252,7 @@ public sealed class BattleState
             Difficulty = difficulty,
             PlayerSeed = playerSeed,
             EnemySeed = enemySeed,
+            GlobalSeed = unchecked(playerSeed ^ enemySeed),
             _rngPlayer = playerSeed != 0 ? new Random(playerSeed) : new Random(),
             _rngEnemy = enemySeed != 0 ? new Random(enemySeed) : new Random(),
         };
@@ -476,17 +500,17 @@ public sealed class BattleState
 
             for (int i = 0; i < owned; i++)
             {
-                int at = st.Hand.IndexOf("magic_missile");
+                int at = st.Hand.IndexOf("magic_missileStrike");
                 if (at < 0)
                     break;
 
                 int occurrence = OccurrenceAt(st.Hand, at);
                 st.Hand.RemoveAt(at);
-                TakeOccurrence(st.Ethereal, "magic_missile", occurrence);
-                TakeOccurrence(st.ProducedExhaust, "magic_missile", occurrence);
-                TakeOccurrence(st.ZeroCost, "magic_missile", occurrence);
-                TakeOccurrence(st.Retained, "magic_missile", occurrence);
-                RemovedCards.Add((b.Owner, "magic_missile"));
+                TakeOccurrence(st.Ethereal, "magic_missileStrike", occurrence);
+                TakeOccurrence(st.ProducedExhaust, "magic_missileStrike", occurrence);
+                TakeOccurrence(st.ZeroCost, "magic_missileStrike", occurrence);
+                TakeOccurrence(st.Retained, "magic_missileStrike", occurrence);
+                RemovedCards.Add((b.Owner, "magic_missileStrike"));
             }
         }
 
@@ -831,6 +855,16 @@ public sealed class BattleState
     private static bool IsMarkerSlot(string entry, string cardId) =>
         entry == cardId || entry == MarkerPlaceholder(cardId);
 
+    /// <summary>牌堆第 index 张是否带某个实例关键字（供查看器配对下标）。</summary>
+    public static bool HasMarkerAt(List<string> cards, List<string> markers, int index)
+    {
+        if (cards == null || markers == null || index < 0 || index >= cards.Count)
+            return false;
+
+        string id = cards[index];
+        return HasOccurrenceAt(markers, id, OccurrenceAt(cards, index));
+    }
+
     private static bool HasOccurrenceAt(List<string> markers, string cardId, int occurrence)
     {
         int seen = 0;
@@ -843,6 +877,27 @@ public sealed class BattleState
         }
 
         return false;
+    }
+
+    /// <summary>给某个牌堆最后一张实例写入各关键字槽。</summary>
+    private static void MarkZoneLast(List<string> zone, string cardId,
+        List<string> etherealList, bool ethereal,
+        List<string> exhaustList, bool exhaust,
+        List<string> retainedList, bool retained,
+        List<string> zeroCostList, bool zeroCost)
+    {
+        if (zone.Count == 0)
+            return;
+
+        int occurrence = OccurrenceAt(zone, zone.Count - 1);
+        if (ethereal)
+            GrantOccurrence(etherealList, cardId, occurrence);
+        if (exhaust)
+            GrantOccurrence(exhaustList, cardId, occurrence);
+        if (retained)
+            GrantOccurrence(retainedList, cardId, occurrence);
+        if (zeroCost)
+            GrantOccurrence(zeroCostList, cardId, occurrence);
     }
 
     /// <summary>给刚加入手牌最后一张的实例添加关键字。</summary>
@@ -998,12 +1053,16 @@ public sealed class BattleState
         st.Hand.RemoveAt(handIndex);
 
         bool ethereal = TakeEtherealOccurrence(st, id, occurrence);
-        TakeOccurrence(st.ProducedExhaust, id, occurrence);
-        TakeOccurrence(st.ZeroCost, id, occurrence);
-        TakeOccurrence(st.Retained, id, occurrence);
+        bool produced = TakeOccurrence(st.ProducedExhaust, id, occurrence);
+        bool zeroCost = TakeOccurrence(st.ZeroCost, id, occurrence);
+        bool retained = TakeOccurrence(st.Retained, id, occurrence);
+
         st.Exhaust.Add(id);
-        if (ethereal)
-            st.EtherealExhausted.Add(id);
+        MarkZoneLast(st.Exhaust, id,
+            st.EtherealExhausted, ethereal,
+            st.ProducedExhaustExhausted, produced,
+            st.RetainedExhausted, retained,
+            st.ZeroCostExhausted, zeroCost);
         ExhaustedThisTurn.Add(id);
         return true;
     }
@@ -1050,7 +1109,9 @@ public sealed class BattleState
             .OrderBy(id => id)
             .ToList();
 
-        var rng = new System.Random(91357 + TurnNumber * 197 + st.RandomCardPlays * 7919);
+        RandomRollSerial++;
+        var rng = new System.Random(unchecked(91357 + GlobalSeed * 104729 +
+            TurnNumber * 197 + RandomRollSerial * 7919));
         for (int i = pool.Count - 1; i > 0; i--)
         {
             int j = rng.Next(i + 1);
@@ -1627,12 +1688,6 @@ public sealed class BattleState
             return false;
         }
 
-        if (card.Effect == "battlefield_survey" && st.Deck.Count == 0)
-        {
-            error = "抽牌堆是空的";
-            return false;
-        }
-
         if (card.KindEnum != CardKind.Strike)
             return true;
 
@@ -1825,7 +1880,8 @@ public sealed class BattleState
                 DrawCard(st, card.Power);
 
                 // 抽完之后还要弃 1 张：玩家由界面弹选牌，AI 直接挑一张最没用的
-                if (st.Id == PlayerId.Enemy)
+                // 联机中即使应用在 Enemy 侧也不能自动弃，必须等客户端选择
+                if (st.Id == PlayerId.Enemy && !Session.LanBattle)
                 {
                     int pick = PickAutoDiscardIndex(st);
                     if (pick >= 0)
@@ -1852,7 +1908,7 @@ public sealed class BattleState
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
 
-                if (st.Id == PlayerId.Player)
+                if (Session.LanBattle || st.Id == PlayerId.Player)
                     PendingReclaimExhaust = true;
 
                 return $"{card.NameZh}：选择消耗堆中的一张牌";
@@ -1877,7 +1933,7 @@ public sealed class BattleState
 
                 st.RandomCardPlays++;
                 List<string> choices = RollRandomCardChoices(st);
-                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                bool interactive = Session.LanBattle || st.Id == PlayerId.Player;
                 if (interactive)
                 {
                     PendingRandomChoices.Clear();
@@ -1895,7 +1951,7 @@ public sealed class BattleState
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
 
-                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                bool interactive = Session.LanBattle || st.Id == PlayerId.Player;
                 if (interactive && st.Deck.Count > 2)
                 {
                     PendingDeckPick = true;
@@ -1917,7 +1973,7 @@ public sealed class BattleState
 
                 List<int> targets = RetainTargetIndices(st);
                 const int RetainCount = 2;
-                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                bool interactive = Session.LanBattle || st.Id == PlayerId.Player;
                 if (interactive && targets.Count > RetainCount)
                 {
                     PendingRetainPick = true;
@@ -1937,7 +1993,7 @@ public sealed class BattleState
                 SendToPlayedPile(st, card);
 
                 List<string> choices = RollReinforceChoices(st);
-                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                bool interactive = Session.LanBattle || st.Id == PlayerId.Player;
                 if (interactive)
                 {
                     PendingReinforceChoices.Clear();
@@ -1963,7 +2019,7 @@ public sealed class BattleState
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
 
-                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                bool interactive = Session.LanBattle || st.Id == PlayerId.Player;
                 if (interactive && st.Hand.Count > 0)
                 {
                     PendingExhaustPick = true;
@@ -1981,7 +2037,7 @@ public sealed class BattleState
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
 
-                bool interactive = st.Id == PlayerId.Player && !Session.LanBattle;
+                bool interactive = Session.LanBattle || st.Id == PlayerId.Player;
                 if (interactive && st.Hand.Count > 0)
                 {
                     PendingDuplicatePick = true;
@@ -2145,6 +2201,12 @@ public sealed class BattleState
 
     /// <summary>刚从手牌移除的那张是不是「虚无」实例。</summary>
     public bool LastRemovedEthereal { get; private set; }
+
+    /// <summary>刚从手牌移除的那张是不是「保留」实例。</summary>
+    public bool LastRemovedRetained { get; private set; }
+
+    /// <summary>刚从手牌移除的那张是不是「临时 0 费」实例。</summary>
+    public bool LastRemovedZeroCost { get; private set; }
 
     /// <summary>刚从手牌移除的那张是不是「发射井产出、打出即消耗」实例。</summary>
     public bool LastRemovedProducedExhaust { get; private set; }
@@ -2376,11 +2438,11 @@ public sealed class BattleState
                 break;
             case "missileSilo":
                 int every = Mathf.Max(1, 4 - b.Level);
-                if (TurnNumber % every == 0 && AddToHand(st, "magic_missile"))
+                if (TurnNumber % every == 0 && AddToHand(st, "magic_missileStrike"))
                 {
-                    st.Produced.Add((b.Id, "magic_missile"));   // 记住这张卡是哪座井产出的
-                    MarkLastOccurrence(st, "magic_missile", producedExhaust: true);
-                    ProducedThisTurn.Add(("magic_missile", b.Coord, st.Hand.Count - 1));
+                    st.Produced.Add((b.Id, "magic_missileStrike"));   // 记住这张卡是哪座井产出的
+                    MarkLastOccurrence(st, "magic_missileStrike", producedExhaust: true);
+                    ProducedThisTurn.Add(("magic_missileStrike", b.Coord, st.Hand.Count - 1));
                 }
                 break;
         }
@@ -2401,22 +2463,30 @@ public sealed class BattleState
             return -1;
 
         string id = st.Exhaust[index];
-        st.Exhaust.RemoveAt(index);
+        int occurrence = OccurrenceAt(st.Exhaust, index);
+        bool eth = HasOccurrenceAt(st.EtherealExhausted, id, occurrence);
+        bool pex = HasOccurrenceAt(st.ProducedExhaustExhausted, id, occurrence);
+        bool ret = HasOccurrenceAt(st.RetainedExhausted, id, occurrence);
+        bool zero = HasOccurrenceAt(st.ZeroCostExhausted, id, occurrence);
 
-        // 虚无标记跟着走回手牌
-        int eth = st.EtherealExhausted.IndexOf(id);
-        if (eth >= 0)
-        {
-            st.EtherealExhausted.RemoveAt(eth);
-            MarkLastOccurrence(st, id, ethereal: true);
-        }
+        st.Exhaust.RemoveAt(index);
+        TakeOccurrence(st.EtherealExhausted, id, occurrence);
+        TakeOccurrence(st.ProducedExhaustExhausted, id, occurrence);
+        TakeOccurrence(st.RetainedExhausted, id, occurrence);
+        TakeOccurrence(st.ZeroCostExhausted, id, occurrence);
 
         st.Hand.Add(id);
+        MarkZoneLast(st.Hand, id,
+            st.Ethereal, eth,
+            st.ProducedExhaust, pex,
+            st.Retained, ret,
+            st.ZeroCost, zero);
+
         PendingReclaimExhaust = false;
         return st.Hand.Count - 1;
     }
     /// <summary>从消耗堆回收多张牌（序号按当前消耗堆顺序，内部从后往前清）。</summary>
-    public int ReclaimManyFromExhaust(PlayerState st, System.Collections.Generic.IReadOnlyList<int> indices)
+    public int ReclaimManyFromExhaust(PlayerState st, System.Collections.Generic.IReadOnlyList<int> indices, int maxCards = 1)
     {
         if (st == null || indices == null)
             return 0;
@@ -2433,7 +2503,7 @@ public sealed class BattleState
         int got = 0;
         foreach (int index in sorted)
         {
-            if (st.Hand.Count >= HandLimit)
+            if (got >= maxCards || st.Hand.Count >= HandLimit)
                 break;
             if (ReclaimFromExhaust(st, index) >= 0)
                 got++;
@@ -2465,8 +2535,8 @@ public sealed class BattleState
         // 先判断这一张带哪些实例关键字，后面决定要不要保留到弃牌堆/消耗堆
         LastRemovedEthereal = TakeEtherealOccurrence(st, cardId, occurrence);
         LastRemovedProducedExhaust = TakeOccurrence(st.ProducedExhaust, cardId, occurrence);
-        TakeOccurrence(st.ZeroCost, cardId, occurrence);
-        TakeOccurrence(st.Retained, cardId, occurrence);
+        LastRemovedZeroCost = TakeOccurrence(st.ZeroCost, cardId, occurrence);
+        LastRemovedRetained = TakeOccurrence(st.Retained, cardId, occurrence);
 
         int produced = 0;
         for (int i = 0; i < st.Produced.Count; i++)
@@ -2549,16 +2619,20 @@ public sealed class BattleState
         if (exhaust)
         {
             st.Exhaust.Add(card.Id);
-            if (LastRemovedEthereal)
-                st.EtherealExhausted.Add(card.Id);
+            MarkZoneLast(st.Exhaust, card.Id,
+                st.EtherealExhausted, LastRemovedEthereal,
+                st.ProducedExhaustExhausted, LastRemovedProducedExhaust,
+                st.RetainedExhausted, LastRemovedRetained,
+                st.ZeroCostExhausted, LastRemovedZeroCost);
         }
         else
         {
             st.Discard.Add(card.Id);
-            if (LastRemovedEthereal)
-                st.EtherealDiscarded.Add(card.Id);
-            if (LastRemovedProducedExhaust)
-                st.ProducedExhaustDiscarded.Add(card.Id);
+            MarkZoneLast(st.Discard, card.Id,
+                st.EtherealDiscarded, LastRemovedEthereal,
+                st.ProducedExhaustDiscarded, LastRemovedProducedExhaust,
+                st.RetainedDiscarded, LastRemovedRetained,
+                st.ZeroCostDiscarded, LastRemovedZeroCost);
         }
     }
 
@@ -2596,7 +2670,13 @@ public sealed class BattleState
                 st.ProducedExhaustDeck.AddRange(st.ProducedExhaustDiscarded);
                 st.ProducedExhaustDiscarded.Clear();
 
-                Shuffle(st.Deck, st.Id);
+                st.RetainedDeck.AddRange(st.RetainedDiscarded);
+                st.RetainedDiscarded.Clear();
+
+                st.ZeroCostDeck.AddRange(st.ZeroCostDiscarded);
+                st.ZeroCostDiscarded.Clear();
+
+                ShuffleDeckKeepingMarkers(st);
                 LastDrawReshuffled = true;
                 ReshuffleSerial++;
 
@@ -2605,25 +2685,26 @@ public sealed class BattleState
             }
 
             string card = st.Deck[0];
+            bool eth = HasOccurrenceAt(st.EtherealDeck, card, 0);
+            bool pex = HasOccurrenceAt(st.ProducedExhaustDeck, card, 0);
+            bool ret = HasOccurrenceAt(st.RetainedDeck, card, 0);
+            bool zero = HasOccurrenceAt(st.ZeroCostDeck, card, 0);
+
             st.Deck.RemoveAt(0);
+            TakeOccurrence(st.EtherealDeck, card, 0);
+            TakeOccurrence(st.ProducedExhaustDeck, card, 0);
+            TakeOccurrence(st.RetainedDeck, card, 0);
+            TakeOccurrence(st.ZeroCostDeck, card, 0);
+
             st.Hand.Add(card);
+            MarkZoneLast(st.Hand, card,
+                st.Ethereal, eth,
+                st.ProducedExhaust, pex,
+                st.Retained, ret,
+                st.ZeroCost, zero);
+
             DrawnThisTurn++;
             DrawnIndicesThisTurn.Add(st.Hand.Count - 1);
-
-            // 抽到的这张如果带虚无标记，标记跟着进手牌
-            int deckEth = st.EtherealDeck.IndexOf(card);
-            if (deckEth >= 0)
-            {
-                st.EtherealDeck.RemoveAt(deckEth);
-                MarkLastOccurrence(st, card, ethereal: true);
-            }
-
-            int deckPe = st.ProducedExhaustDeck.IndexOf(card);
-            if (deckPe >= 0)
-            {
-                st.ProducedExhaustDeck.RemoveAt(deckPe);
-                MarkLastOccurrence(st, card, producedExhaust: true);
-            }
         }
     }
 
@@ -2699,6 +2780,48 @@ public sealed class BattleState
             markers.Add(flag ? cardId : MarkerPlaceholder(cardId));
     }
 
+    /// <summary>洗牌时把每张牌的关键字一起带走，避免洗牌后标记错位。</summary>
+    private void ShuffleDeckKeepingMarkers(PlayerState st)
+    {
+        int n = st.Deck.Count;
+        var entries = new List<(string Card, bool Eth, bool Pex, bool Ret, bool Zero)>(n);
+        for (int i = 0; i < n; i++)
+        {
+            string id = st.Deck[i];
+            int occurrence = OccurrenceAt(st.Deck, i);
+            entries.Add((id,
+                HasOccurrenceAt(st.EtherealDeck, id, occurrence),
+                HasOccurrenceAt(st.ProducedExhaustDeck, id, occurrence),
+                HasOccurrenceAt(st.RetainedDeck, id, occurrence),
+                HasOccurrenceAt(st.ZeroCostDeck, id, occurrence)));
+        }
+
+        Random rng = RngOf(st.Id);
+        for (int i = n - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            (entries[i], entries[j]) = (entries[j], entries[i]);
+        }
+
+        st.Deck.Clear();
+        st.EtherealDeck.Clear();
+        st.ProducedExhaustDeck.Clear();
+        st.RetainedDeck.Clear();
+        st.ZeroCostDeck.Clear();
+
+        var seen = new Dictionary<string, int>();
+        foreach (var e in entries)
+        {
+            st.Deck.Add(e.Card);
+            seen.TryGetValue(e.Card, out int occurrence);
+            if (e.Eth) GrantOccurrence(st.EtherealDeck, e.Card, occurrence);
+            if (e.Pex) GrantOccurrence(st.ProducedExhaustDeck, e.Card, occurrence);
+            if (e.Ret) GrantOccurrence(st.RetainedDeck, e.Card, occurrence);
+            if (e.Zero) GrantOccurrence(st.ZeroCostDeck, e.Card, occurrence);
+            seen[e.Card] = occurrence + 1;
+        }
+    }
+
     /// <summary>按阵营的随机数洗牌：联机时同一阵营在两个客户端用同一颗种子。</summary>
     private void Shuffle(List<string> list, PlayerId side)
     {
@@ -2723,14 +2846,17 @@ public sealed class BattleState
         // 回合结束：把当前玩家手里「没有保留关键字」的卡弃掉
         DiscardHand(CurrentPlayer);
 
-        if (CurrentPlayer == PlayerId.Player)
+        PlayerId next = OpponentOf(CurrentPlayer);
+        if (FirstHalf)
         {
-            BeginTurn(PlayerId.Enemy);
+            FirstHalf = false;
+            BeginTurn(next);
         }
         else
         {
+            FirstHalf = true;
             TurnNumber++;
-            BeginTurn(PlayerId.Player);
+            BeginTurn(next);
         }
     }
 
@@ -2753,22 +2879,19 @@ public sealed class BattleState
         int occurrence = OccurrenceAt(st.Hand, handIndex);
         st.Hand.RemoveAt(handIndex);
 
-        TakeOccurrence(st.ZeroCost, id, occurrence);
-        TakeOccurrence(st.Retained, id, occurrence);
+        bool zeroCost = TakeOccurrence(st.ZeroCost, id, occurrence);
+        bool retained = TakeOccurrence(st.Retained, id, occurrence);
+        bool hadProduced = TakeOccurrence(st.ProducedExhaust, id, occurrence);
+        bool ethereal = TakeEtherealOccurrence(st, id, occurrence);
 
-        if (TakeEtherealOccurrence(st, id, occurrence))
-        {
-            st.Exhaust.Add(id);
-            st.EtherealExhausted.Add(id);
-            ExhaustedThisTurn.Add(id);
-            return true;
-        }
-
+        // 弃牌操作一律进弃牌堆；虚无/消耗关键字随牌带过去
         st.Discard.Add(id);
         DiscardedThisTurn.Add(id);
-
-        if (TakeOccurrence(st.ProducedExhaust, id, occurrence))
-            st.ProducedExhaustDiscarded.Add(id);   // 关键字跟着牌走
+        MarkZoneLast(st.Discard, id,
+            st.EtherealDiscarded, ethereal,
+            st.ProducedExhaustDiscarded, hadProduced,
+            st.RetainedDiscarded, retained,
+            st.ZeroCostDiscarded, zeroCost);   // 关键字跟着牌走
 
         int produced = st.Produced.FindIndex(p => p.Card == id);
         if (produced >= 0)
@@ -2828,26 +2951,40 @@ public sealed class BattleState
             string id = st.Hand[i];
             CardDef card = GameDatabase.Card(id);
             int occurrence = OccurrenceAt(st.Hand, i);
-            if (card != null && (card.Retain || HasOccurrenceAt(st.Retained, id, occurrence)))
-                continue;                     // 保留：跨回合留在手里
+            bool isEthereal = HasOccurrenceAt(st.Ethereal, id, occurrence);
+
+            // 虚无优先：即使同时带保留，回合结束也必须消耗
+            if (!isEthereal && card != null &&
+                (card.Retain || HasOccurrenceAt(st.Retained, id, occurrence)))
+                continue;                     // 仅保留：跨回合留在手里
 
             st.Hand.RemoveAt(i);
-            TakeOccurrence(st.ZeroCost, id, occurrence);
+            // 所有实例槽都要清掉，避免同名保留卡的槽位错位
+            bool zeroCost = TakeOccurrence(st.ZeroCost, id, occurrence);
+            bool retained = TakeOccurrence(st.Retained, id, occurrence);
+            bool hadProduced = TakeOccurrence(st.ProducedExhaust, id, occurrence);
+            bool ethereal = TakeEtherealOccurrence(st, id, occurrence);
 
             // 虚无：进消耗堆，永不洗回
-            if (TakeEtherealOccurrence(st, id, occurrence))
+            if (ethereal)
             {
                 st.Exhaust.Add(id);
-                st.EtherealExhausted.Add(id);
+                MarkZoneLast(st.Exhaust, id,
+                    st.EtherealExhausted, true,
+                    st.ProducedExhaustExhausted, hadProduced,
+                    st.RetainedExhausted, retained,
+                    st.ZeroCostExhausted, zeroCost);
                 ExhaustedThisTurn.Add(id);
                 continue;
             }
 
             st.Discard.Add(id);
             DiscardedThisTurn.Add(id);
-
-            if (TakeOccurrence(st.ProducedExhaust, id, occurrence))
-                st.ProducedExhaustDiscarded.Add(id);
+            MarkZoneLast(st.Discard, id,
+                st.EtherealDiscarded, false,
+                st.ProducedExhaustDiscarded, hadProduced,
+                st.RetainedDiscarded, retained,
+                st.ZeroCostDiscarded, zeroCost);
 
             // 导弹卡进弃牌堆后就不再跟发射井绑定了
             int pd = st.Produced.FindIndex(p => p.Card == id);

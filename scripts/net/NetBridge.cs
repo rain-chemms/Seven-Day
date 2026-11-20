@@ -220,6 +220,9 @@ public partial class NetBridge : Node
         if (LanSession.IsHost)
             return;
 
+        if (Session.SingleBattle)
+            return;
+
         NetResumePayload payload = NetResumePayload.FromJson(json);
         if (payload?.Config == null)
             return;

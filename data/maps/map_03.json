@@ -41,7 +41,7 @@
     "unit_helicopter",
     "unit_fighter",
     "magic_repair",
-    "magic_boost"
+    "forcedMarch"
   ],
   "enemyDeck": [
     "unit_submarine",
@@ -55,7 +55,7 @@
     "unit_missile_launcher",
     "unit_helicopter",
     "unit_fighter",
-    "magic_missile",
-    "magic_boost"
+    "magic_missileStrike",
+    "forcedMarch"
   ]
 }

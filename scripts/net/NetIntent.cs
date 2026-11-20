@@ -20,6 +20,7 @@ public enum NetIntentType
     Dive = 10,
     Radar = 11,
     CarrierSpawn = 12,
+    CardChoice = 13,
 }
 
 /// <summary>
@@ -51,6 +52,19 @@ public sealed class NetIntent
     /// <summary>建筑定义 id（Build）。</summary>
     public string Id { get; set; } = "";
 
+    /// <summary>无需指定地块的全局卡（Deploy 时坐标无意义）。</summary>
+    public bool NoTarget { get; set; }
+
+    /// <summary>卡牌选择类型：discard/duplicate/exhaust/retain/random/deck/reinforce/reclaim。</summary>
+    public string Choice { get; set; } = "";
+
+    /// <summary>卡牌选择的下标列表。</summary>
+    public int[] Picks { get; set; } = System.Array.Empty<int>();
+
+    /// <summary>主机繁忙时暂存、待状态稳定后再校验的客户端动作（不参与网络序列化）。</summary>
+    [JsonIgnore]
+    public bool NeedsValidation { get; set; }
+
     /// <summary>主机分配的序号（用于去重）。</summary>
     public int Seq { get; set; }
 
@@ -81,9 +95,10 @@ public sealed class NetIntent
     public NetIntentType Type => (NetIntentType)T;
 
     // ── 构造便捷方法 ──
-    public static NetIntent Deploy(int actor, int hand, HexCoord coord) => new()
+    public static NetIntent Deploy(int actor, int hand, HexCoord coord, bool noTarget = false) => new()
     {
         T = (int)NetIntentType.Deploy, A = actor, Hand = hand, Q = coord.Q, R = coord.R,
+        NoTarget = noTarget,
     };
 
     public static NetIntent Dive(int actor, HexCoord at) => new()
@@ -126,6 +141,11 @@ public sealed class NetIntent
     };
 
     public static NetIntent EndTurn(int actor) => new() { T = (int)NetIntentType.EndTurn, A = actor };
+
+    public static NetIntent CardChoice(int actor, string choice, int[] picks) => new()
+    {
+        T = (int)NetIntentType.CardChoice, A = actor, Choice = choice, Picks = picks,
+    };
 
     public static NetIntent Surrender(int actor) => new() { T = (int)NetIntentType.Surrender, A = actor };
 }

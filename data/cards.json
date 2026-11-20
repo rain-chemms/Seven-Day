@@ -60,7 +60,7 @@
     "cost": 75
   },
   {
-    "id": "magic_airstrike",
+    "id": "magic_airStrike",
     "keywords": [],
     "nameZh": "空袭",
     "nameEn": "Air Strike",
@@ -69,10 +69,11 @@
     "kind": "strike",
     "cost": 200,
     "effect": "airstrike",
-    "power": 250
+    "power": 250,
+    "unit": "airStrike"
   },
   {
-    "id": "magic_missile",
+    "id": "magic_missileStrike",
     "keywords": [
       "retain"
     ],
@@ -83,7 +84,8 @@
     "kind": "strike",
     "cost": 300,
     "effect": "missile",
-    "power": 350
+    "power": 350,
+    "unit": "missileStrike"
   },
   {
     "id": "magic_repair",
@@ -97,10 +99,11 @@
     "kind": "strike",
     "cost": 150,
     "effect": "repair",
-    "power": 200
+    "power": 200,
+    "unit": "repair"
   },
   {
-    "id": "magic_supply",
+    "id": "supplyTransport",
     "nameZh": "物资运输",
     "nameEn": "Supply Transport",
     "descriptionZh": "抽 3 张牌，然后选择 1 张手牌弃掉。",
@@ -111,7 +114,7 @@
     "power": 3
   },
   {
-    "id": "magic_boost",
+    "id": "forcedMarch",
     "keywords": [
       "retain"
     ],
@@ -125,7 +128,7 @@
     "power": 1
   },
   {
-    "id": "magic_exchange_rate",
+    "id": "exchangeRate",
     "keywords": [],
     "nameZh": "汇率调节",
     "nameEn": "Exchange Adjustment",
@@ -134,11 +137,10 @@
     "kind": "global",
     "cost": 0,
     "effect": "gold_percent",
-    "power": 5,
-    "unit": "exchange_rate"
+    "power": 5
   },
   {
-    "id": "magic_reclaim",
+    "id": "battleFieldSweep",
     "keywords": [],
     "nameZh": "战场扫荡",
     "nameEn": "Battlefield Sweep",

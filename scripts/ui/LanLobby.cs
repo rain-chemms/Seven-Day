@@ -693,6 +693,7 @@ public partial class LanLobby : Control
 
         Session.RestoreLanSave = true;
         Session.LanBattle = true;
+        Session.SingleBattle = false;
         Session.MapId = data.Payload.Config.MapId;
         Session.Difficulty = (AIDifficulty)data.Payload.Config.Difficulty;
         LanSession.Config = data.Payload.Config;
@@ -878,6 +879,7 @@ public partial class LanLobby : Control
         NetBridge.Instance.SendStart(cfg, peerId);
 
         Session.LanBattle = true;
+        Session.SingleBattle = false;
         _starting = true;
         _cancelBtn.Visible = false;
         SetStatus($"对手已连接（{hello.Deck.Length} 张卡 / Lv{hello.HqLevel}），开始对战");

@@ -11,6 +11,9 @@ public static class Session
     /// <summary>本局是否来自局域网大厅（决定是否走联机战斗逻辑）。</summary>
     public static bool LanBattle;
 
+    /// <summary>本局是否为明确的单机对局；用于阻止上一局联机会话/延迟 RPC 污染。</summary>
+    public static bool SingleBattle;
+
     /// <summary>本次进入战斗是否要载入“未完成联机对局”的存档（房主恢复用）。</summary>
     public static bool RestoreLanSave;
 

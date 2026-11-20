@@ -35,9 +35,9 @@
     "unit_missile_launcher",
     "unit_helicopter",
     "unit_fighter",
-    "magic_airstrike",
+    "magic_airStrike",
     "magic_repair",
-    "magic_boost",
+    "forcedMarch",
     "unit_submarine",
     "unit_destroyer"
   ],
@@ -50,9 +50,9 @@
     "unit_missile_launcher",
     "unit_helicopter",
     "unit_fighter",
-    "magic_missile",
+    "magic_missileStrike",
     "magic_repair",
-    "magic_boost",
+    "forcedMarch",
     "unit_submarine",
     "unit_destroyer"
   ]

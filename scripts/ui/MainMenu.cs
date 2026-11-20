@@ -429,7 +429,7 @@ public partial class MainMenu : Node3D
         await ToSignal(GetTree().CreateTimer(0.25), SceneTreeTimer.SignalName.Timeout);
         _deckPanel.OnDebugClear();
         _deckPanel.DebugAdd("unit_infantry");
-        _deckPanel.DebugAdd("magic_airstrike");
+        _deckPanel.DebugAdd("magic_airStrike");
     }
 
     /// <summary>验证拖拽：跟手卡应贴着光标，松开只在右侧区域才加牌。</summary>
@@ -570,7 +570,7 @@ public partial class MainMenu : Node3D
             Session.SaveDeck(new[]
             {
                 "unit_infantry", "unit_infantry", "unit_tank", "unit_tank",
-                "unit_missile_launcher", "magic_airstrike", "magic_repair", "unit_helicopter",
+                "unit_missile_launcher", "magic_airStrike", "magic_repair", "unit_helicopter",
             });
             GD.Print($"[DeckTest] 已保存 {Session.PlayerDeck.Count} 张自定义卡组");
             GetTree().Quit();

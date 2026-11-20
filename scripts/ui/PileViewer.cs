@@ -184,7 +184,8 @@ public partial class PileViewer : Control
 
     public void Open(string title, IEnumerable<string> cardIds, IReadOnlyList<int> etherealIndices = null,
         IReadOnlyList<int> producedExhaustIndices = null, System.Action<int> onPick = null,
-        System.Action<List<int>> onMultiPick = null, int requiredPicks = 0, int maxPicks = 0)
+        System.Action<List<int>> onMultiPick = null, int requiredPicks = 0, int maxPicks = 0,
+        IReadOnlyList<int> retainedIndices = null, IReadOnlyList<int> zeroCostIndices = null)
     {
         List<string> list = cardIds.ToList();
         _picking = onPick != null || onMultiPick != null;
@@ -213,6 +214,8 @@ public partial class PileViewer : Control
 
         var ethereal = new HashSet<int>(etherealIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
         var pexhaust = new HashSet<int>(producedExhaustIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
+        var retained = new HashSet<int>(retainedIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
+        var zeroCost = new HashSet<int>(zeroCostIndices ?? (IReadOnlyList<int>)System.Array.Empty<int>());
 
         foreach (Control cell in _cells)
             cell.QueueFree();
@@ -246,9 +249,10 @@ public partial class PileViewer : Control
                 PivotOffset = Vector2.Zero,     // 从左上角缩放，避免内容被推到格子外
             };
             card.Theme = UiTheme.MsdfTheme();   // 放大后文字不糊
-            card.Setup(def, 0, affordable: true);
+            card.Setup(def, 0, affordable: true, costOverride: zeroCost.Contains(i) ? 0 : -1);
             card.SetEthereal(ethereal.Contains(i));
             card.SetProducedExhaust(pexhaust.Contains(i));
+            card.SetRetained(retained.Contains(i));
             need = need.Max(card.GetCombinedMinimumSize());
             pending.Add((def, card, ethereal.Contains(i)));
         }

@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bjuf5ri0up3f4"
-path="res://.godot/imported/cardface_exchange_rate.png-4287598487a6bd11bf3f85a94c87f096.ctex"
+uid="uid://cwhy4oyi21jd0"
+path="res://.godot/imported/248_logo_hd.png-eb4d1d09a498693d27d13fb1530a487c.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://gameAsset/textures/cardface/cardface_exchange_rate.png"
-dest_files=["res://.godot/imported/cardface_exchange_rate.png-4287598487a6bd11bf3f85a94c87f096.ctex"]
+source_file="res://docs/screenshots/248_logo_hd.png"
+dest_files=["res://.godot/imported/248_logo_hd.png-eb4d1d09a498693d27d13fb1530a487c.ctex"]
 
 [params]
 

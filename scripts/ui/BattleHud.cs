@@ -85,6 +85,8 @@ public partial class BattleHud : CanvasLayer
 
     // 左上角：本回合持续增益/减益图标 + 悬浮说明
     private HBoxContainer _abilityBar;
+    private HBoxContainer _enemyAbilityBar;
+    private string _enemyAbilitySignature = "";
     private PanelContainer _abilityTip;
     private Label _abilityTipTitle;
     private RichTextLabel _abilityTipBody;
@@ -778,11 +780,24 @@ public partial class BattleHud : CanvasLayer
 
     public void ClosePile() => _pileViewer.Close();
 
+    /// <summary>带完整实例关键字的牌堆查看器。</summary>
+    public void ShowPileMarked(string title, System.Collections.Generic.IEnumerable<string> cards,
+        System.Collections.Generic.IReadOnlyList<int> ethereal,
+        System.Collections.Generic.IReadOnlyList<int> producedExhaust,
+        System.Collections.Generic.IReadOnlyList<int> retained,
+        System.Collections.Generic.IReadOnlyList<int> zeroCost) =>
+        _pileViewer.Open(title, cards, ethereal, producedExhaust, null, null, 0, 0, retained, zeroCost);
+
     /// <summary>牌堆多选：确认后返回选中的下标列表。</summary>
     public void ShowPileMulti(string title, System.Collections.Generic.IEnumerable<string> cards,
                               System.Action<System.Collections.Generic.List<int>> onConfirm,
-                              int requiredPicks = 0, int maxPicks = 0) =>
-        _pileViewer.Open(title, cards, null, null, null, onConfirm, requiredPicks, maxPicks);
+                              int requiredPicks = 0, int maxPicks = 0,
+                              System.Collections.Generic.IReadOnlyList<int> ethereal = null,
+                              System.Collections.Generic.IReadOnlyList<int> producedExhaust = null,
+                              System.Collections.Generic.IReadOnlyList<int> retained = null,
+                              System.Collections.Generic.IReadOnlyList<int> zeroCost = null) =>
+        _pileViewer.Open(title, cards, ethereal, producedExhaust, null, onConfirm,
+            requiredPicks, maxPicks, retained, zeroCost);
 
     /// <summary>调试：抽牌堆当前缩放（验证悬停动画）。</summary>
     public float DebugPileScale() => _deckPile.Scale.X;
@@ -1417,6 +1432,22 @@ public partial class BattleHud : CanvasLayer
         _abilityBar.MouseFilter = Control.MouseFilterEnum.Ignore;
         _root.AddChild(_abilityBar);
 
+        // 右上角：敌方能力图标（红框区域），与玩家能力条互不影响
+        _enemyAbilityBar = new HBoxContainer
+        {
+            Name = "EnemyAbilityBar",
+            Visible = false,
+            Alignment = BoxContainer.AlignmentMode.End,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _enemyAbilityBar.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+        _enemyAbilityBar.OffsetLeft = -340;
+        _enemyAbilityBar.OffsetRight = -16;
+        _enemyAbilityBar.OffsetTop = 214;
+        _enemyAbilityBar.OffsetBottom = 270;
+        _enemyAbilityBar.AddThemeConstantOverride("separation", 6);
+        _root.AddChild(_enemyAbilityBar);
+
         _abilityTip = new PanelContainer
         {
             Name = "AbilityTip",
@@ -1494,60 +1525,7 @@ public partial class BattleHud : CanvasLayer
             }
 
             foreach (ActiveEffect effect in _abilityEffects)
-            {
-                var cell = new Control
-                {
-                    CustomMinimumSize = new Vector2(48, 48),
-                    MouseFilter = Control.MouseFilterEnum.Stop,
-                    PivotOffset = new Vector2(24, 24),
-                };
-
-                var icon = new TextureRect
-                {
-                    ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-                    StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
-                    MouseFilter = Control.MouseFilterEnum.Ignore,
-                };
-                icon.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
-                if (ResourceLoader.Exists(effect.IconPath))
-                    icon.Texture = GD.Load<Texture2D>(effect.IconPath);
-                cell.AddChild(icon);
-
-                // 杀戮尖塔式能力角标：右下角显示能力数值
-                if (effect.HasValue)
-                {
-                    var value = new Label
-                    {
-                        Text = effect.Value.ToString(),
-                        MouseFilter = Control.MouseFilterEnum.Ignore,
-                        HorizontalAlignment = HorizontalAlignment.Right,
-                        VerticalAlignment = VerticalAlignment.Bottom,
-                    };
-                    value.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomRight);
-                    value.OffsetLeft = -26;
-                    value.OffsetTop = -26;
-                    value.OffsetRight = -1;
-                    value.OffsetBottom = 0;
-                    value.AddThemeFontSizeOverride("font_size", 18);
-                    value.AddThemeColorOverride("font_color", new Color("FFE45C"));
-                    value.AddThemeConstantOverride("outline_size", 4);
-                    value.AddThemeColorOverride("font_outline_color", new Color("3B2E16"));
-                    cell.AddChild(value);
-                }
-
-                ActiveEffect captured = effect;
-                cell.MouseEntered += () =>
-                {
-                    AnimateAbilityHover(cell, true);
-                    ShowAbilityTip(captured);
-                };
-                cell.MouseExited += () =>
-                {
-                    AnimateAbilityHover(cell, false);
-                    HideAbilityTip();
-                };
-                _abilityBar.AddChild(cell);
-            }
+                _abilityBar.AddChild(CreateAbilityCell(effect, enemy: false));
         }
 
         bool any = _abilityEffects.Count > 0;
@@ -1557,6 +1535,91 @@ public partial class BattleHud : CanvasLayer
 
         if (_terrainPanel != null)
             _terrainPanel.OffsetTop = any ? 132 : 78;
+
+        RefreshEnemyAbilities();
+    }
+
+    /// <summary>按当前状态刷新右上角敌方能力图标。</summary>
+    private void RefreshEnemyAbilities()
+    {
+        if (_enemyAbilityBar == null || _state == null)
+            return;
+
+        var effects = ActiveEffects.Collect(_state.Enemy);
+        string signature = "";
+        foreach (ActiveEffect e in effects)
+            signature += e.Id + ":" + e.Value + "|";
+
+        if (signature != _enemyAbilitySignature)
+        {
+            _enemyAbilitySignature = signature;
+            foreach (Node child in _enemyAbilityBar.GetChildren())
+            {
+                _enemyAbilityBar.RemoveChild(child);
+                child.QueueFree();
+            }
+
+            foreach (ActiveEffect effect in effects)
+                _enemyAbilityBar.AddChild(CreateAbilityCell(effect, enemy: true));
+        }
+
+        _enemyAbilityBar.Visible = effects.Count > 0;
+    }
+
+    private Control CreateAbilityCell(ActiveEffect effect, bool enemy)
+    {
+        var cell = new Control
+        {
+            CustomMinimumSize = new Vector2(48, 48),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            PivotOffset = new Vector2(24, 24),
+        };
+
+        var icon = new TextureRect
+        {
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        icon.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        if (ResourceLoader.Exists(effect.IconPath))
+            icon.Texture = GD.Load<Texture2D>(effect.IconPath);
+        cell.AddChild(icon);
+
+        if (effect.HasValue)
+        {
+            var value = new Label
+            {
+                Text = effect.Value.ToString(),
+                MouseFilter = Control.MouseFilterEnum.Ignore,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Bottom,
+            };
+            value.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.BottomRight);
+            value.OffsetLeft = -26;
+            value.OffsetTop = -26;
+            value.OffsetRight = -1;
+            value.OffsetBottom = 0;
+            value.AddThemeFontSizeOverride("font_size", 18);
+            value.AddThemeColorOverride("font_color", new Color("FFE45C"));
+            value.AddThemeConstantOverride("outline_size", 4);
+            value.AddThemeColorOverride("font_outline_color", new Color("3B2E16"));
+            cell.AddChild(value);
+        }
+
+        ActiveEffect captured = effect;
+        cell.MouseEntered += () =>
+        {
+            AnimateAbilityHover(cell, true);
+            ShowAbilityTip(captured, enemy);
+        };
+        cell.MouseExited += () =>
+        {
+            AnimateAbilityHover(cell, false);
+            HideAbilityTip();
+        };
+
+        return cell;
     }
 
     /// <summary>能力图标悬停放大 / 移开恢复（带缓动，不改变布局）。</summary>
@@ -1582,7 +1645,7 @@ public partial class BattleHud : CanvasLayer
             .SetTrans(Tween.TransitionType.Back)
             .SetEase(hover ? Tween.EaseType.Out : Tween.EaseType.InOut);
     }
-    private void ShowAbilityTip(ActiveEffect effect)
+    private void ShowAbilityTip(ActiveEffect effect, bool enemy = false)
     {
         if (_abilityTip == null || effect == null)
             return;
@@ -1599,6 +1662,23 @@ public partial class BattleHud : CanvasLayer
         _abilityTipDuration.Visible = hasDuration;
         if (hasDuration)
             _abilityTipDuration.Text = Loc.T(effect.DurationKey);
+
+        if (enemy)
+        {
+            _abilityTip.SetAnchorsPreset(Control.LayoutPreset.TopRight);
+            _abilityTip.OffsetLeft = -332;
+            _abilityTip.OffsetRight = -16;
+            _abilityTip.OffsetTop = 276;
+            _abilityTip.OffsetBottom = 0;
+        }
+        else
+        {
+            _abilityTip.SetAnchorsPreset(Control.LayoutPreset.TopLeft);
+            _abilityTip.OffsetLeft = 16;
+            _abilityTip.OffsetRight = 322;
+            _abilityTip.OffsetTop = 118;
+            _abilityTip.OffsetBottom = 0;
+        }
 
         _abilityTip.Visible = true;
         _abilityTip.MoveToFront();
@@ -1618,6 +1698,8 @@ public partial class BattleHud : CanvasLayer
     }
 
     public int DebugAbilityIconCount => _abilityBar == null ? 0 : _abilityBar.GetChildCount();
+
+    public int DebugEnemyAbilityIconCount => _enemyAbilityBar == null ? 0 : _enemyAbilityBar.GetChildCount();
 
     /// <summary>调试：直接对第一个能力图标播放悬停放大。</summary>
     public void DebugHoverFirstAbility()
@@ -1832,6 +1914,9 @@ public partial class BattleHud : CanvasLayer
                 Scale = Vector2.One * StagingScale,
             };
             card.Setup(def, handIndex, affordable: true, costOverride: _state.CostAt(_state.Player, handIndex));
+            card.SetEthereal(_state.IsEtherealAt(handIndex));
+            card.SetProducedExhaust(_state.IsProducedExhaustAt(handIndex));
+            card.SetRetained(_state.HasRetainAt(_state.Player, handIndex));
             slot.AddChild(card);
 
             int captured = handIndex;

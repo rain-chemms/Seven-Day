@@ -112,6 +112,32 @@ public partial class BattleScene : Node3D
             LanSaveStore.RestoreIntoPending();
         }
 
+        // 模式隔离：进入单机战斗时必须彻底清掉上一局联机会话，
+        // 避免残留的 host/client 身份让出牌走 NetSendDeploy 却没有对端。
+        if (Session.SingleBattle && !Session.RestoreLanSave)
+        {
+            LanSession.Leave();
+            Session.LanBattle = false;
+            NetResumeStore.Clear();
+        }
+
+        if (Session.RestoreLanSave)
+        {
+            // 显式恢复联机存档，保留现有会话/重连数据
+        }
+        else if (!Session.LanBattle)
+        {
+            if (LanSession.Active)
+                LanSession.Leave();
+            NetResumeStore.Clear();
+        }
+        else if (!LanSession.Active || !LanSession.IsConnected)
+        {
+            LanSession.Leave();
+            Session.LanBattle = false;
+            NetResumeStore.Clear();
+        }
+
         NetApplyPendingConfig();
         NetSanitizeStale();
         _state = NetCreateState(map);
@@ -512,6 +538,34 @@ public partial class BattleScene : Node3D
     // 开发调试：--demo-contested-build 争夺区建造
     if (OS.GetCmdlineUserArgs().Contains("--demo-contested-build"))
         CallDeferred(nameof(DemoContestedBuild));
+
+    // 开发调试：--demo-reclaim-discard 扫荡取回后再弃置
+    if (OS.GetCmdlineUserArgs().Contains("--demo-reclaim-discard"))
+        CallDeferred(nameof(DemoReclaimDiscard));
+
+    // 开发调试：--demo-enemy-abilities 右上角敌方能力图标
+    if (OS.GetCmdlineUserArgs().Contains("--demo-enemy-abilities"))
+        CallDeferred(nameof(DemoEnemyAbilities));
+
+    // 开发调试：--demo-lan-discard 联机敌方侧物资运输弃牌
+    if (OS.GetCmdlineUserArgs().Contains("--demo-lan-discard"))
+        CallDeferred(nameof(DemoLanDiscard));
+
+    // 开发调试：--demo-lan-reclaim 联机敌方侧扫荡状态
+    if (OS.GetCmdlineUserArgs().Contains("--demo-lan-reclaim"))
+        CallDeferred(nameof(DemoLanReclaim));
+
+    // 开发调试：--demo-staging-keywords 临时选择显示关键字
+    if (OS.GetCmdlineUserArgs().Contains("--demo-staging-keywords"))
+        CallDeferred(nameof(DemoStagingKeywords));
+
+    // 开发调试：--demo-keyword-zones 关键字跨牌堆保持
+    if (OS.GetCmdlineUserArgs().Contains("--demo-keyword-zones"))
+        CallDeferred(nameof(DemoKeywordZones));
+
+    // 开发调试：--demo-retain-ethereal 虚无+保留不应被回合结束消耗
+    if (OS.GetCmdlineUserArgs().Contains("--demo-retain-ethereal"))
+        CallDeferred(nameof(DemoRetainEthereal));
 
     // 开发调试：--demo-keyword-targets 关键字实例目标测试
     if (OS.GetCmdlineUserArgs().Contains("--demo-keyword-targets"))
@@ -1639,8 +1693,8 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
 
         _state.Player.Gold = 2000;
-        _state.Player.Hand.Add("magic_missile");
-        var card = GameDatabase.Card("magic_missile");
+        _state.Player.Hand.Add("magic_missileStrike");
+        var card = GameDatabase.Card("magic_missileStrike");
 
         UnitInst foe = _state.Units.First(u => u.Owner == PlayerId.Enemy && u.Alive);
         int hpBefore = foe.Hp;
@@ -1679,7 +1733,7 @@ public partial class BattleScene : Node3D
 
         _state.Player.Gold = 2000;
         _state.Player.Hand.Clear();
-        _state.Player.Hand.Add("magic_boost");
+        _state.Player.Hand.Add("forcedMarch");
         RefreshAll();
 
         await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
@@ -1859,7 +1913,7 @@ public partial class BattleScene : Node3D
 
         _state.Player.Hand.Clear();
         _state.Player.Hand.Add("unit_infantry");
-        _state.Player.Hand.Add("magic_airstrike");     // 消耗卡
+        _state.Player.Hand.Add("magic_airStrike");     // 消耗卡
         _state.Player.Hand.Add("magic_repair");       // 保留卡（对比）
         _map.SyncEntities();
         _map.RefreshZones();
@@ -1872,7 +1926,7 @@ public partial class BattleScene : Node3D
 
         await ToSignal(GetTree().CreateTimer(0.3), SceneTreeTimer.SignalName.Timeout);
 
-        int idx = _state.Player.Hand.IndexOf("magic_airstrike");
+        int idx = _state.Player.Hand.IndexOf("magic_airStrike");
         GD.Print($"[ExhaustBurn] 打空袭 index={idx} 手上={string.Join(",", _state.Player.Hand)}");
         ApplyCardAt(idx, spot.Value);
 
@@ -1889,7 +1943,7 @@ public partial class BattleScene : Node3D
         _state.Player.Exhaust.Clear();
 
         _state.Player.Gold = 2000;
-        _state.Player.Hand.Add("magic_airstrike");   // 消耗
+        _state.Player.Hand.Add("magic_airStrike");   // 消耗
         _state.Player.Hand.Add("magic_repair");      // 保留
         _state.Player.Hand.Add("unit_infantry");     // 普通
 
@@ -1913,7 +1967,7 @@ public partial class BattleScene : Node3D
 
         if (foe != null)
         {
-            _state.PlayGlobalCard(_state.Player, "magic_airstrike", foe.Coord, out string err);
+            _state.PlayGlobalCard(_state.Player, "magic_airStrike", foe.Coord, out string err);
             GD.Print($"[PileFlow] 打空袭 err={err}");
         }
 
@@ -1932,7 +1986,7 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
 
         _state.Player.Deck.Clear();
-        string[] pool = { "unit_infantry", "unit_tank", "unit_fighter", "magic_repair", "magic_airstrike", "unit_helicopter" };
+        string[] pool = { "unit_infantry", "unit_tank", "unit_fighter", "magic_repair", "magic_airStrike", "unit_helicopter" };
         int pileCount = OS.GetCmdlineUserArgs().Contains("--pile-seven") ? 7 : 24;
         for (int i = 0; i < pileCount; i++)
             _state.Player.Deck.Add(pool[i % pool.Length]);
@@ -1961,7 +2015,7 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
 
         _state.Player.Gold = 2000;
-        _state.Player.Hand.Add("magic_airstrike");   // 消耗
+        _state.Player.Hand.Add("magic_airStrike");   // 消耗
         _state.Player.Hand.Add("magic_repair");      // 保留
         RefreshAll();
 
@@ -2004,8 +2058,8 @@ public partial class BattleScene : Node3D
 
         _state.Player.Hand.Clear();
         _state.Player.Produced.Clear();
-        _state.Player.Hand.Add("magic_missile");
-        _state.Player.Produced.Add((siloB.Id, "magic_missile"));   // 故意指向 B
+        _state.Player.Hand.Add("magic_missileStrike");
+        _state.Player.Produced.Add((siloB.Id, "magic_missileStrike"));   // 故意指向 B
 
         _map.SyncEntities();
         _map.RefreshZones();
@@ -2028,7 +2082,7 @@ public partial class BattleScene : Node3D
         _state.Player.Gold = 2000;
         HexCoord targetCell = spots[1].Neighbor(0).Neighbor(0);
         GD.Print($"[SiloLink] 发射井 A@{siloA.Coord} B@{siloB.Coord} 目标={targetCell}");
-        TryPlayGlobal(GameDatabase.Card("magic_missile"), targetCell);
+        TryPlayGlobal(GameDatabase.Card("magic_missileStrike"), targetCell);
     }
 
     /// <summary>发射井被拆除 → 手牌里的导弹卡烧掉。</summary>
@@ -2054,11 +2108,11 @@ public partial class BattleScene : Node3D
 
         _state.Player.Hand.Clear();
         _state.Player.Produced.Clear();
-        _state.Player.Hand.Add("magic_missile");      // A 的
-        _state.Player.Produced.Add((siloA.Id, "magic_missile"));
+        _state.Player.Hand.Add("magic_missileStrike");      // A 的
+        _state.Player.Produced.Add((siloA.Id, "magic_missileStrike"));
         _state.Player.Hand.Add("unit_infantry");
-        _state.Player.Hand.Add("magic_missile");      // B 的
-        _state.Player.Produced.Add((siloB.Id, "magic_missile"));
+        _state.Player.Hand.Add("magic_missileStrike");      // B 的
+        _state.Player.Produced.Add((siloB.Id, "magic_missileStrike"));
 
         _map.SyncEntities();
         RefreshAll();
@@ -2222,7 +2276,7 @@ public partial class BattleScene : Node3D
 
         UnitInst foe = _state.SpawnUnit("infantry", PlayerId.Enemy, spot.Value);
         _state.Player.Gold = 2000;
-        _state.Player.Hand.Add("magic_missile");
+        _state.Player.Hand.Add("magic_missileStrike");
         _map.SyncEntities();
 
         _rig.FocusOn(HexLayout.ToWorld(spot.Value, 2.0f));
@@ -2235,7 +2289,7 @@ public partial class BattleScene : Node3D
         int siloCount = _state.Buildings.Count(b => b.Owner == PlayerId.Player && b.DefId == "missileSilo");
         GD.Print($"[NoSilo] 发射井数量={siloCount} 敌人HP={foe.Hp}");
 
-        var card = GameDatabase.Card("magic_missile");
+        var card = GameDatabase.Card("magic_missileStrike");
         TryPlayGlobal(card, spot.Value);
         GD.Print($"[NoSilo] 出牌后 敌人HP={foe.Hp} 待结算={_pendingCard != null}");
 
@@ -2482,15 +2536,15 @@ public partial class BattleScene : Node3D
             return;
 
         _state.Player.Gold = 5000;
-        if (!_state.Player.Hand.Contains("magic_airstrike"))
-            _state.Player.Hand.Add("magic_airstrike");
+        if (!_state.Player.Hand.Contains("magic_airStrike"))
+            _state.Player.Hand.Add("magic_airStrike");
 
         int hpBefore = hq.Hp;
-        string r1 = _state.PlayGlobalCard(_state.Player, "magic_airstrike", hq.Coord, out string err1);
+        string r1 = _state.PlayGlobalCard(_state.Player, "magic_airStrike", hq.Coord, out string err1);
         GD.Print($"[StrikeHQ] 打指挥部 → error={err1} hp {hpBefore}→{hq.Hp}（hp 应不变）");
 
         // 走界面路径：应当「立刻」提示，不播特效、不飞卡
-        int idx = _state.Player.Hand.IndexOf("magic_airstrike");
+        int idx = _state.Player.Hand.IndexOf("magic_airStrike");
         if (idx >= 0)
         {
             bool ok = TryPlayCardAt(idx, hq.Coord);
@@ -2518,9 +2572,9 @@ public partial class BattleScene : Node3D
 
         if (foe != null)
         {
-            if (!_state.Player.Hand.Contains("magic_airstrike"))
-                _state.Player.Hand.Add("magic_airstrike");
-            string r2 = _state.PlayGlobalCard(_state.Player, "magic_airstrike", foe.Coord, out string err2);
+            if (!_state.Player.Hand.Contains("magic_airStrike"))
+                _state.Player.Hand.Add("magic_airStrike");
+            string r2 = _state.PlayGlobalCard(_state.Player, "magic_airStrike", foe.Coord, out string err2);
             GD.Print($"[StrikeHQ] 打普通单位 → error={err2} result={r2}");
         }
 
@@ -3634,10 +3688,10 @@ public partial class BattleScene : Node3D
     {
         await ToSignal(GetTree().CreateTimer(0.7), SceneTreeTimer.SignalName.Timeout);
 
-        _state.Player.Hand.Add("magic_boost");
-        string log = _state.PlayGlobalCard(_state.Player, "magic_boost", HexCoord.Zero, out string error);
-        _state.Player.Hand.Add("magic_boost");
-        string log2 = _state.PlayGlobalCard(_state.Player, "magic_boost", HexCoord.Zero, out string error2);
+        _state.Player.Hand.Add("forcedMarch");
+        string log = _state.PlayGlobalCard(_state.Player, "forcedMarch", HexCoord.Zero, out string error);
+        _state.Player.Hand.Add("forcedMarch");
+        string log2 = _state.PlayGlobalCard(_state.Player, "forcedMarch", HexCoord.Zero, out string error2);
         RefreshAll();
         GD.Print($"[Ability] 打出强行军 {log} / {log2} err={error}{error2} " +
                  $"持续回合={_state.Player.ForcedMarchTurns}（应为 2） 图标数={_hud.DebugAbilityIconCount}");
@@ -3699,8 +3753,8 @@ public partial class BattleScene : Node3D
         bool ok = _state.TryBuild(PlayerId.Player, "barracks", spot.Value, out string error);
         RefreshAll();
 
-        _state.Player.Hand.Add("magic_boost");
-        bool cardOk = _state.CanPlayGlobalCard(_state.Player, "magic_boost", null, out string cardError);
+        _state.Player.Hand.Add("forcedMarch");
+        bool cardOk = _state.CanPlayGlobalCard(_state.Player, "forcedMarch", null, out string cardError);
         GD.Print($"[Debt] 建造={ok} err={error} 金币={_state.Player.Gold}（应保持 50） " +
                  $"打出强行军={cardOk} err={cardError}（应为 False / 金币不足）");
     }
@@ -3848,6 +3902,203 @@ public partial class BattleScene : Node3D
                          $"保留标记={st.Retained.Count}（保留牌应留在手里）");
             }
         }
+    }
+    /// <summary>调试：从消耗堆取回后再弃置，应进弃牌堆。</summary>
+    private async void DemoReclaimDiscard()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Hand.Clear();
+        st.Exhaust.Clear();
+        st.Discard.Clear();
+        st.EtherealExhausted.Clear();
+        st.Exhaust.Add("supplyTransport");
+        _state.ReclaimFromExhaust(st, 0);
+        bool reclaimed = st.Hand.Count > 0;
+        _state.DiscardOne(st, 0);
+        GD.Print($"[ReclaimDiscard] 取回={reclaimed} 弃牌堆={st.Discard.Count} 消耗堆={st.Exhaust.Count}");
+        RefreshAll();
+    }
+    /// <summary>调试：右上角敌方能力图标。</summary>
+    private async void DemoEnemyAbilities()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        PlayerState foe = _state.Enemy;
+        foe.ForcedMarchTurns = 1;
+        foe.PendingBondDebt = 100;
+        foe.PendingHousingUpgrades = 2;
+        foe.Conscription = true;
+        foe.MedicalStacks = 2;
+        RefreshAll();
+        GD.Print($"[EnemyAbilities] 图标={_hud.DebugEnemyAbilityIconCount}");
+    }
+
+    /// <summary>调试：模拟客户端物资运输（st=Enemy）在主机侧的弃牌待选。</summary>
+    private async void DemoLanDiscard()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        Session.LanBattle = true;
+        PlayerState st = _state.Enemy;
+        st.Hand.Clear();
+        st.Hand.Add("supplyTransport");
+        st.Hand.Add("unit_tank");
+        st.Gold = 1000;
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "supplyTransport", null, out string err);
+        _state.PlayIndex = -1;
+        GD.Print($"[LanDiscard] err={err} pending={_state.PendingDiscard} hand={st.Hand.Count}");
+        ApplyCardChoice(st, "discard", new[] { 0 });
+        GD.Print($"[LanDiscard] 后 pending={_state.PendingDiscard} hand={st.Hand.Count} discard={st.Discard.Count}");
+        Session.LanBattle = false;
+        RefreshAll();
+    }
+    /// <summary>调试：模拟客户端扫荡（st=Enemy）在主机侧的待选/应用。</summary>
+    private async void DemoLanReclaim()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        Session.LanBattle = true;
+        PlayerState st = _state.Enemy;
+        st.Hand.Clear();
+        st.Exhaust.Clear();
+        st.Hand.Add("battleFieldSweep");
+        st.Exhaust.Add("supplyTransport");
+        _state.PlayIndex = 0;
+        _state.PlayGlobalCard(st, "battleFieldSweep", null, out string err);
+        _state.PlayIndex = -1;
+        GD.Print($"[LanReclaim] err={err} pending={_state.PendingReclaimExhaust} exhaust={st.Exhaust.Count}");
+        if (_state.PendingReclaimExhaust)
+            ApplyCardChoice(st, "reclaim", new[] { 0 });
+        GD.Print($"[LanReclaim] 后 hand={string.Join(",", st.Hand)} exhaust={st.Exhaust.Count}");
+        Session.LanBattle = false;
+        RefreshAll();
+    }
+    /// <summary>调试：临时选择区卡牌显示实例关键字；虚无弃牌仍进弃牌堆。</summary>
+    private async void DemoStagingKeywords()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Hand.Clear();
+        st.Ethereal.Clear();
+        st.ProducedExhaust.Clear();
+        st.Retained.Clear();
+        st.Hand.Add("supplyTransport");
+        _state.AddCardWithMarkers(st, "supplyTransport", zeroCost: true);
+        _state.GrantRetainAt(st, 0);
+        st.Hand.Add("unit_tank");
+        st.Hand.Add("unit_infantry");
+
+        // 先验证：虚无卡走普通弃牌操作应进弃牌堆
+        _state.DiscardOne(st, 1);
+        GD.Print($"[StagingKw] 弃牌堆={st.Discard.Count} 消耗堆={st.Exhaust.Count} " +
+                 $"弃牌虚无={BattleState.HasMarkerAt(st.Discard, st.EtherealDiscarded, 0)}");
+
+        // 再验证：临时选择区显示实例关键字
+        st.Hand.Clear();
+        st.Hand.Add("supplyTransport");
+        _state.AddCardWithMarkers(st, "supplyTransport", zeroCost: true);
+        _state.GrantRetainAt(st, 1);
+        st.Hand.Add("unit_tank");
+        _state.PendingDuplicatePick = true;
+        EnterDuplicateMode();
+        StageHandPick(1, 1, null);
+        GD.Print($"[StagingKw] 临时选择 手牌={st.Hand.Count} 虚无={_state.IsEtherealAt(1)} " +
+                 $"保留={_state.HasRetainAt(st, 1)} 0费={_state.CostAt(st, 1) == 0}");
+        RefreshAll();
+    }
+    /// <summary>调试：关键字在 手牌 → 消耗堆 → 手牌 之间完整保留。</summary>
+    private async void DemoKeywordZones()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Hand.Clear();
+        st.Exhaust.Clear();
+        st.Discard.Clear();
+        st.Ethereal.Clear();
+        st.ProducedExhaust.Clear();
+        st.Retained.Clear();
+        st.EtherealExhausted.Clear();
+        st.ProducedExhaustExhausted.Clear();
+        st.RetainedExhausted.Clear();
+        st.ZeroCostExhausted.Clear();
+
+        _state.AddCardWithMarkers(st, "supplyTransport", zeroCost: true);
+        _state.GrantRetainAt(st, 0);
+        bool handEth = _state.IsEtherealAt(0);
+        bool handPex = _state.IsProducedExhaustAt(0);
+        bool handRet = _state.HasRetainAt(st, 0);
+
+        _state.ExhaustCardFromHand(st, 0);
+        bool pileEth = BattleState.HasMarkerAt(st.Exhaust, st.EtherealExhausted, 0);
+        bool pilePex = BattleState.HasMarkerAt(st.Exhaust, st.ProducedExhaustExhausted, 0);
+        bool pileRet = BattleState.HasMarkerAt(st.Exhaust, st.RetainedExhausted, 0);
+        GD.Print($"[KwZone] 手牌 虚无={handEth} 消耗={handPex} 保留={handRet}");
+        GD.Print($"[KwZone] 消耗堆 虚无={pileEth} 消耗={pilePex} 保留={pileRet}");
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--zones-open") >= 0)
+        {
+            List<string> ids = st.Exhaust;
+            _hud.ShowPileMarked("消耗堆", ids,
+                BuildPileFlagIndices(ids, st.EtherealExhausted),
+                BuildPileFlagIndices(ids, st.ProducedExhaustExhausted),
+                BuildPileFlagIndices(ids, st.RetainedExhausted),
+                BuildPileFlagIndices(ids, st.ZeroCostExhausted));
+            return;
+        }
+
+        _state.ReclaimFromExhaust(st, 0);
+        GD.Print($"[KwZone] 取回后 虚无={_state.IsEtherealAt(0)} 消耗={_state.IsProducedExhaustAt(0)} " +
+                 $"保留={_state.HasRetainAt(st, 0)} 0费={_state.CostAt(st, 0) == 0}");
+
+        // 弃牌堆 → 抽牌堆 → 手牌
+        st.Hand.Clear();
+        st.Ethereal.Clear();
+        st.ProducedExhaust.Clear();
+        st.Retained.Clear();
+        st.ZeroCost.Clear();
+        st.Discard.Clear();
+        st.Deck.Clear();
+        st.EtherealDiscarded.Clear();
+        st.ProducedExhaustDiscarded.Clear();
+        st.RetainedDiscarded.Clear();
+        st.ZeroCostDiscarded.Clear();
+        st.EtherealDeck.Clear();
+        st.ProducedExhaustDeck.Clear();
+        st.RetainedDeck.Clear();
+        st.ZeroCostDeck.Clear();
+        st.Hand.Add("supplyTransport");
+        _state.GrantRetainAt(st, 0);
+        _state.DiscardOne(st, 0);
+        bool discardRet = BattleState.HasMarkerAt(st.Discard, st.RetainedDiscarded, 0);
+        _state.DrawCard(st, 1);
+        bool handRet2 = st.Hand.Count > 0 && _state.HasRetainAt(st, 0);
+        GD.Print($"[KwZone] 弃牌保留={discardRet} 抽回保留={handRet2} 手牌={st.Hand.Count}");
+        RefreshAll();
+    }
+    /// <summary>调试：带保留的虚无卡应留在手里，不被回合结束消耗。</summary>
+    private async void DemoRetainEthereal()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        PlayerState st = _state.Player;
+        st.Hand.Clear();
+        st.Ethereal.Clear();
+        st.ProducedExhaust.Clear();
+        st.Retained.Clear();
+        st.Exhaust.Clear();
+        st.EtherealExhausted.Clear();
+
+        _state.AddCardWithMarkers(st, "unit_infantry");   // 无保留的虚无卡（会被消耗）
+        _state.AddCardWithMarkers(st, "unit_infantry");   // 带保留的虚无卡（应留下）
+        _state.GrantRetainAt(st, 1);
+        int exhaustBefore = st.Exhaust.Count;
+
+        _state.DiscardHand(PlayerId.Player);
+        GD.Print($"[RetainEth] 第一次结束 手牌={st.Hand.Count} 保留={_state.HasRetainAt(st, 0)} " +
+                 $"虚无={_state.IsEtherealAt(0)} 消耗堆={st.Exhaust.Count - exhaustBefore}");
+
+        _state.DiscardHand(PlayerId.Player);
+        GD.Print($"[RetainEth] 第二次结束 手牌={st.Hand.Count} 保留={_state.HasRetainAt(st, 0)} " +
+                 $"虚无={_state.IsEtherealAt(0)} 消耗堆={st.Exhaust.Count - exhaustBefore}");
+        RefreshAll();
     }
     /// <summary>调试：同名卡关键字只落在正确实例上。</summary>
     private async void DemoKeywordTargets()
@@ -4599,14 +4850,14 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
 
         _state.Player.Gold = 999;
-        _state.Player.Hand.Insert(0, "magic_supply");
+        _state.Player.Hand.Insert(0, "supplyTransport");
         RefreshAll();
 
         int handBefore = _state.Player.Hand.Count;
         int deckBefore = _state.Player.Deck.Count;
         GD.Print($"[Supply] 出牌前 手牌={handBefore} 牌库={deckBefore} 金币={_state.Player.Gold}");
 
-        PlayGlobalFromHand(0, GameDatabase.Card("magic_supply"));
+        PlayGlobalFromHand(0, GameDatabase.Card("supplyTransport"));
         await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
 
         GD.Print($"[Supply] 出牌后 手牌={_state.Player.Hand.Count} 牌库={_state.Player.Deck.Count} " +
@@ -4811,7 +5062,7 @@ public partial class BattleScene : Node3D
         if (idx < 0)
         {
             _state.Player.Gold = 999;
-            _state.Player.Hand.Insert(0, "magic_boost");
+            _state.Player.Hand.Insert(0, "forcedMarch");
             RefreshAll();
             idx = 0;
         }
@@ -5198,13 +5449,13 @@ public partial class BattleScene : Node3D
     {
         await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
 
-        CardDef card = GameDatabase.Card("magic_missile");
+        CardDef card = GameDatabase.Card("magic_missileStrike");
         GD.Print($"[Missile] 卡牌定义 Exhaust={card?.Exhaust} Retain={card?.Retain}");
 
         _state.Player.Gold = 2000;   // 保证两张都打得起
 
         // 模拟发射井产出一张，验证「只有产出的那张消耗」
-        _state.Player.ProducedExhaust.Add("magic_missile");
+        _state.Player.ProducedExhaust.Add("magic_missileStrike");
 
         BuildingInst hq = _state.Buildings.FirstOrDefault(b => b.Owner == PlayerId.Enemy && b.IsHq);
         HexCoord target = hq.Coord.Neighbor(1);
@@ -5214,7 +5465,7 @@ public partial class BattleScene : Node3D
         _state.SpawnUnit("infantry", PlayerId.Enemy, target);
         _map.SyncEntities();
 
-        _state.Player.Hand.Add("magic_missile");
+        _state.Player.Hand.Add("magic_missileStrike");
         RefreshAll();
 
         int handCount = _state.Player.Hand.Count;
@@ -5233,7 +5484,7 @@ public partial class BattleScene : Node3D
         int discard2 = _state.Player.Discard.Count;
         _state.SpawnUnit("infantry", PlayerId.Enemy, target);   // 换一个新的靶子
         _map.SyncEntities();
-        _state.Player.Hand.Add("magic_missile");
+        _state.Player.Hand.Add("magic_missileStrike");
         RefreshAll();
         bool played2 = TryPlayCardAt(_state.Player.Hand.Count - 1, target);
         await ToSignal(GetTree().CreateTimer(1.2), SceneTreeTimer.SignalName.Timeout);
@@ -5245,8 +5496,8 @@ public partial class BattleScene : Node3D
     {
         await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
 
-        _state.Player.Hand.Add("magic_missile");
-        _state.Player.ProducedExhaust.Add("magic_missile");
+        _state.Player.Hand.Add("magic_missileStrike");
+        _state.Player.ProducedExhaust.Add("magic_missileStrike");
         RefreshAll();
         GD.Print($"[Badge] 手牌末张是否产出消耗={_state.IsProducedExhaustAt(_state.Player.Hand.Count - 1)}");
     }
@@ -5296,7 +5547,7 @@ public partial class BattleScene : Node3D
         _map.RefreshZones();
         RefreshAll();
 
-        int Before() => _state.Player.Hand.Count(x => x == "magic_missile");
+        int Before() => _state.Player.Hand.Count(x => x == "magic_missileStrike");
 
         // 开：产卡（先清手牌，避免手牌上限挡住产卡）
         silo.ProduceEnabled = true;
@@ -5524,8 +5775,8 @@ public partial class BattleScene : Node3D
         me.ProducedExhaustDiscarded.Clear();
         me.ProducedExhaustDeck.Clear();
 
-        me.Hand.Add("magic_missile");
-        me.ProducedExhaust.Add("magic_missile");    // 发射井产出的那张
+        me.Hand.Add("magic_missileStrike");
+        me.ProducedExhaust.Add("magic_missileStrike");    // 发射井产出的那张
 
         _state.DiscardOne(me, 0);
         GD.Print($"[Kw] 弃掉后 弃牌={string.Join(",", me.Discard)} 产出消耗标记(弃)={me.ProducedExhaustDiscarded.Count}");
@@ -5541,13 +5792,13 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
 
         _state.Player.Hand.Clear();
-        _state.Player.Hand.Add("magic_exchange_rate");
+        _state.Player.Hand.Add("exchangeRate");
         _state.Player.Gold = 1000;
         RefreshAll();
         await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
 
         int before = _state.Player.Gold;
-        string result = _state.PlayGlobalCard(_state.Player, "magic_exchange_rate", null, out string error);
+        string result = _state.PlayGlobalCard(_state.Player, "exchangeRate", null, out string error);
         RefreshAll();
 
         GD.Print($"[Exchange] 结果={result} 错误={error} 金币 {before} → {_state.Player.Gold}");
@@ -5563,9 +5814,9 @@ public partial class BattleScene : Node3D
         me.EtherealExhausted.Clear();
         me.Ethereal.Clear();
 
-        me.Hand.Add("magic_reclaim");
+        me.Hand.Add("battleFieldSweep");
         me.Gold = 1000;
-        me.Exhaust.Add("magic_airstrike");
+        me.Exhaust.Add("magic_airStrike");
         me.Exhaust.Add("unit_tank");
         me.EtherealExhausted.Add("unit_tank");    // 这张在消耗堆里带虚无
         me.Ethereal.Add("unit_tank");
@@ -5574,7 +5825,7 @@ public partial class BattleScene : Node3D
         RefreshAll();
         await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
 
-        string result = _state.PlayGlobalCard(me, "magic_reclaim", null, out string error);
+        string result = _state.PlayGlobalCard(me, "battleFieldSweep", null, out string error);
         GD.Print($"[Reclaim] 打出={result} 错误={error} 待选={_state.PendingReclaimExhaust} 金币={me.Gold}");
 
         if (_state.PendingReclaimExhaust)
@@ -5654,6 +5905,18 @@ public partial class BattleScene : Node3D
         st.Hand.Clear();
         st.Hand.Add("battlefieldSurvey");
 
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--survey-empty") >= 0)
+        {
+            st.Deck.Clear();
+            bool can = _state.CanPlayGlobalCard(st, "battlefieldSurvey", null, out string why);
+            _state.PlayIndex = 0;
+            string result = _state.PlayGlobalCard(st, "battlefieldSurvey", null, out string err);
+            _state.PlayIndex = -1;
+            GD.Print($"[SurveyEmpty] 可打出={can} 结果={result} err={err} 手牌={st.Hand.Count} 金币={st.Gold}");
+            RefreshAll();
+            return;
+        }
+
         if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--resolve-survey") >= 0)
         {
             while (st.Deck.Count < 4)
@@ -5691,9 +5954,9 @@ public partial class BattleScene : Node3D
         me.Hand.Clear();
         me.Exhaust.Clear();
         me.EtherealExhausted.Clear();
-        me.Hand.Add("magic_reclaim");
+        me.Hand.Add("battleFieldSweep");
         me.Gold = 1000;
-        me.Exhaust.Add("magic_airstrike");
+        me.Exhaust.Add("magic_airStrike");
         me.Exhaust.Add("unit_tank");
         me.Exhaust.Add("unit_infantry");
         me.Exhaust.Add("magic_repair");
@@ -5721,14 +5984,14 @@ public partial class BattleScene : Node3D
         PlayerState me = _state.Player;
         me.Hand.Clear();
         me.Exhaust.Clear();
-        me.Hand.Add("magic_reclaim");
+        me.Hand.Add("battleFieldSweep");
         me.Gold = 1000;
-        me.Exhaust.Add("magic_airstrike");
+        me.Exhaust.Add("magic_airStrike");
         me.Exhaust.Add("unit_tank");
         RefreshAll();
         await ToSignal(GetTree().CreateTimer(0.2), SceneTreeTimer.SignalName.Timeout);
 
-        _state.PlayGlobalCard(me, "magic_reclaim", null, out _);
+        _state.PlayGlobalCard(me, "battleFieldSweep", null, out _);
         if (_state.PendingReclaimExhaust)
             OpenReclaimPicker();
 
@@ -6286,61 +6549,32 @@ public partial class BattleScene : Node3D
 
             case (int)PileView.PileKind.Discard:
             {
-                // 打出后进弃牌堆的虚无卡，查看器里也要显示关键字
                 List<string> ids = _state.Player.Discard;
-                var etherealIndices = new List<int>();
-                var pool = new List<string>(_state.Player.EtherealDiscarded);
-
-                for (int i = 0; i < ids.Count; i++)
-                {
-                    int k = pool.IndexOf(ids[i]);
-                    if (k < 0)
-                        continue;
-
-                    etherealIndices.Add(i);
-                    pool.RemoveAt(k);
-                }
-
-                _hud.ShowPile("弃牌堆", ids, etherealIndices, BuildPileFlagIndices(ids, _state.Player.ProducedExhaustDiscarded));
+                _hud.ShowPileMarked("弃牌堆", ids,
+                    BuildPileFlagIndices(ids, _state.Player.EtherealDiscarded),
+                    BuildPileFlagIndices(ids, _state.Player.ProducedExhaustDiscarded),
+                    BuildPileFlagIndices(ids, _state.Player.RetainedDiscarded),
+                    BuildPileFlagIndices(ids, _state.Player.ZeroCostDiscarded));
                 break;
             }
             case (int)PileView.PileKind.Exhaust:
             {
-                // 消耗堆里被「虚无」耗掉的卡，查看器里也要显示关键字
                 List<string> ids = _state.Player.Exhaust;
-                var etherealIndices = new List<int>();
-                var pool = new List<string>(_state.Player.EtherealExhausted);
-
-                for (int i = 0; i < ids.Count; i++)
-                {
-                    int k = pool.IndexOf(ids[i]);
-                    if (k < 0)
-                        continue;
-
-                    etherealIndices.Add(i);
-                    pool.RemoveAt(k);
-                }
-
-                _hud.ShowPile("消耗堆", ids, etherealIndices);
+                _hud.ShowPileMarked("消耗堆", ids,
+                    BuildPileFlagIndices(ids, _state.Player.EtherealExhausted),
+                    BuildPileFlagIndices(ids, _state.Player.ProducedExhaustExhausted),
+                    BuildPileFlagIndices(ids, _state.Player.RetainedExhausted),
+                    BuildPileFlagIndices(ids, _state.Player.ZeroCostExhausted));
                 break;
             }
             default:
             {
                 List<string> ids = _state.Player.Deck;
-                var etherealIndices = new List<int>();
-                var pool = new List<string>(_state.Player.EtherealDeck);
-
-                for (int i = 0; i < ids.Count; i++)
-                {
-                    int k = pool.IndexOf(ids[i]);
-                    if (k < 0)
-                        continue;
-
-                    etherealIndices.Add(i);
-                    pool.RemoveAt(k);
-                }
-
-                _hud.ShowPile("抽牌堆", ids, etherealIndices, BuildPileFlagIndices(ids, _state.Player.ProducedExhaustDeck));
+                _hud.ShowPileMarked("抽牌堆", ids,
+                    BuildPileFlagIndices(ids, _state.Player.EtherealDeck),
+                    BuildPileFlagIndices(ids, _state.Player.ProducedExhaustDeck),
+                    BuildPileFlagIndices(ids, _state.Player.RetainedDeck),
+                    BuildPileFlagIndices(ids, _state.Player.ZeroCostDeck));
                 break;
             }
         }
@@ -6350,16 +6584,13 @@ public partial class BattleScene : Node3D
     private static List<int> BuildPileFlagIndices(List<string> ids, List<string> flags)
     {
         var indices = new List<int>();
-        var pool = new List<string>(flags);
+        if (ids == null || flags == null)
+            return indices;
 
         for (int i = 0; i < ids.Count; i++)
         {
-            int k = pool.IndexOf(ids[i]);
-            if (k < 0)
-                continue;
-
-            indices.Add(i);
-            pool.RemoveAt(k);
+            if (BattleState.HasMarkerAt(ids, flags, i))
+                indices.Add(i);
         }
 
         return indices;
@@ -6374,6 +6605,12 @@ public partial class BattleScene : Node3D
         _hud.ShowCardChoice("呼叫增援", "选择一张军队单位牌加入手牌（费用临时为 0）",
             choices, index =>
         {
+            if (NetMode)
+            {
+                ConfirmCardChoice("reinforce", new[] { index });
+                return;
+            }
+
             if (!_state.TakeReinforceChoice(_state.Player, index))
             {
                 _hud.Toast("选择失败");
@@ -6430,6 +6667,119 @@ public partial class BattleScene : Node3D
             _hud.Toast("已加入 2 张复制品");
         });
     }
+    /// <summary>联机：是否有等待本地玩家选择的卡牌效果。</summary>
+    private bool HasPendingCardChoice =>
+        _state != null && (_state.PendingRandomChoices.Count > 0 ||
+                           _state.PendingDeckPick ||
+                           _state.PendingReclaimExhaust ||
+                           _state.PendingReinforceChoices.Count > 0 ||
+                           _state.PendingRetainPick ||
+                           _state.PendingDuplicatePick ||
+                           _state.PendingExhaustPick ||
+                           _state.PendingDiscard > 0);
+
+    /// <summary>联机：主机/客户端出牌结算后，只有本地行动方打开选择 UI。</summary>
+    private void OpenPendingCardChoiceForLocal()
+    {
+        if (_state == null)
+            return;
+
+        if (_state.PendingRandomChoices.Count > 0)
+            OpenRandomCardPicker();
+        else if (_state.PendingDeckPick)
+            EnterDeckPick();
+        else if (_state.PendingReclaimExhaust)
+            OpenReclaimPicker();
+        else if (_state.PendingReinforceChoices.Count > 0)
+            OpenReinforcePicker();
+        else if (_state.PendingRetainPick)
+            EnterRetainMode();
+        else if (_state.PendingDuplicatePick)
+        {
+            // 联机时不能在本机自动选牌，否则主机不会收到选择
+            if (NetMode && _state.Player.Hand.Count <= 1)
+                ConfirmCardChoice("duplicate", new[] { 0 });
+            else
+                EnterDuplicateMode();
+        }
+        else if (_state.PendingExhaustPick)
+        {
+            if (NetMode && _state.Player.Hand.Count <= 1)
+                ConfirmCardChoice("exhaust", new[] { 0 });
+            else
+                EnterExhaustMode();
+        }
+        else if (_state.PendingDiscard > 0)
+        {
+            if (NetMode && _state.Player.Hand.Count <= _state.PendingDiscard)
+                ConfirmCardChoice("discard", new[] { 0 });
+            else
+                EnterDiscardMode();
+        }
+    }
+
+    /// <summary>联机选择统一出口：发送 Choice 给主机；单机直接应用。</summary>
+    private void ConfirmCardChoice(string kind, int[] picks)
+    {
+        if (NetMode)
+        {
+            _retainSelected.Clear();
+            if (_retainMode) ExitRetainMode();
+            if (_duplicateMode) ExitDuplicateMode();
+            if (_exhaustMode) ExitExhaustMode();
+            if (_discardMode) ExitDiscardMode();
+            _hud.ClosePile();
+            NetSendCardChoice(kind, picks);
+            return;
+        }
+
+        ApplyCardChoice(_state.Player, kind, picks);
+    }
+
+    /// <summary>两端共用的卡牌选择应用逻辑。</summary>
+    private void ApplyCardChoice(PlayerState st, string kind, int[] picks)
+    {
+        if (st == null || picks == null)
+            return;
+
+        switch (kind)
+        {
+            case "random":
+                _state.TakeRandomChoices(st, picks);
+                break;
+            case "deck":
+                _state.TakeDeckCards(st, picks);
+                break;
+            case "reinforce":
+                if (picks.Length > 0)
+                    _state.TakeReinforceChoice(st, picks[0]);
+                break;
+            case "reclaim":
+                _state.ReclaimManyFromExhaust(st, picks, 1);
+                break;
+            case "retain":
+                foreach (int index in picks)
+                    _state.GrantRetainAt(st, index);
+                _state.PendingRetainPick = false;
+                break;
+            case "duplicate":
+                if (picks.Length > 0)
+                    _state.ResolveDuplicatePick(st, picks[0]);
+                break;
+            case "exhaust":
+                if (picks.Length > 0)
+                    _state.ResolveExhaustPick(st, picks[0]);
+                break;
+            case "discard":
+                if (picks.Length > 0 && _state.DiscardOne(st, picks[0]))
+                    _state.PendingDiscard = Mathf.Max(0, _state.PendingDiscard - 1);
+                break;
+        }
+
+        RefreshAll();
+        CheckGameOver();
+    }
+
     /// <summary>「世界如此变幻莫测」：5 张随机卡选 2 张。</summary>
     private void OpenRandomCardPicker()
     {
@@ -6440,6 +6790,12 @@ public partial class BattleScene : Node3D
         _hud.ShowCardChoiceMulti("世界如此变幻莫测", "选择 2 张加入手牌（消耗·虚无）",
             choices, picked =>
             {
+                if (NetMode)
+                {
+                    ConfirmCardChoice("random", picked.ToArray());
+                    return;
+                }
+
                 int got = _state.TakeRandomChoices(_state.Player, picked);
                 RefreshAll();
                 _hud.Toast($"获得 {got} 张随机卡（消耗·虚无）");
@@ -6469,11 +6825,21 @@ public partial class BattleScene : Node3D
 
         _hud.ShowPileMulti("抽牌堆", deck, picked =>
         {
+            if (NetMode)
+            {
+                ConfirmCardChoice("deck", picked.ToArray());
+                return;
+            }
+
             int got = _state.TakeDeckCards(_state.Player, picked);
             _hud.ClosePile();
             RefreshAll();
             _hud.Toast($"取 {got} 张牌加入手牌");
-        }, 2, 2);
+        }, 2, 2,
+            BuildPileFlagIndices(deck, _state.Player.EtherealDeck),
+            BuildPileFlagIndices(deck, _state.Player.ProducedExhaustDeck),
+            BuildPileFlagIndices(deck, _state.Player.RetainedDeck),
+            BuildPileFlagIndices(deck, _state.Player.ZeroCostDeck));
     }
     /// <summary>「战场扫荡」：从消耗堆里选一张拿回手牌。</summary>
     private void OpenReclaimPicker()
@@ -6488,14 +6854,25 @@ public partial class BattleScene : Node3D
 
         _hud.ShowPileMulti("消耗堆", ids, picked =>
         {
-            int got = _state.ReclaimManyFromExhaust(_state.Player, picked);
+            if (NetMode)
+            {
+                ConfirmCardChoice("reclaim", picked.ToArray());
+                return;
+            }
+
+            int got = _state.ReclaimManyFromExhaust(_state.Player,
+                picked.Count > 0 ? new List<int> { picked[0] } : picked);
             _hud.ClosePile();
             if (got > 0)
             {
                 RefreshAll();
-                _hud.Toast($"取回 {got} 张牌");
+                _hud.Toast("取回 1 张牌");
             }
-        });
+        }, 1, 1,
+            BuildPileFlagIndices(ids, _state.Player.EtherealExhausted),
+            BuildPileFlagIndices(ids, _state.Player.ProducedExhaustExhausted),
+            BuildPileFlagIndices(ids, _state.Player.RetainedExhausted),
+            BuildPileFlagIndices(ids, _state.Player.ZeroCostExhausted));
     }
     /// <summary>选中这张导弹袭击卡对应的发射井（优先用产出它的那座）。</summary>
     private void SelectRelatedMissileSilo(string cardId)
@@ -6870,12 +7247,18 @@ public partial class BattleScene : Node3D
             return ApplyCardAt(index, coord);
         }
 
-        if (card.KindEnum == CardKind.Strike &&
-            !_state.CanPlayGlobalCard(_state.Player, card.Id, coord, out string why))
+        if (card.KindEnum == CardKind.Strike)
         {
-            _hud.Toast(why);
-            RefreshAll();
-            return false;
+            int previousPlayIndex = _state.PlayIndex;
+            _state.PlayIndex = index;
+            bool canPlay = _state.CanPlayGlobalCard(_state.Player, card.Id, coord, out string why);
+            _state.PlayIndex = previousPlayIndex;
+            if (!canPlay)
+            {
+                _hud.Toast(why);
+                RefreshAll();
+                return false;
+            }
         }
 
         Vector2 target = _rig.Camera.UnprojectPosition(
@@ -6907,6 +7290,7 @@ public partial class BattleScene : Node3D
 
         if (card.KindEnum == CardKind.Strike)
         {
+            _pendingCardIndex = indexBeforePlay;
             TryPlayGlobal(card, coord);
             return true;
         }
@@ -6944,6 +7328,17 @@ public partial class BattleScene : Node3D
     /// <summary>从手牌打出一张「不需要地块」的卡：先记下卡面位置，消耗卡才能播烧卡特效。</summary>
     private void PlayGlobalFromHand(int index, CardDef card)
     {
+        // 联机：无目标全局卡也要走主机校验/广播，否则只在本机生效
+        if (NetSendDeploy(index, HexCoord.Zero, noTarget: true))
+        {
+            _selCard = -1;
+            _hud.SetSelectedCard(-1);
+            _map.ClearHints();
+            ClearSelection();
+            RefreshAll();
+            return;
+        }
+
         _pendingCardIndex = index;          // 记住打的是第几张，同名卡才能打出正确的那张
 
         if (_hud.TryGetHandCardRect(index, out Rect2 rect))
@@ -6954,8 +7349,13 @@ public partial class BattleScene : Node3D
 
     private void TryPlayGlobal(CardDef card, HexCoord? target)
     {
-        // 再校验一次（防止状态在这期间变了）：不合法就只弹提示，不播任何特效
-        if (!_state.CanPlayGlobalCard(_state.Player, card.Id, target, out string why))
+        int previousPlayIndex = _state.PlayIndex;
+        if (_pendingCardIndex >= 0)
+            _state.PlayIndex = _pendingCardIndex;
+        bool canPlay = _state.CanPlayGlobalCard(_state.Player, card.Id, target, out string why);
+        _state.PlayIndex = previousPlayIndex;
+
+        if (!canPlay)
         {
             _hud.Toast(why);
             _selCard = -1;
@@ -7361,6 +7761,11 @@ public partial class BattleScene : Node3D
         {
             int index = _retainSelected[0];
             _retainSelected.Clear();
+            if (NetMode)
+            {
+                ConfirmCardChoice("discard", new[] { index });
+                return;
+            }
             TryDiscardHandCard(index);
             return;
         }
@@ -7369,6 +7774,11 @@ public partial class BattleScene : Node3D
         {
             int index = _retainSelected[0];
             _retainSelected.Clear();
+            if (NetMode)
+            {
+                ConfirmCardChoice("duplicate", new[] { index });
+                return;
+            }
             if (_state.ResolveDuplicatePick(_state.Player, index))
             {
                 ExitDuplicateMode();
@@ -7381,6 +7791,11 @@ public partial class BattleScene : Node3D
         if (_exhaustMode)
         {
             int index = _retainSelected[0];
+            if (NetMode)
+            {
+                ConfirmCardChoice("exhaust", new[] { index });
+                return;
+            }
             string id = _state.Player.Hand[index];
             CardDef def = GameDatabase.Card(id);
             Rect2 burnRect = _handPickRect;
@@ -7399,6 +7814,12 @@ public partial class BattleScene : Node3D
 
         if (!_retainMode || _retainSelected.Count != 2)
             return;
+
+        if (NetMode)
+        {
+            ConfirmCardChoice("retain", _retainSelected.ToArray());
+            return;
+        }
 
         foreach (int index in _retainSelected)
             _state.GrantRetainAt(_state.Player, index);
@@ -7474,7 +7895,7 @@ public partial class BattleScene : Node3D
         _state.PendingDiscard = Mathf.Max(0, _state.PendingDiscard - 1);
 
         if (hasRect && def != null)
-            _hud.PlayToPileAnimation(def, rect, _state.Player.Exhaust.Contains(id));
+            _hud.PlayToPileAnimation(def, rect, false);
 
         RefreshAll();
 
