@@ -352,7 +352,7 @@ public static class ModelUtil
         float scale = FitAndGround(n3, targetWidth, out height,
             fitDiagonal: buildingLevel > 0, includeHidden: buildingLevel > 0,
             exclude: hiddenParts);
-        ToonMaterial.Apply(n3, path, scale, outlineColor);
+        ToonMaterial.Apply(n3, path, scale, outlineColor, smoothOutline: false);
         return n3;
     }
 

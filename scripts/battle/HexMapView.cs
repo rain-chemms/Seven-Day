@@ -26,6 +26,7 @@ public partial class HexMapView : Node3D
     /// <summary>联机镜像视角：自己的基地在地图另一端，朝向要整体翻转。</summary>
     private bool _mirrored;
     private readonly Dictionary<int, List<ShaderMaterial>> _subMats = new();
+    private readonly Dictionary<int, List<StandardMaterial3D>> _subOutlines = new();
     private readonly Dictionary<int, List<MeshInstance3D>> _subMeshes = new();
     private readonly Dictionary<int, float> _subAlpha = new();
 
@@ -85,6 +86,7 @@ public partial class HexMapView : Node3D
     private StandardMaterial3D _ringMatEnemy;
     private StandardMaterial3D _ringMatContested;
     private StandardMaterial3D _borderMat;
+    private StandardMaterial3D _hexOutlineMat;
 
     public override void _Ready()
     {
@@ -174,6 +176,14 @@ public partial class HexMapView : Node3D
             Transparency = BaseMaterial3D.TransparencyEnum.Disabled,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
         };
+
+        _hexOutlineMat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.231f, 0.180f, 0.086f, 1f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Disabled,
+            CullMode = BaseMaterial3D.CullModeEnum.Back,
+        };
     }
 
     private static StandardMaterial3D MakeUnshaded(Color c, bool noDepth = false)
@@ -217,8 +227,17 @@ public partial class HexMapView : Node3D
                 Name = $"Tile_{cell.Coord.Q}_{cell.Coord.R}",
                 Mesh = _hexMesh,
                 Position = HexLayout.ToWorld(cell.Coord),
-                MaterialOverride = _terrainMats[cell.Terrain],
             };
+            bool bakedOutline = false;
+            for (int s = 0; s < _hexMesh.GetSurfaceCount(); s++)
+            {
+                Material source = _hexMesh.SurfaceGetMaterial(s);
+                bool isOutline = source?.ResourceName.Contains("Outline", System.StringComparison.OrdinalIgnoreCase) == true;
+                bakedOutline |= isOutline;
+                mi.SetSurfaceOverrideMaterial(s, isOutline ? _hexOutlineMat : _terrainMats[cell.Terrain]);
+            }
+            if (!bakedOutline)
+                mi.MaterialOverride = _terrainMats[cell.Terrain];
             AddChild(mi);
             _tiles[cell.Coord] = mi;
 
@@ -1007,24 +1026,38 @@ public partial class HexMapView : Node3D
     private void PrepareSubmarineMaterials(int unitId, Node3D view)
     {
         var list = new List<ShaderMaterial>();
+        var outlines = new List<StandardMaterial3D>();
         var meshes = new List<MeshInstance3D>();
         foreach (MeshInstance3D mi in view.FindChildren("*", "MeshInstance3D", true, false)
                      .Cast<MeshInstance3D>())
         {
-            if (mi.MaterialOverride is not ShaderMaterial sm)
+            if (mi.Mesh == null)
                 continue;
 
-            var copy = (ShaderMaterial)sm.Duplicate(true);
-            copy.Shader = CelNormal;
-            if (copy.NextPass is ShaderMaterial outline)
-                outline.Shader = OutlineNormal;
-
-            mi.MaterialOverride = copy;
-            list.Add(copy);
             meshes.Add(mi);
+            for (int s = 0; s < mi.Mesh.GetSurfaceCount(); s++)
+            {
+                Material src = mi.GetSurfaceOverrideMaterial(s) ?? mi.Mesh.SurfaceGetMaterial(s);
+                if (src is ShaderMaterial sm)
+                {
+                    var copy = (ShaderMaterial)sm.Duplicate(true);
+                    copy.Shader = CelNormal;
+                    mi.SetSurfaceOverrideMaterial(s, copy);
+                    list.Add(copy);
+                }
+                else if (src is StandardMaterial3D st &&
+                         (st.ResourceName.Contains("Outline", System.StringComparison.OrdinalIgnoreCase)))
+                {
+                    var copy = (StandardMaterial3D)st.Duplicate(true);
+                    copy.Transparency = BaseMaterial3D.TransparencyEnum.Disabled;
+                    mi.SetSurfaceOverrideMaterial(s, copy);
+                    outlines.Add(copy);
+                }
+            }
         }
 
         _subMats[unitId] = list;
+        _subOutlines[unitId] = outlines;
         _subMeshes[unitId] = meshes;
         _subAlpha[unitId] = 1f;
     }
@@ -1053,14 +1086,21 @@ public partial class HexMapView : Node3D
             if (transparent)
                 m.SetShaderParameter("alpha", alpha);
 
-            if (m.NextPass is ShaderMaterial outline)
-            {
-                Shader outlineTarget = transparent ? OutlineSub : OutlineNormal;
-                if (outline.Shader != outlineTarget)
-                    outline.Shader = outlineTarget;
+        }
 
-                if (transparent)
-                    outline.SetShaderParameter("alpha", alpha);
+        if (_subOutlines.TryGetValue(unitId, out List<StandardMaterial3D> outlines))
+        {
+            foreach (StandardMaterial3D outline in outlines)
+            {
+                if (!IsInstanceValid(outline))
+                    continue;
+
+                Color c = outline.AlbedoColor;
+                c.A = alpha;
+                outline.AlbedoColor = c;
+                outline.Transparency = transparent
+                    ? BaseMaterial3D.TransparencyEnum.Alpha
+                    : BaseMaterial3D.TransparencyEnum.Disabled;
             }
         }
 
@@ -1438,6 +1478,19 @@ public partial class HexMapView : Node3D
             if (IsInstanceValid(m) && m.NextPass is ShaderMaterial outline)
                 outline.SetShaderParameter("outline_color", rgb);
         }
+
+        if (_subOutlines.TryGetValue(unitId, out List<StandardMaterial3D> outlines) && color != null)
+        {
+            foreach (StandardMaterial3D outline in outlines)
+            {
+                if (IsInstanceValid(outline))
+                {
+                    Color c = color.Value;
+                    c.A = outline.AlbedoColor.A;
+                    outline.AlbedoColor = c;
+                }
+            }
+        }
     }
 
     /// <summary>设置当前选中建筑（-1 = 取消）：选中的用黄色描边，其余恢复阵营色。</summary>
@@ -1476,7 +1529,7 @@ public partial class HexMapView : Node3D
             ? ToonMaterial.SelectedOutline
             : ToonMaterial.OutlineFor(info.Owner);
 
-        ToonMaterial.Apply(view, info.Path, info.Scale, color);
+        ToonMaterial.Apply(view, info.Path, info.Scale, color, smoothOutline: false);
     }
 
     /// <summary>调试：单位是否正在播放攻击动作。</summary>

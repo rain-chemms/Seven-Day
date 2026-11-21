@@ -3,7 +3,7 @@ shader_type spatial;
 // 用法：新建 ShaderMaterial → Shader 选本文件 → albedo_tex 指定模型用的图集 PNG
 render_mode cull_back;
 
-uniform sampler2D albedo_tex : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D albedo_tex : source_color, filter_nearest, repeat_disable;
 uniform vec3 albedo_tint : source_color = vec3(1.0, 1.0, 1.0);
 // 色阶分界，和 Blender 里一致：0.42 / 0.72
 uniform float band_low : hint_range(0.0, 1.0) = 0.42;

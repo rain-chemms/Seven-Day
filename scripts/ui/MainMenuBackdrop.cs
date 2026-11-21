@@ -11,6 +11,9 @@ namespace SevenDay.UI;
 /// </summary>
 public partial class MainMenuBackdrop : Node3D
 {
+    // 小岛模型抬高一点，避免描边壳与地砖顶面共面导致移动镜头时闪烁
+    private const float MenuModelLift = 0.47f;
+    private const float MissileSiloDrop = 0.35f;
     private Camera3D _camera;
     private float _time;
     private float _orbit = 0.6f;
@@ -132,7 +135,6 @@ public partial class MainMenuBackdrop : Node3D
         var tiles = new Node3D { Name = "Tiles" };
         AddChild(tiles);
 
-        // 地块描边（和战斗地图一致）
         Mesh borderMesh = Battle.HexMapView.BuildRingMesh(0.92f, 1.0f);
         var borderMat = new StandardMaterial3D
         {
@@ -140,6 +142,13 @@ public partial class MainMenuBackdrop : Node3D
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
             Transparency = BaseMaterial3D.TransparencyEnum.Disabled,
             CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+        };
+        var hexOutlineMat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.231f, 0.180f, 0.086f, 1f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Disabled,
+            CullMode = BaseMaterial3D.CullModeEnum.Back,
         };
 
         // 中心到半径 3 的小岛；边缘用沙地做海岸
@@ -152,8 +161,17 @@ public partial class MainMenuBackdrop : Node3D
             {
                 Mesh = _hexMesh,
                 Position = HexLayout.ToWorld(c),
-                MaterialOverride = _mats[terrain],
             };
+            bool bakedOutline = false;
+            for (int s = 0; s < _hexMesh.GetSurfaceCount(); s++)
+            {
+                Material source = _hexMesh.SurfaceGetMaterial(s);
+                bool isOutline = source?.ResourceName.Contains("Outline", System.StringComparison.OrdinalIgnoreCase) == true;
+                bakedOutline |= isOutline;
+                mi.SetSurfaceOverrideMaterial(s, isOutline ? hexOutlineMat : _mats[terrain]);
+            }
+            if (!bakedOutline)
+                mi.MaterialOverride = _mats[terrain];
             tiles.AddChild(mi);
 
             var border = new MeshInstance3D
@@ -168,7 +186,11 @@ public partial class MainMenuBackdrop : Node3D
 
         foreach ((HexCoord coord, string model, float width) in Props)
         {
-            var holder = new Node3D { Position = HexLayout.ToWorld(coord, 0.45f) };
+            var holder = new Node3D { Position = HexLayout.ToWorld(coord, MenuModelLift) };
+            // 发射井单独微调：用 model 路径判断，holder.Name 默认不是模型名；
+            // 10 个世界单位约等于 10 米，会把模型埋进小岛，这里用 0.05 做微调。
+            if (model.Contains("missileSilo", System.StringComparison.Ordinal))
+                holder.Position -= new Vector3(0, MissileSiloDrop, 0);
             AddChild(holder);
             // 菜单小岛上直接展示三级建筑（最高形态最好看），兵种传 0 表示不做等级筛选
             bool isBuilding = model.Contains("/buildings/");
@@ -197,7 +219,7 @@ public partial class MainMenuBackdrop : Node3D
             string decor = Decorations[rng.RandiRange(0, Decorations.Length - 1)];
             var holder = new Node3D
             {
-                Position = HexLayout.ToWorld(c, 0.45f) +
+                Position = HexLayout.ToWorld(c, MenuModelLift) +
                            new Vector3(rng.RandfRange(-0.4f, 0.4f), 0, rng.RandfRange(-0.4f, 0.4f)),
                 RotationDegrees = new Vector3(0, rng.RandfRange(0, 360), 0),
             };
