@@ -25,6 +25,54 @@ public partial class BattleScene : Node3D
     private CameraRig _rig;
     private BattleHud _hud;
     private Vfx _vfx;
+    private Node3D _weatherTornado;
+    private PackedScene _tornadoScene;
+    private Vector3 _tornadoPos;
+    private Vector3 _tornadoTarget;
+    private bool _tornadoPosReady;
+    private StaticBody3D _tornadoHoverBody;
+    private float _tornadoHoverMix;
+    private CpuParticles3D _tornadoWind;
+    private readonly List<CpuParticles3D> _weatherSnowEmitters = new();
+    private CpuParticles3D _weatherRain;
+    private CpuParticles3D _weatherSand;
+    private CpuParticles3D _clearSkyMotes;
+    private float _sandAlpha;
+    private float _clearSkyAlpha;
+    private Node3D _moonbowRoot;
+    private Node3D _rainbowPivot;
+    private readonly List<BaseMaterial3D> _rainbowMats = new();
+    private readonly List<(MeshInstance3D Node, StandardMaterial3D Mat, float Phase)> _moonStars = new();
+    private Sprite3D _moonHalo;
+    private MeshInstance3D _moon;
+    private OmniLight3D _moonLight;
+    private AudioStreamPlayer _nightAudio;
+    private StandardMaterial3D _moonMat;
+    private float _moonbowAlpha;
+    private Node3D _auroraRoot;
+    private float _auroraAlpha;
+    private readonly List<ShaderMaterial> _auroraMats = new();
+    private AudioStreamPlayer _auroraAudio;
+    private AudioStreamPlayer _rainAudio;
+    private AudioStreamPlayer _tornadoAudio;
+    private HexCoord? _lastTornadoGustCoord;
+    private float _snowAlpha;
+    private float _rainAlpha;
+    private float _tornadoAlpha;
+    private int _lastThunderStrikeSerial = -1;
+    private int _lastWeatherHealSerial = -1;
+    private int _earthquakeSerial = -1;
+    private int _earthquakeSequenceVersion;
+    private bool _earthquakeSequenceRunning;
+    private PackedScene _weatherGiftScene;
+    private static ImageTexture _giftWhiteTex;
+    private static ShaderMaterial _giftToonRed;
+    private static ShaderMaterial _giftToonGold;
+    private static StandardMaterial3D _giftFlatOutline;
+    private readonly Dictionary<int, Node3D> _weatherGiftViews = new();
+    private readonly Dictionary<int, Tween> _weatherGiftTweens = new();
+    private readonly HashSet<int> _weatherGiftLanded = new();
+    private int _lastAutoGiftPickups;
 
     private UnitInst _selUnit;
     private UnitInst _carrierSpawn;
@@ -195,6 +243,19 @@ public partial class BattleScene : Node3D
         _map.SyncEntities();
         _map.RefreshZones();
         _hud.Setup(_state);
+        if (!NetMode && OS.GetCmdlineUserArgs().Contains("--weather-now"))
+        {
+            _state.WeatherEnabled = true;
+            _state.WeatherGraceLeft = 0;
+            _state.Weather = WeatherType.None;
+            _state.AdvanceWeatherRound();
+            int wt = System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--weather-type");
+            if (wt >= 0 && wt + 1 < OS.GetCmdlineUserArgs().Length &&
+                System.Enum.TryParse(OS.GetCmdlineUserArgs()[wt + 1], out WeatherType forced))
+                _state.DebugForceWeather(forced);
+            _map.SyncEntities();
+            RefreshAll();
+        }
         NetAttach();
 
         if (OS.GetCmdlineUserArgs().Contains("--anim-log"))
@@ -7125,11 +7186,1582 @@ public partial class BattleScene : Node3D
     {
         UpdateTargetingArrow();
         UpdateHealthBars();
+        UpdateWeatherVisuals();
+        PlayWeatherHealFx();
+        TickEarthquakeSequence();
+        UpdateWeatherGifts();
+    }
+
+    private void TickEarthquakeSequence()
+    {
+        if (_state == null || _earthquakeSequenceRunning)
+            return;
+        if (_state.Weather != WeatherType.Earthquake)
+            return;
+        if (_earthquakeSerial == _state.WeatherSerial)
+            return;
+
+        _earthquakeSerial = _state.WeatherSerial;
+        if (_earthquakeSequenceRunning)
+        {
+            // 新一轮地震到来：立即取消上一轮等待，避免旧序列占住新序列。
+            _earthquakeSequenceVersion++;
+            _earthquakeSequenceRunning = false;
+        }
+        _ = RunEarthquakeSequence();
+    }
+
+    private async Task RunEarthquakeSequence()
+    {
+        _earthquakeSequenceRunning = true;
+        int version = ++_earthquakeSequenceVersion;
+        int count = _state.EarthquakePendingCount;
+        const float soundDuration = 2.79f;
+        const float startDelay = 0.15f;
+        const float interval = 0.20f;
+        float duration = soundDuration;
+
+        _rig.ShakeSustained(0.85f, duration, 0.55f);
+        AudioManager.PlaySfx("res://gameAsset/audios/weather/earthquake.ogg", -5f);
+
+        if (count == 0)
+        {
+            await ToSignal(GetTree().CreateTimer(duration), SceneTreeTimer.SignalName.Timeout);
+            if (version == _earthquakeSequenceVersion)
+                _earthquakeSequenceRunning = false;
+            return;
+        }
+
+        await ToSignal(GetTree().CreateTimer(startDelay), SceneTreeTimer.SignalName.Timeout);
+        if (version != _earthquakeSequenceVersion || !IsInsideTree())
+            return;
+        for (int i = 0; i < count; i++)
+        {
+            if (!IsInsideTree() || _state == null)
+                break;
+
+            if (_state.TryDestroyNextEarthquakeBuilding(out _))
+            {
+                _map.SyncEntities();
+                RefreshAll();
+                AudioManager.PlaySfx("res://gameAsset/audios/weather/building_collapse.ogg", -3f);
+            }
+
+            if (i < count - 1)
+                await ToSignal(GetTree().CreateTimer(interval), SceneTreeTimer.SignalName.Timeout);
+            if (version != _earthquakeSequenceVersion || !IsInsideTree())
+                return;
+        }
+
+        if (version == _earthquakeSequenceVersion)
+            _earthquakeSequenceRunning = false;
+    }
+
+    private void PlayWeatherHealFx()
+    {
+        if (_state == null || _vfx == null)
+            return;
+        if (_lastWeatherHealSerial == _state.WeatherHealSerial)
+            return;
+
+        _lastWeatherHealSerial = _state.WeatherHealSerial;
+        List<(HexCoord Coord, PlayerId Owner, bool IsUnit, float Scale, int Amount)> heals =
+            _state.WeatherHeals.ToList();
+        for (int i = 0; i < heals.Count; i++)
+        {
+            (HexCoord coord, _, bool isUnit, float scale, _) = heals[i];
+            float angle = i * 2.399f;
+            Vector3 p = HexLayout.ToWorld(coord, HexMapView.TileTop + (isUnit ? 0.85f : 0.65f));
+            p += new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * 0.24f;
+            float delay = i * 0.055f;
+            SceneTreeTimer timer = GetTree().CreateTimer(delay);
+            timer.Timeout += () =>
+            {
+                if (IsInsideTree() && _vfx != null)
+                    _vfx.Heal(p, scale);
+            };
+        }
     }
 
     private readonly List<HealthBars.Bar> _barBuffer = new();
 
     /// <summary>血条：满血的普通单位不显示，受伤/选中/建筑才显示。</summary>
+    private void UpdateWeatherVisuals()
+    {
+        if (_state == null)
+            return;
+
+        if (_weatherTornado == null)
+        {
+            _tornadoScene ??= GD.Load<PackedScene>("res://gameAsset/models/weather/tornado.glb");
+            if (_tornadoScene == null)
+                return;
+
+            _weatherTornado = _tornadoScene.Instantiate<Node3D>();
+            _weatherTornado.Name = "WeatherTornado";
+            AddChild(_weatherTornado);
+
+            _tornadoHoverBody = new StaticBody3D
+            {
+                Name = "TornadoHoverBody",
+                CollisionLayer = 1u << 5,
+                CollisionMask = 0,
+            };
+            _tornadoHoverBody.AddChild(new CollisionShape3D
+            {
+                Shape = new CylinderShape3D { Radius = 2.45f, Height = 6.4f },
+                Position = new Vector3(0f, 3.2f, 0f),
+            });
+            _weatherTornado.AddChild(_tornadoHoverBody);
+            foreach (MeshInstance3D mi in _weatherTornado.FindChildren("*", "MeshInstance3D", true, false)
+                         .Cast<MeshInstance3D>())
+            {
+                mi.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                mi.Transparency = 0f;
+                if (mi.Mesh == null)
+                    continue;
+                for (int s = 0; s < mi.Mesh.GetSurfaceCount(); s++)
+                {
+                    if (mi.GetActiveMaterial(s) is BaseMaterial3D bm)
+                    {
+                        BaseMaterial3D copy = (BaseMaterial3D)bm.Duplicate();
+                        copy.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+                        copy.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                        copy.NoDepthTest = true;
+                        mi.SetSurfaceOverrideMaterial(s, copy);
+                    }
+                }
+            }
+
+        }
+
+        EnsureSnow();
+        EnsureRain();
+        EnsureSand();
+        EnsureClearSkyMotes();
+        EnsureTornadoWind();
+        EnsureTornadoAudio();
+        float dt = (float)GetProcessDeltaTime();
+
+        bool aurora = _state.Weather == WeatherType.Aurora;
+        _auroraAlpha = Mathf.MoveToward(_auroraAlpha, aurora ? 1f : 0f, dt / 0.9f);
+        EnsureAurora();
+        EnsureAuroraAudio();
+        if (_auroraAudio != null)
+        {
+            if (aurora)
+            {
+                if (!_auroraAudio.Playing)
+                {
+                    _auroraAudio.VolumeDb = -40f;
+                    _auroraAudio.Play();
+                }
+                _auroraAudio.VolumeDb = Mathf.MoveToward(_auroraAudio.VolumeDb, -22f, dt * 9f);
+            }
+            else if (_auroraAudio.Playing)
+            {
+                _auroraAudio.VolumeDb = Mathf.MoveToward(_auroraAudio.VolumeDb, -40f, dt * 9f);
+                if (_auroraAudio.VolumeDb <= -39f)
+                    _auroraAudio.Stop();
+            }
+        }
+        if (_auroraRoot != null && _auroraMats.Count > 0)
+        {
+            _auroraRoot.Visible = _auroraAlpha > 0.001f;
+            if (_rig?.Camera != null)
+                _auroraRoot.LookAt(_rig.Camera.GlobalPosition, Vector3.Up);
+            foreach (ShaderMaterial mat in _auroraMats)
+                mat.SetShaderParameter("alpha", 0.55f * _auroraAlpha);
+        }
+
+        bool moonbow = _state.Weather == WeatherType.Moonbow;
+        _moonbowAlpha = Mathf.MoveToward(_moonbowAlpha, moonbow ? 1f : 0f, dt / 0.9f);
+        EnsureMoon();
+        EnsureMoonbowDecor();
+        EnsureNightAudio();
+        if (_moon != null && _moonHalo != null)
+        {
+            bool visible = _moonbowAlpha > 0.001f;
+            _moon.Visible = visible;
+            _moonHalo.Visible = visible;
+            if (_moonMat != null)
+            {
+                Color c = _moonMat.AlbedoColor;
+                c.A = _moonbowAlpha;
+                _moonMat.AlbedoColor = c;
+            }
+            Color halo = _moonHalo.Modulate;
+            halo.A = _moonbowAlpha;
+            _moonHalo.Modulate = halo;
+            if (_moonLight != null)
+                _moonLight.LightEnergy = 0.22f * _moonbowAlpha;
+
+            if (_rainbowPivot != null && _rig?.Camera != null)
+                _rainbowPivot.LookAt(_rig.Camera.GlobalPosition, Vector3.Up);
+            foreach (BaseMaterial3D rainbowMat in _rainbowMats)
+            {
+                Color rc = rainbowMat.AlbedoColor;
+                rc.A = _moonbowAlpha;
+                rainbowMat.AlbedoColor = rc;
+            }
+
+            float now = (float)Time.GetTicksMsec() * 0.001f;
+            foreach ((MeshInstance3D node, StandardMaterial3D mat, float phase) in _moonStars)
+            {
+                float twinkle = 0.35f + 0.65f * (0.5f + 0.5f * Mathf.Sin(now * 1.4f + phase));
+                node.Scale = Vector3.One * (0.35f + twinkle * 1.5f);
+                Color sc = mat.AlbedoColor;
+                sc.A = _moonbowAlpha * (0.15f + twinkle * 0.85f);
+                mat.AlbedoColor = sc;
+            }
+        }
+        if (_nightAudio != null)
+        {
+            if (moonbow)
+            {
+                if (!_nightAudio.Playing)
+                {
+                    _nightAudio.VolumeDb = -40f;
+                    _nightAudio.Play();
+                }
+                _nightAudio.VolumeDb = Mathf.MoveToward(_nightAudio.VolumeDb, -20f, dt * 10f);
+            }
+            else if (_nightAudio.Playing)
+            {
+                _nightAudio.VolumeDb = Mathf.MoveToward(_nightAudio.VolumeDb, -40f, dt * 10f);
+                if (_nightAudio.VolumeDb <= -39f)
+                    _nightAudio.Stop();
+            }
+        }
+
+        bool clearSky = _state.Weather == WeatherType.ClearSky;
+        _clearSkyAlpha = Mathf.MoveToward(_clearSkyAlpha, clearSky ? 1f : 0f, dt / 0.9f);
+        if (_clearSkyMotes != null)
+        {
+            _clearSkyMotes.Emitting = clearSky;
+            _clearSkyMotes.Visible = _clearSkyAlpha > 0.001f;
+            if (_clearSkyMotes.MaterialOverride is StandardMaterial3D moteMat)
+            {
+                Color c = moteMat.AlbedoColor;
+                c.A = 0.62f * _clearSkyAlpha;
+                moteMat.AlbedoColor = c;
+            }
+        }
+
+        bool sanding = _state.Weather == WeatherType.Sandstorm;
+        _sandAlpha = Mathf.MoveToward(_sandAlpha, sanding ? 1f : 0f, dt / 0.8f);
+        if (_weatherSand != null)
+        {
+            _weatherSand.Emitting = sanding;
+            _weatherSand.Visible = _sandAlpha > 0.001f;
+            if (_weatherSand.MaterialOverride is StandardMaterial3D sandMat)
+            {
+                Color c = sandMat.AlbedoColor;
+                c.A = 0.68f * _sandAlpha;
+                sandMat.AlbedoColor = c;
+            }
+        }
+
+        bool raining = _state.Weather == WeatherType.Thunderstorm;
+        _rainAlpha = Mathf.MoveToward(_rainAlpha, raining ? 1f : 0f, dt / 0.8f);
+        if (_weatherRain != null)
+        {
+            _weatherRain.Emitting = raining;
+            _weatherRain.Visible = _rainAlpha > 0.001f;
+            if (_weatherRain.MaterialOverride is StandardMaterial3D rainMat)
+            {
+                Color c = rainMat.AlbedoColor;
+                c.A = 0.38f * _rainAlpha;
+                rainMat.AlbedoColor = c;
+            }
+        }
+
+        if (_rainAudio != null)
+        {
+            if (raining)
+            {
+                if (!_rainAudio.Playing)
+                {
+                    _rainAudio.VolumeDb = -30f;
+                    _rainAudio.Play();
+                }
+                _rainAudio.VolumeDb = Mathf.MoveToward(_rainAudio.VolumeDb, -18f, dt * 18f);
+            }
+            else if (_rainAudio.Playing)
+            {
+                _rainAudio.VolumeDb = Mathf.MoveToward(_rainAudio.VolumeDb, -40f, dt * 18f);
+                if (_rainAudio.VolumeDb <= -39f)
+                    _rainAudio.Stop();
+            }
+        }
+
+        // 即使雷雨在最后一次结算后结束，也要把这一轮雷击表现出来。
+        if (_state.WeatherStrikeSerial != _lastThunderStrikeSerial)
+        {
+            _lastThunderStrikeSerial = _state.WeatherStrikeSerial;
+            SpawnLightningBolts();
+        }
+
+        bool snowing = _state.Weather == WeatherType.GiftRain;
+        _snowAlpha = Mathf.MoveToward(_snowAlpha, snowing ? 1f : 0f, dt / 0.8f);
+        foreach (CpuParticles3D snow in _weatherSnowEmitters)
+        {
+            snow.Emitting = snowing;
+            snow.Visible = _snowAlpha > 0.001f;
+            if (snow.MaterialOverride is StandardMaterial3D mat)
+            {
+                Color c = mat.AlbedoColor;
+                c.A = 0.92f * _snowAlpha;
+                mat.AlbedoColor = c;
+            }
+        }
+
+        bool show = _state.Weather == WeatherType.Tornado && _state.HasTornado;
+        _tornadoAlpha = Mathf.MoveToward(_tornadoAlpha, show ? 1f : 0f, dt / 0.8f);
+        if (_tornadoWind != null)
+        {
+            _tornadoWind.Emitting = show;
+            _tornadoWind.Visible = _tornadoAlpha > 0.001f;
+            if (_tornadoWind.MaterialOverride is StandardMaterial3D windMat)
+            {
+                Color c = windMat.AlbedoColor;
+                c.A = 0.30f * _tornadoAlpha;
+                windMat.AlbedoColor = c;
+            }
+        }
+
+        if (_tornadoAudio != null)
+        {
+            if (show)
+            {
+                if (!_tornadoAudio.Playing)
+                {
+                    _tornadoAudio.VolumeDb = -32f;
+                    _tornadoAudio.Play();
+                }
+                _tornadoAudio.VolumeDb = Mathf.MoveToward(_tornadoAudio.VolumeDb, -16f, dt * 14f);
+            }
+            else if (_tornadoAudio.Playing)
+            {
+                _tornadoAudio.VolumeDb = Mathf.MoveToward(_tornadoAudio.VolumeDb, -40f, dt * 14f);
+                if (_tornadoAudio.VolumeDb <= -39f)
+                    _tornadoAudio.Stop();
+            }
+        }
+
+        if (show && _lastTornadoGustCoord != _state.TornadoCoord)
+        {
+            _lastTornadoGustCoord = _state.TornadoCoord;
+            AudioManager.PlaySfx("res://gameAsset/audios/weather/tornado_gust.ogg", -3f);
+        }
+        else if (!show && _tornadoAlpha <= 0.001f)
+        {
+            _lastTornadoGustCoord = null;
+        }
+
+        if (show || (_tornadoAlpha > 0.001f && _tornadoPosReady))
+        {
+            Vector3 target = HexLayout.ToWorld(_state.TornadoCoord, HexMapView.TileTop + 0.02f);
+            if (!_tornadoPosReady)
+            {
+                _tornadoPos = target;
+                _tornadoTarget = target;
+                _tornadoPosReady = true;
+            }
+            _tornadoTarget = target;
+            _tornadoPos = _tornadoPos.MoveToward(_tornadoTarget, 2.2f * dt);
+        }
+        else if (_tornadoAlpha <= 0.001f)
+        {
+            _tornadoPosReady = false;
+        }
+
+        _weatherTornado.Position = _tornadoPos;
+        _weatherTornado.RotationDegrees = new Vector3(0, (float)Time.GetTicksMsec() * 0.18f, 0);
+        float pulse = 1f + Mathf.Sin((float)Time.GetTicksMsec() * 0.004f) * 0.012f;
+        float grow = pulse * 1.015f;
+        _weatherTornado.Scale = new Vector3(grow, 1.015f, grow);
+        _weatherTornado.Visible = _tornadoAlpha > 0.001f;
+
+        bool hovered = false;
+        if (show && _weatherTornado.Visible && _tornadoHoverBody != null && !_hud.IsMouseOverUi())
+        {
+            Vector2 mouse = GetViewport().GetMousePosition();
+            Vector3 from = _rig.Camera.ProjectRayOrigin(mouse);
+            Vector3 dir = _rig.Camera.ProjectRayNormal(mouse);
+            var query = PhysicsRayQueryParameters3D.Create(from, from + dir * 80f, 1u << 5);
+            Godot.Collections.Dictionary hit = GetWorld3D().DirectSpaceState.IntersectRay(query);
+            hovered = hit.Count > 0 && hit["collider"].AsGodotObject() == _tornadoHoverBody;
+        }
+        _tornadoHoverMix = Mathf.MoveToward(_tornadoHoverMix, hovered ? 1f : 0f, dt / 0.18f);
+        float hoverFade = Mathf.Lerp(1f, 0.32f, _tornadoHoverMix);
+
+        foreach (MeshInstance3D mi in _weatherTornado.FindChildren("*", "MeshInstance3D", true, false)
+                     .Cast<MeshInstance3D>())
+        {
+            // GeometryInstance3D.Transparency 对当前 GLB 材质不稳定，直接改每面材质 Alpha。
+            mi.Transparency = 0f;
+            if (mi.Mesh == null)
+                continue;
+            for (int s = 0; s < mi.Mesh.GetSurfaceCount(); s++)
+            {
+                if (mi.GetActiveMaterial(s) is BaseMaterial3D bm)
+                {
+                    Color c = bm.AlbedoColor;
+                    c.A = 0.78f * _tornadoAlpha * hoverFade;
+                    bm.AlbedoColor = c;
+                }
+            }
+        }
+    }
+
+    /// <summary>礼物雨的 3D 礼物盒：从空中落下，拾取/刷新时移除。</summary>
+    private const float GiftFinalScale = 1.05f;
+
+    private void EnsureAurora()
+    {
+        if (_auroraRoot != null || _rig?.Camera == null)
+            return;
+
+        _auroraRoot = new Node3D
+        {
+            Name = "AuroraDecor",
+            Position = MapCenter(),
+        };
+        AddChild(_auroraRoot);
+
+        var mat = new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>("res://gameAsset/shaders/weather/aurora_curtain.gdshader"),
+        };
+        mat.SetShaderParameter("color_a", new Vector4(0.12f, 0.95f, 0.48f, 1f));
+        mat.SetShaderParameter("color_b", new Vector4(0.28f, 0.82f, 0.92f, 1f));
+        mat.SetShaderParameter("color_c", new Vector4(0.62f, 0.38f, 1f, 1f));
+        mat.SetShaderParameter("alpha", 0f);
+
+        var curtain = new MeshInstance3D
+        {
+            Name = "AuroraCurtain",
+            Mesh = new QuadMesh { Size = new Vector2(48f, 24f), Orientation = PlaneMesh.OrientationEnum.Z },
+            MaterialOverride = mat,
+            Position = new Vector3(0f, 10f, -10f),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        _auroraRoot.AddChild(curtain);
+        _auroraMats.Add(mat);
+    }
+
+    private static ArrayMesh BuildAuroraRibbonMesh(float width, float height, int cols, int rows)
+    {
+        int stride = cols + 1;
+        var vertices = new Vector3[stride * (rows + 1)];
+        var uvs = new Vector2[stride * (rows + 1)];
+        var indices = new int[cols * rows * 6];
+
+        for (int r = 0; r <= rows; r++)
+        {
+            float v = r / (float)rows;
+            for (int c = 0; c <= cols; c++)
+            {
+                float u = c / (float)cols;
+                float x = (u - 0.5f) * width;
+                float y = v * height;
+                float z = Mathf.Sin(u * Mathf.Pi * 1.45f) * 1.5f
+                    + Mathf.Sin(u * Mathf.Pi * 4f) * 0.35f;
+                int idx = r * stride + c;
+                vertices[idx] = new Vector3(x, y, z);
+                uvs[idx] = new Vector2(u, v);
+            }
+        }
+
+        int k = 0;
+        for (int r = 0; r < rows; r++)
+        {
+            for (int c = 0; c < cols; c++)
+            {
+                int a = r * stride + c;
+                int b = a + 1;
+                int d = a + stride;
+                int e = d + 1;
+                indices[k++] = a;
+                indices[k++] = b;
+                indices[k++] = e;
+                indices[k++] = a;
+                indices[k++] = e;
+                indices[k++] = d;
+            }
+        }
+
+        var arrays = new Godot.Collections.Array();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = vertices;
+        arrays[(int)Mesh.ArrayType.TexUV] = uvs;
+        arrays[(int)Mesh.ArrayType.Index] = indices;
+
+        var mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        return mesh;
+    }
+
+    private void EnsureAuroraAudio()
+    {
+        if (_auroraAudio != null)
+            return;
+
+        AudioStream stream = GD.Load<AudioStream>("res://gameAsset/audios/weather/aurora_loop.ogg");
+        if (stream == null)
+            return;
+        if (stream is AudioStreamOggVorbis ogg)
+            ogg.Loop = true;
+
+        _auroraAudio = new AudioStreamPlayer
+        {
+            Name = "AuroraLoop",
+            Stream = stream,
+            Bus = "SFX",
+            VolumeDb = -40f,
+        };
+        AddChild(_auroraAudio);
+    }
+
+    private void EnsureMoon()
+    {
+        if (_moonbowRoot != null || _rig?.Camera == null)
+            return;
+
+        _moonbowRoot = new Node3D
+        {
+            Name = "MoonbowDecor",
+            Position = MapCenter(),
+        };
+        AddChild(_moonbowRoot);
+
+        _moonMat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(1f, 0.98f, 0.88f, 0f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            NoDepthTest = true,
+        };
+        _moon = new MeshInstance3D
+        {
+            Name = "MoonbowMoon",
+            Mesh = new SphereMesh
+            {
+                Radius = 1.15f,
+                Height = 2.3f,
+                RadialSegments = 32,
+                Rings = 16,
+            },
+            MaterialOverride = _moonMat,
+            Position = new Vector3(8.6f, 10.2f, -3f),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        _moonbowRoot.AddChild(_moon);
+
+        _moonHalo = new Sprite3D
+        {
+            Name = "MoonbowHalo",
+            Texture = GD.Load<Texture2D>("res://gameAsset/textures/weather/moon_halo.png"),
+            PixelSize = 0.013f,
+            Billboard = BaseMaterial3D.BillboardModeEnum.Enabled,
+            NoDepthTest = true,
+            Position = new Vector3(8.6f, 10.2f, -3.2f),
+            Modulate = new Color(1.15f, 1.15f, 1.15f, 0f),
+        };
+        _moonbowRoot.AddChild(_moonHalo);
+
+        _moonLight = new OmniLight3D
+        {
+            Name = "MoonbowLight",
+            Position = new Vector3(8.6f, 10.2f, -1f),
+            LightColor = new Color(0.62f, 0.75f, 1f),
+            LightEnergy = 0f,
+            OmniRange = 16f,
+            ShadowEnabled = false,
+        };
+        _moonbowRoot.AddChild(_moonLight);
+    }
+
+    private void EnsureMoonbowDecor()
+    {
+        if (_moonbowRoot == null || _rainbowPivot != null)
+            return;
+
+        var scene = GD.Load<PackedScene>("res://gameAsset/models/weather/moonbow_rainbow.glb");
+        if (scene != null)
+        {
+            _rainbowPivot = new Node3D
+            {
+                Name = "MoonbowRainbow",
+                Position = new Vector3(5.4f, 6.2f, -2.5f),
+                Scale = Vector3.One * 0.44f,
+            };
+            _moonbowRoot.AddChild(_rainbowPivot);
+            Node3D rainbow = scene.Instantiate<Node3D>();
+            rainbow.RotationDegrees = Vector3.Zero;
+            _rainbowPivot.AddChild(rainbow);
+            foreach (MeshInstance3D mi in rainbow.FindChildren("*", "MeshInstance3D", true, false)
+                         .Cast<MeshInstance3D>())
+            {
+                mi.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+                if (mi.Mesh == null)
+                    continue;
+                for (int s = 0; s < mi.Mesh.GetSurfaceCount(); s++)
+                {
+                    if (mi.GetActiveMaterial(s) is BaseMaterial3D bm)
+                    {
+                        BaseMaterial3D copy = (BaseMaterial3D)bm.Duplicate();
+                        copy.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+                        copy.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+                        copy.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                        copy.NoDepthTest = true;
+                        copy.AlbedoColor = new Color(copy.AlbedoColor.R, copy.AlbedoColor.G,
+                            copy.AlbedoColor.B, 0f);
+                        mi.SetSurfaceOverrideMaterial(s, copy);
+                        _rainbowMats.Add(copy);
+                    }
+                }
+            }
+        }
+
+        var starMesh = new SphereMesh
+        {
+            Radius = 0.075f,
+            Height = 0.15f,
+            RadialSegments = 6,
+            Rings = 3,
+        };
+        var rng = new Random(408);
+        Vector3 center = MapCenter();
+        int starIndex = 0;
+
+        void AddStar(float x, float y, float z)
+        {
+            var starMat = new StandardMaterial3D
+            {
+                AlbedoColor = starIndex % 3 == 0
+                    ? new Color(0.98f, 0.93f, 0.72f, 0f)
+                    : new Color(0.74f, 0.84f, 1f, 0f),
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            };
+            var star = new MeshInstance3D
+            {
+                Name = $"MoonStar{starIndex}",
+                Mesh = starMesh,
+                MaterialOverride = starMat,
+                Position = new Vector3(x, y, z),
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+            _moonbowRoot.AddChild(star);
+            _moonStars.Add((star, starMat, (float)(rng.NextDouble() * Mathf.Tau)));
+            starIndex++;
+        }
+
+        // 每个格子上空至少一颗。
+        foreach (HexCoord coord in _state.Cells.Keys)
+        {
+            Vector3 cell = HexLayout.ToWorld(coord) - center;
+            AddStar(
+                cell.X + (float)(rng.NextDouble() * 0.7 - 0.35),
+                (float)(rng.NextDouble() * 3.2 + 6.4),
+                cell.Z + (float)(rng.NextDouble() * 0.7 - 0.35));
+        }
+
+        // 额外高空星点，让夜空更密。
+        for (int i = 0; i < 16; i++)
+        {
+            AddStar(
+                (float)(rng.NextDouble() * 20f - 10f),
+                (float)(rng.NextDouble() * 4.5f + 7f),
+                (float)(rng.NextDouble() * 10f - 8f));
+        }
+    }
+
+
+
+    private void EnsureNightAudio()
+    {
+        if (_nightAudio != null)
+            return;
+
+        AudioStream stream = GD.Load<AudioStream>("res://gameAsset/audios/weather/night_loop.ogg");
+        if (stream == null)
+            return;
+        if (stream is AudioStreamOggVorbis ogg)
+            ogg.Loop = true;
+
+        _nightAudio = new AudioStreamPlayer
+        {
+            Name = "NightLoop",
+            Stream = stream,
+            Bus = "SFX",
+            VolumeDb = -40f,
+        };
+        AddChild(_nightAudio);
+    }
+
+    private void EnsureClearSkyMotes()
+    {
+        if (_clearSkyMotes != null || _rig?.Camera == null)
+            return;
+
+        var mat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(1f, 0.86f, 0.48f, 0.62f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            VertexColorUseAsAlbedo = true,
+        };
+        _clearSkyMotes = new CpuParticles3D
+        {
+            Name = "ClearSkyMotes",
+            Amount = 160,
+            Lifetime = 4.5f,
+            Preprocess = 1.2f,
+            Emitting = false,
+            LocalCoords = false,
+            Direction = new Vector3(0f, 1f, 0f),
+            Spread = 34f,
+            InitialVelocityMin = 0.12f,
+            InitialVelocityMax = 0.55f,
+            Gravity = new Vector3(0.04f, 0.08f, 0f),
+            ScaleAmountMin = 0.35f,
+            ScaleAmountMax = 1.1f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Box,
+            EmissionBoxExtents = new Vector3(13f, 4f, 10f),
+            Position = new Vector3(0f, 2.5f, -8f),
+            Mesh = new QuadMesh { Size = new Vector2(0.07f, 0.07f) },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        _rig.Camera.AddChild(_clearSkyMotes);
+    }
+
+    private void EnsureSand()
+    {
+        if (_weatherSand != null || _rig?.Camera == null)
+            return;
+
+        var mat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.76f, 0.60f, 0.34f, 0.68f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            VertexColorUseAsAlbedo = true,
+        };
+        _weatherSand = new CpuParticles3D
+        {
+            Name = "SandstormDust",
+            Amount = 420,
+            Lifetime = 2.3f,
+            Preprocess = 0.45f,
+            Emitting = false,
+            LocalCoords = false,
+            Direction = new Vector3(-1f, -0.2f, 0f),
+            Spread = 18f,
+            InitialVelocityMin = 6f,
+            InitialVelocityMax = 12f,
+            Gravity = new Vector3(0f, -0.35f, 0f),
+            ScaleAmountMin = 0.35f,
+            ScaleAmountMax = 1.1f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Box,
+            EmissionBoxExtents = new Vector3(12f, 4f, 10f),
+            Position = new Vector3(0f, 3.5f, -8f),
+            Mesh = new QuadMesh { Size = new Vector2(0.24f, 0.05f) },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        _rig.Camera.AddChild(_weatherSand);
+    }
+
+    private void EnsureTornadoWind()
+    {
+        if (_tornadoWind != null || _rig?.Camera == null)
+            return;
+
+        var mat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.72f, 0.72f, 0.68f, 0.30f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            VertexColorUseAsAlbedo = true,
+        };
+        _tornadoWind = new CpuParticles3D
+        {
+            Name = "TornadoWind",
+            Amount = 180,
+            Lifetime = 1.8f,
+            Preprocess = 0.45f,
+            Emitting = false,
+            LocalCoords = false,
+            Direction = new Vector3(-1f, 0f, 0f),
+            Spread = 14f,
+            InitialVelocityMin = 8f,
+            InitialVelocityMax = 15f,
+            Gravity = new Vector3(0f, -0.4f, 0f),
+            ScaleAmountMin = 0.7f,
+            ScaleAmountMax = 1.3f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Box,
+            EmissionBoxExtents = new Vector3(12f, 4f, 10f),
+            Position = new Vector3(0f, 3.5f, -8f),
+            Mesh = new QuadMesh { Size = new Vector2(0.65f, 0.025f) },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        _rig.Camera.AddChild(_tornadoWind);
+    }
+
+    private void EnsureRain()
+    {
+        if (_weatherRain != null || _rig?.Camera == null)
+            return;
+
+        var mat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.62f, 0.78f, 1f, 0.38f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+            VertexColorUseAsAlbedo = true,
+        };
+        _weatherRain = new CpuParticles3D
+        {
+            Name = "WeatherRain",
+            Amount = 420,
+            Lifetime = 1.35f,
+            Preprocess = 0.35f,
+            Emitting = false,
+            LocalCoords = false,
+            Direction = new Vector3(0f, -1f, 0f),
+            Spread = 8f,
+            InitialVelocityMin = 9f,
+            InitialVelocityMax = 14f,
+            Gravity = new Vector3(-1.2f, -14f, 0f),
+            ScaleAmountMin = 0.75f,
+            ScaleAmountMax = 1.25f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Box,
+            EmissionBoxExtents = new Vector3(13f, 1f, 10f),
+            Position = new Vector3(0f, 8f, -8f),
+            Mesh = new QuadMesh { Size = new Vector2(0.025f, 0.55f) },
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        _rig.Camera.AddChild(_weatherRain);
+        EnsureRainAudio();
+    }
+
+    private void EnsureTornadoAudio()
+    {
+        if (_tornadoAudio != null)
+            return;
+
+        AudioStream stream = GD.Load<AudioStream>("res://gameAsset/audios/weather/tornado_loop.ogg");
+        if (stream == null)
+            return;
+        if (stream is AudioStreamOggVorbis ogg)
+            ogg.Loop = true;
+
+        _tornadoAudio = new AudioStreamPlayer
+        {
+            Name = "TornadoLoop",
+            Stream = stream,
+            Bus = "SFX",
+            VolumeDb = -40f,
+        };
+        AddChild(_tornadoAudio);
+    }
+
+    private void EnsureRainAudio()
+    {
+        if (_rainAudio != null)
+            return;
+
+        AudioStream stream = GD.Load<AudioStream>("res://gameAsset/audios/weather/rain_loop.ogg");
+        if (stream == null)
+            return;
+        if (stream is AudioStreamOggVorbis ogg)
+            ogg.Loop = true;
+
+        _rainAudio = new AudioStreamPlayer
+        {
+            Name = "RainLoop",
+            Stream = stream,
+            Bus = "SFX",
+            VolumeDb = -40f,
+        };
+        AddChild(_rainAudio);
+    }
+
+    private void SpawnLightningBolts()
+    {
+        if (_state.WeatherStrikeCells.Count == 0)
+            return;
+
+        AudioManager.PlaySfx("res://gameAsset/audios/weather/thunder_strike.ogg", -3f);
+        GetTree().CreateTimer(0.16f).Timeout += () =>
+            AudioManager.PlaySfx("res://gameAsset/audios/weather/thunder_dull.ogg", -6f);
+
+        for (int n = 0; n < _state.WeatherStrikeCells.Count; n++)
+        {
+            HexCoord coord = _state.WeatherStrikeCells[n];
+            Vector3 ground = HexLayout.ToWorld(coord, HexMapView.TileTop + 0.02f);
+
+            var root = new Node3D
+            {
+                Name = "LightningBolt",
+                Position = ground,
+            };
+            AddChild(root);
+
+            var points = new List<Vector3>();
+            const int segments = 7;
+            float seed = n * 17.31f + Time.GetTicksMsec() * 0.001f;
+            for (int i = 0; i <= segments; i++)
+            {
+                float t01 = i / (float)segments;
+                float y = 12f * (1f - t01);
+                float jitter = i == 0 || i == segments ? 0f : 0.9f;
+                points.Add(new Vector3(
+                    Mathf.Sin(seed + i * 2.1f) * jitter,
+                    y,
+                    Mathf.Cos(seed * 1.7f + i * 1.6f) * jitter));
+            }
+
+            var mat = new StandardMaterial3D
+            {
+                AlbedoColor = new Color(1f, 0.72f, 0.08f, 1f),
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                EmissionEnabled = true,
+                Emission = new Color(1f, 0.62f, 0.05f),
+                EmissionEnergyMultiplier = 6f,
+            };
+
+            for (int i = 0; i < segments; i++)
+            {
+                Vector3 a = points[i];
+                Vector3 b = points[i + 1];
+                Vector3 delta = b - a;
+                float len = delta.Length();
+                if (len < 0.001f)
+                    continue;
+
+                Vector3 dir = delta / len;
+                var axis = Vector3.Up.Cross(dir);
+                Basis basis = axis.LengthSquared() < 0.0001f
+                    ? Basis.Identity
+                    : new Basis(axis.Normalized(),
+                        Mathf.Acos(Mathf.Clamp(Vector3.Up.Dot(dir), -1f, 1f)));
+
+                var segMat = (StandardMaterial3D)mat.Duplicate();
+                var seg = new MeshInstance3D
+                {
+                    Mesh = new CylinderMesh
+                    {
+                        TopRadius = 0.065f,
+                        BottomRadius = 0.065f,
+                        Height = len,
+                        RadialSegments = 6,
+                    },
+                    MaterialOverride = segMat,
+                    CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                    Transform = new Transform3D(basis, (a + b) * 0.5f),
+                    Visible = false,
+                };
+                root.AddChild(seg);
+                int index = i;
+                GetTree().CreateTimer(0.02f + index * 0.018f).Timeout += () =>
+                {
+                    if (IsInstanceValid(seg))
+                        seg.Visible = true;
+                };
+            }
+
+            var light = new OmniLight3D
+            {
+                Position = new Vector3(0f, 0.08f, 0f),
+                LightColor = new Color(1f, 0.92f, 0.55f),
+                LightEnergy = 22f,
+                OmniRange = 10f,
+                ShadowEnabled = false,
+            };
+            root.AddChild(light);
+            CreateTween().TweenProperty(light, "light_energy", 0f, 0.35f)
+                .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+
+            GetTree().CreateTimer(0.42f).Timeout += () =>
+            {
+                if (!IsInstanceValid(root))
+                    return;
+
+                GiftBurst(ground + Vector3.Up * 0.12f, new Color("FFF2A6"));
+
+                // 地面命中闪光环，强调落雷击中的瞬间。
+                var ring = new MeshInstance3D
+                {
+                    Mesh = new CylinderMesh
+                    {
+                        TopRadius = 0.38f,
+                        BottomRadius = 0.38f,
+                        Height = 0.025f,
+                        RadialSegments = 20,
+                    },
+                    MaterialOverride = new StandardMaterial3D
+                    {
+                        AlbedoColor = new Color(1f, 0.88f, 0.32f, 0.85f),
+                        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                        CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+                    },
+                    Position = ground + Vector3.Up * 0.02f,
+                    Scale = Vector3.One * 0.25f,
+                };
+                AddChild(ring);
+                Tween tw = CreateTween().SetParallel(true);
+                tw.TweenProperty(ring, "scale", Vector3.One * 1.9f, 0.50f)
+                    .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+                tw.TweenProperty(ring, "transparency", 1f, 0.50f)
+                    .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+                tw.Chain().TweenCallback(Callable.From(() =>
+                {
+                    if (IsInstanceValid(ring))
+                        ring.QueueFree();
+                }));
+
+                var flash = new MeshInstance3D
+                {
+                    Mesh = new SphereMesh { Radius = 0.40f, Height = 0.8f },
+                    MaterialOverride = new StandardMaterial3D
+                    {
+                        AlbedoColor = new Color(1f, 0.97f, 0.72f, 0.95f),
+                        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                    },
+                    Position = ground + Vector3.Up * 0.20f,
+                    Scale = Vector3.One * 0.30f,
+                };
+                AddChild(flash);
+                Tween ft = CreateTween().SetParallel(true);
+                ft.TweenProperty(flash, "scale", Vector3.One * 2.0f, 0.34f)
+                    .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+                ft.TweenProperty(flash, "transparency", 1f, 0.34f)
+                    .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+                ft.Chain().TweenCallback(Callable.From(() =>
+                {
+                    if (IsInstanceValid(flash))
+                        flash.QueueFree();
+                }));
+
+                // 黄白色爆炸闪光：贴地圆盘，和黄色扩散环叠加。
+                var blast = new MeshInstance3D
+                {
+                    Mesh = new CylinderMesh
+                    {
+                        TopRadius = 0.32f,
+                        BottomRadius = 0.32f,
+                        Height = 0.02f,
+                        RadialSegments = 24,
+                    },
+                    MaterialOverride = new StandardMaterial3D
+                    {
+                        AlbedoColor = new Color(1f, 1f, 0.80f, 0.95f),
+                        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                        CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+                    },
+                    Position = ground + Vector3.Up * 0.035f,
+                    Scale = Vector3.One * 0.15f,
+                };
+                AddChild(blast);
+                Tween bt = CreateTween().SetParallel(true);
+                bt.TweenProperty(blast, "scale", Vector3.One * 2.2f, 0.30f)
+                    .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+                bt.TweenProperty(blast, "transparency", 1f, 0.30f)
+                    .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+                bt.Chain().TweenCallback(Callable.From(() =>
+                {
+                    if (IsInstanceValid(blast))
+                        blast.QueueFree();
+                }));
+            };
+            // 完全落下后，从落点尾部向云层首部依次淡出。
+            GetTree().CreateTimer(0.22f).Timeout += () =>
+            {
+                if (!IsInstanceValid(root))
+                    return;
+
+                int order = 0;
+                foreach (Node child in root.GetChildren())
+                {
+                    if (child is not MeshInstance3D mi)
+                        continue;
+                    if (mi.MaterialOverride is not StandardMaterial3D segMat)
+                        continue;
+
+                    int delay = order++;
+                    CreateTween().TweenMethod(
+                        Callable.From<float>(a =>
+                        {
+                            if (!GodotObject.IsInstanceValid(segMat))
+                                return;
+                            Color c = segMat.AlbedoColor;
+                            c.A = a;
+                            segMat.AlbedoColor = c;
+                            segMat.EmissionEnergyMultiplier = 6f * a;
+                        }), 1f, 0f, 0.30f)
+                        .SetDelay(delay * 0.06f)
+                        .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+                }
+            };
+            GetTree().CreateTimer(1.2f).Timeout += () =>
+            {
+                if (IsInstanceValid(root))
+                    root.QueueFree();
+            };
+        }
+    }
+
+    private void EnsureSnow()
+    {
+        if (_weatherSnowEmitters.Count > 0 || _rig?.Camera == null)
+            return;
+
+        string[] textures =
+        {
+            "res://gameAsset/textures/weather/snowflake_1.png",
+            "res://gameAsset/textures/weather/snowflake_2.png",
+            "res://gameAsset/textures/weather/snowflake_3.png",
+            "res://gameAsset/textures/weather/snowflake_4.png",
+        };
+
+        for (int i = 0; i < textures.Length; i++)
+        {
+            var mat = new StandardMaterial3D
+            {
+                AlbedoColor = new Color(1f, 1f, 1f, 0.92f),
+                AlbedoTexture = GD.Load<Texture2D>(textures[i]),
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                VertexColorUseAsAlbedo = true,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+                TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+            };
+
+            var snow = new CpuParticles3D
+            {
+                Name = $"WeatherSnow{i}",
+                Amount = 78,
+                Lifetime = 6.0f,
+                Preprocess = 0.2f + i * 0.05f,
+                Emitting = false,
+                LocalCoords = false,
+                Direction = new Vector3(0f, -1f, 0f),
+                Spread = 14f,
+                InitialVelocityMin = 0.7f,
+                InitialVelocityMax = 2.0f,
+                Gravity = new Vector3(0.35f + i * 0.06f, -1.35f, 0f),
+                TangentialAccelMin = i % 2 == 0 ? -0.8f : -0.25f,
+                TangentialAccelMax = i % 2 == 0 ? 0.25f : 0.8f,
+                DampingMin = 0.02f,
+                DampingMax = 0.08f,
+                AngleMin = 0f,
+                AngleMax = 360f,
+                AngularVelocityMin = -45f,
+                AngularVelocityMax = 45f,
+                ScaleAmountMin = 0.22f,
+                ScaleAmountMax = 0.68f,
+                EmissionShape = CpuParticles3D.EmissionShapeEnum.Box,
+                EmissionBoxExtents = new Vector3(12f, 1f, 10f),
+                Position = new Vector3(-3f + i * 2f, 10.2f + i * 0.2f, -8f),
+                RotationDegrees = new Vector3(
+                    i * 47f + 15f,
+                    i * 71f + 20f,
+                    i * 33f + 10f),
+                Mesh = BuildSnowflakeMesh(),
+                MaterialOverride = mat,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+            snow.SetParticleFlag(CpuParticles3D.ParticleFlags.RotateY, i % 2 == 0);
+            _rig.Camera.AddChild(snow);
+            _weatherSnowEmitters.Add(snow);
+        }
+    }
+
+    /// <summary>三张十字交叉的雪花面，绕任意轴旋转时都不会完全看不见。</summary>
+    private static Mesh BuildSnowflakeMesh()
+    {
+        var st = new SurfaceTool();
+        st.Begin(Mesh.PrimitiveType.Triangles);
+        float s = 0.13f;
+        AddSnowQuad(st,
+            new Vector3(-s, -s, 0f), new Vector3(s, -s, 0f),
+            new Vector3(s, s, 0f), new Vector3(-s, s, 0f));
+        AddSnowQuad(st,
+            new Vector3(-s, 0f, -s), new Vector3(s, 0f, -s),
+            new Vector3(s, 0f, s), new Vector3(-s, 0f, s));
+        AddSnowQuad(st,
+            new Vector3(0f, -s, -s), new Vector3(0f, s, -s),
+            new Vector3(0f, s, s), new Vector3(0f, -s, s));
+        st.GenerateNormals();
+        return st.Commit();
+    }
+
+    private static void AddSnowQuad(SurfaceTool st, Vector3 a, Vector3 b, Vector3 c, Vector3 d)
+    {
+        Vector2[] uv =
+        {
+            new(0, 0), new(1, 0), new(1, 1),
+            new(0, 0), new(1, 1), new(0, 1),
+        };
+        Vector3[] p = { a, b, c, a, c, d };
+        for (int i = 0; i < p.Length; i++)
+        {
+            st.SetUV(uv[i]);
+            st.AddVertex(p[i]);
+        }
+    }
+
+
+
+    private void UpdateWeatherGifts()
+    {
+        if (_state == null)
+            return;
+
+        _weatherGiftScene ??= GD.Load<PackedScene>("res://gameAsset/models/weather/gift.glb");
+        if (_weatherGiftScene == null)
+            return;
+
+        ProcessAutoGiftPickups();
+
+        var live = _state.Gifts
+            .Where(g => !g.Collected)
+            .OrderBy(g => g.Id)
+            .ToList();
+        var liveIds = live.Select(g => g.Id).ToHashSet();
+
+        foreach (int gone in _weatherGiftViews.Keys.Where(id => !liveIds.Contains(id)).ToList())
+        {
+            if (!_weatherGiftViews.TryGetValue(gone, out Node3D node))
+                continue;
+
+            _weatherGiftViews.Remove(gone);
+            _weatherGiftTweens.Remove(gone);
+            _weatherGiftLanded.Remove(gone);
+            if (!IsInstanceValid(node))
+                continue;
+
+            PlayGiftPickup(node);
+        }
+
+        var groups = live.GroupBy(g => g.Coord)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Id).ToList());
+
+        foreach (GiftDrop drop in live)
+        {
+            if (_weatherGiftViews.ContainsKey(drop.Id))
+                continue;
+
+            Node3D gift = _weatherGiftScene.Instantiate<Node3D>();
+            if (gift == null)
+                continue;
+
+            List<GiftDrop> group = groups[drop.Coord];
+            int idx = group.FindIndex(g => g.Id == drop.Id);
+            float angle = group.Count > 1 ? Mathf.Tau * idx / group.Count : 0f;
+            float radius = group.Count > 1 ? 0.16f : 0f;
+            Vector3 ground = HexLayout.ToWorld(drop.Coord, 0f)
+                             + new Vector3(Mathf.Cos(angle) * radius, 0f, Mathf.Sin(angle) * radius);
+
+            // 1.05 倍模型的最小 Y 约为 -0.194，落点抬高后底部刚好在地砖上方。
+            float targetY = HexMapView.TileTop + 0.21f;
+            float startY = targetY + 5.2f;
+            gift.Position = new Vector3(ground.X, startY, ground.Z);
+            gift.RotationDegrees = new Vector3(0f, (drop.Coord.Q * 47 + drop.Coord.R * 29) % 360, 0f);
+            gift.Scale = Vector3.One * 0.75f;
+
+            ApplyGiftMaterials(gift);
+            _map.AddChild(gift);
+            PrepareGiftLid(gift);
+            AddGiftTrail(gift);
+            _weatherGiftViews[drop.Id] = gift;
+
+            float duration = 0.72f + (idx % 5) * 0.09f;
+            Tween fall = CreateTween();
+            fall.SetParallel(true);
+            Vector3 targetPos = new(ground.X, targetY, ground.Z);
+            fall.TweenProperty(gift, "position", targetPos, duration)
+                .SetTrans(Tween.TransitionType.Bounce)
+                .SetEase(Tween.EaseType.Out);
+            fall.TweenProperty(gift, "rotation_degrees:y", gift.RotationDegrees.Y + 360f, duration)
+                .SetTrans(Tween.TransitionType.Cubic)
+                .SetEase(Tween.EaseType.Out);
+            fall.TweenProperty(gift, "scale", Vector3.One * GiftFinalScale, 0.28f)
+                .SetTrans(Tween.TransitionType.Back)
+                .SetEase(Tween.EaseType.Out);
+            _weatherGiftTweens[drop.Id] = fall;
+
+            Vector3 burstAt = targetPos + Vector3.Up * 0.16f;
+            GetTree().CreateTimer(duration * 0.68f).Timeout += () =>
+            {
+                if (IsInstanceValid(gift))
+                    AudioManager.PlaySfx("res://gameAsset/audios/weather/gift_bounce.ogg", -5f);
+            };
+            GetTree().CreateTimer(duration).Timeout += () =>
+            {
+                if (IsInstanceValid(gift))
+                {
+                    _weatherGiftLanded.Add(drop.Id);
+                    GiftBurst(burstAt, new Color("FFD45A"));
+                    if (gift.GetNodeOrNull<CpuParticles3D>("GiftTrail") is { } trail)
+                        trail.Emitting = false;
+                }
+            };
+        }
+
+        // 建筑新建/升级后屋顶高度会变化，礼物始终跟随到建筑上方。
+        foreach (GiftDrop drop in live)
+        {
+            if (!_weatherGiftLanded.Contains(drop.Id) ||
+                !_weatherGiftViews.TryGetValue(drop.Id, out Node3D view) ||
+                !IsInstanceValid(view))
+                continue;
+
+            float wantedY = _map.GiftAnchorY(drop.Coord);
+            if (Mathf.Abs(view.Position.Y - wantedY) > 0.015f)
+            {
+                CreateTween().TweenProperty(view, "position:y", wantedY, 0.28f)
+                    .SetTrans(Tween.TransitionType.Cubic)
+                    .SetEase(Tween.EaseType.Out);
+            }
+        }
+    }
+
+    private void ProcessAutoGiftPickups()
+    {
+        int count = _state.AutoGiftPickups.Count;
+        if (count <= _lastAutoGiftPickups)
+            return;
+
+        for (int i = _lastAutoGiftPickups; i < count; i++)
+        {
+            HexCoord coord = _state.AutoGiftPickups[i].Coord;
+            Vector3 at = HexLayout.ToWorld(coord, HexMapView.TileTop + 0.28f);
+            GiftBurst(at, new Color("FFD45A"));
+            AudioManager.PlaySfx("res://gameAsset/audios/weather/gift_pickup.ogg", -3f);
+        }
+        _lastAutoGiftPickups = count;
+    }
+
+    /// <summary>把盒盖和蝴蝶结收进一个顶部枢轴，拾取时向上翻开。</summary>
+    private static void PrepareGiftLid(Node3D gift)
+    {
+        // 左半盖以左外沿为铰链，右半盖以右外沿为铰链，从两侧揭开。
+        var left = new Node3D
+        {
+            Name = "GiftLidLeftPivot",
+            Position = new Vector3(-0.23f, 0.16f, 0f),
+        };
+        var right = new Node3D
+        {
+            Name = "GiftLidRightPivot",
+            Position = new Vector3(0.23f, 0.16f, 0f),
+        };
+        gift.AddChild(left);
+        gift.AddChild(right);
+
+        foreach (Node child in gift.GetChildren().ToList())
+        {
+            if (child == left || child == right || child is not Node3D n3)
+                continue;
+
+            string name = n3.Name.ToString();
+            if (name == "LidLeft" || name.StartsWith("BowL") || name == "BowKnot")
+                n3.Reparent(left, true);
+            else if (name == "LidRight" || name.StartsWith("BowR"))
+                n3.Reparent(right, true);
+        }
+    }
+
+    private void PlayGiftPickup(Node3D gift)
+    {
+        AudioManager.PlaySfx("res://gameAsset/audios/weather/gift_pickup.ogg", -3f);
+        GiftBurst(gift.GlobalPosition + Vector3.Up * 0.28f, new Color("FFD45A"));
+
+        Node3D left = gift.GetNodeOrNull<Node3D>("GiftLidLeftPivot");
+        Node3D right = gift.GetNodeOrNull<Node3D>("GiftLidRightPivot");
+        Tween t = CreateTween().SetParallel(true);
+        if (left != null)
+        {
+            t.TweenProperty(left, "rotation_degrees:z", 72f, 0.30f)
+                .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        }
+        if (right != null)
+        {
+            t.TweenProperty(right, "rotation_degrees:z", -72f, 0.30f)
+                .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        }
+
+        t.TweenProperty(gift, "position:y", gift.Position.Y + 0.38f, 0.42f)
+            .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+        t.TweenProperty(gift, "scale", Vector3.One * 0.01f, 0.30f)
+            .SetDelay(0.20f)
+            .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+        t.Chain().TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(gift))
+                gift.QueueFree();
+        }));
+    }
+
+
+
+    private static Texture2D GiftWhiteTexture()
+    {
+        if (_giftWhiteTex != null)
+            return _giftWhiteTex;
+
+        var img = Image.CreateEmpty(2, 2, false, Image.Format.Rgba8);
+        img.Fill(Colors.White);
+        _giftWhiteTex = ImageTexture.CreateFromImage(img);
+        return _giftWhiteTex;
+    }
+
+    private static ShaderMaterial GiftToon(Color color)
+    {
+        var mat = new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>("res://gameAsset/shaders/toon_type/toon_cel.gdshader"),
+        };
+        mat.SetShaderParameter("albedo_tex", GiftWhiteTexture());
+        mat.SetShaderParameter("albedo_tint", new Vector3(color.R, color.G, color.B));
+        mat.SetShaderParameter("band_low", 0.42f);
+        mat.SetShaderParameter("band_high", 0.72f);
+        mat.SetShaderParameter("level_dark", 0.62f);
+        mat.SetShaderParameter("level_mid", 0.82f);
+        mat.SetShaderParameter("level_lit", 1.0f);
+        mat.SetShaderParameter("ambient_boost", 0.18f);
+        return mat;
+    }
+
+    private static StandardMaterial3D GiftFlatOutline()
+    {
+        if (_giftFlatOutline != null)
+            return _giftFlatOutline;
+
+        _giftFlatOutline = new StandardMaterial3D
+        {
+            AlbedoColor = new Color("2A160C"),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            CullMode = BaseMaterial3D.CullModeEnum.Back,
+            DisableReceiveShadows = true,
+        };
+        return _giftFlatOutline;
+    }
+
+    private static void ApplyGiftMaterials(Node3D gift)
+    {
+        _giftToonRed ??= GiftToon(new Color("C93028"));
+        _giftToonGold ??= GiftToon(new Color("F2C24E"));
+
+        foreach (MeshInstance3D mi in gift.FindChildren("*", "MeshInstance3D", true, false)
+                     .Cast<MeshInstance3D>())
+        {
+            if (mi.Mesh == null)
+                continue;
+
+            for (int s = 0; s < mi.Mesh.GetSurfaceCount(); s++)
+            {
+                Material src = mi.Mesh.SurfaceGetMaterial(s);
+                string name = src?.ResourceName ?? "";
+                if (name.Contains("Outline", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    mi.SetSurfaceOverrideMaterial(s, GiftFlatOutline());
+                }
+                else
+                {
+                    bool gold = name.Contains("Gold", System.StringComparison.OrdinalIgnoreCase);
+                    mi.SetSurfaceOverrideMaterial(s, gold ? _giftToonGold : _giftToonRed);
+                }
+            }
+        }
+    }
+
+    private static void AddGiftTrail(Node3D gift)
+    {
+        var particles = new CpuParticles3D
+        {
+            Name = "GiftTrail",
+            Amount = 14,
+            Lifetime = 0.55,
+            OneShot = false,
+            Emitting = true,
+            LocalCoords = false,
+            Direction = new Vector3(0, 1, 0),
+            Spread = 28f,
+            InitialVelocityMin = 0.15f,
+            InitialVelocityMax = 0.55f,
+            Gravity = new Vector3(0, 0.6f, 0),
+            ScaleAmountMin = 0.35f,
+            ScaleAmountMax = 0.8f,
+            Color = new Color("FFD45A"),
+            Mesh = new QuadMesh { Size = new Vector2(0.10f, 0.10f) },
+            MaterialOverride = GiftParticleMaterial(),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        gift.AddChild(particles);
+    }
+
+    private static StandardMaterial3D GiftParticleMaterial() => new()
+    {
+        AlbedoColor = new Color("FFD45A"),
+        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+        VertexColorUseAsAlbedo = true,
+        BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles,
+        EmissionEnabled = true,
+        Emission = new Color("FFB830"),
+        EmissionEnergyMultiplier = 2f,
+    };
+
+    private void GiftBurst(Vector3 worldPos, Color color)
+    {
+        var burst = new CpuParticles3D
+        {
+            Name = "GiftBurst",
+            OneShot = true,
+            Explosiveness = 1f,
+            Amount = 26,
+            Lifetime = 0.75,
+            Emitting = false,
+            LocalCoords = false,
+            Position = worldPos,
+            Direction = new Vector3(0, 1, 0),
+            Spread = 180f,
+            InitialVelocityMin = 1.2f,
+            InitialVelocityMax = 3.4f,
+            Gravity = new Vector3(0, -2.5f, 0),
+            ScaleAmountMin = 0.45f,
+            ScaleAmountMax = 1.1f,
+            Color = color,
+            Mesh = new QuadMesh { Size = new Vector2(0.12f, 0.12f) },
+            MaterialOverride = GiftParticleMaterial(),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        AddChild(burst);
+        burst.Emitting = true;
+        GetTree().CreateTimer(1.2).Timeout += () =>
+        {
+            if (IsInstanceValid(burst))
+                burst.QueueFree();
+        };
+    }
+
     private void UpdateHealthBars()
     {
         if (_state == null || _hud == null)

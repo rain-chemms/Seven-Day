@@ -183,6 +183,14 @@ public sealed class PlayerState
 }
 
 /// <summary>一局战斗的全部状态。纯数据，不依赖节点，方便后面接 AI 与存档。</summary>
+/// <summary>战场上的一个圣诞礼物实例；同一格允许存在多个。</summary>
+public sealed class GiftDrop
+{
+    public int Id;
+    public HexCoord Coord;
+    public bool Collected;
+}
+
 public sealed class BattleState
 {
     /// <summary>每回合的基础抽牌数（不含指挥部/兵营等建筑的额外发牌）。</summary>
@@ -204,6 +212,35 @@ public sealed class BattleState
     public int TurnNumber = 1;
     public PlayerId CurrentPlayer = PlayerId.Player;
 
+    // ── 天气 ──
+    public bool WeatherEnabled;
+    public int WeatherGraceTurns = 2;
+    public int WeatherMask = 0x1FE;
+    public WeatherType Weather = WeatherType.None;
+    public int WeatherTurnsLeft;
+    public int WeatherGraceLeft;
+    public int WeatherSerial;
+    public int WeatherSwitchCount;
+    public int WeatherHealSerial;
+    public readonly List<(HexCoord Coord, PlayerId Owner, bool IsUnit, float Scale, int Amount)> WeatherHeals = new();
+    private readonly List<int> _earthquakeQueue = new();
+    public bool HasTornado;
+    public HexCoord TornadoCoord;
+    public readonly List<HexCoord> WeatherStrikeCells = new();
+    public int WeatherStrikeSerial;
+    private int _lastThunderStrikeTurn = -1;
+    private int _lastTornadoDamageTurn = -1;
+    public readonly List<GiftDrop> Gifts = new();
+    public readonly List<(HexCoord Coord, PlayerId Owner)> AutoGiftPickups = new();
+    private int _nextGiftId = 1;
+
+    /// <summary>未拾取礼物所在格（含重复格，供表现层/调试遍历）。</summary>
+    public IEnumerable<HexCoord> GiftCells =>
+        Gifts.Where(g => !g.Collected).Select(g => g.Coord);
+    public readonly List<string> WeatherLog = new();
+    public string WeatherMessage = "";
+    public int WeatherGiftSerial;
+
     /// <summary>当前回合是否还没走完双方（联机镜像下不能按 Player/Enemy 判断）。</summary>
     public bool FirstHalf = true;
     public PlayerId Winner = PlayerId.None;
@@ -218,6 +255,7 @@ public sealed class BattleState
 
     /// <summary>联机双方的全局随机种子（两端一致）。</summary>
     public int GlobalSeed;
+    private int _weatherSeed;
 
     /// <summary>全局随机卡牌生成序号（两端按同一出牌顺序递增）。</summary>
     public int RandomRollSerial;
@@ -229,7 +267,9 @@ public sealed class BattleState
         id == PlayerId.Player ? (_rngPlayer ??= new Random()) : (_rngEnemy ??= new Random());
 
     public static BattleState Create(MapDef map, AIDifficulty difficulty) =>
-        Create(map, difficulty, null, null, Session.StartHqLevel, 1, 0, 0);
+        Create(map, difficulty, null, null, Session.StartHqLevel, 1, 0, 0,
+            weatherEnabled: Session.WeatherEnabled, weatherGrace: Session.WeatherGraceTurns,
+            weatherMask: Session.WeatherMask);
 
     /// <summary>
     /// 联机/自定义开局：可以指定双方卡组、基地等级、随机种子（0 = 不固定，单机随机）。
@@ -243,7 +283,10 @@ public sealed class BattleState
         int enemyHqLevel = 1,
         int playerSeed = 0,
         int enemySeed = 0,
-        bool mirrorHq = false)
+        bool mirrorHq = false,
+        bool weatherEnabled = false,
+        int weatherGrace = 2,
+        int weatherMask = 0x1FE)
     {
         GameDatabase.EnsureLoaded();
         var s = new BattleState
@@ -300,6 +343,9 @@ public sealed class BattleState
         s.SpawnBuilding("hq", PlayerId.Enemy, enemyHq, level: Mathf.Max(1, enemyHqLevel), free: true);
 
         s.RecalculateZones();
+        // 单机双方种子为 0 时也要有独立的天气序列；联机两端 GlobalSeed 相同，因此仍完全同步。
+        s._weatherSeed = s.GlobalSeed != 0 ? s.GlobalSeed : new Random().Next(1, int.MaxValue);
+        s.SetupWeather(weatherEnabled, weatherGrace, weatherMask);
         return s;
     }
 
@@ -780,6 +826,11 @@ public sealed class BattleState
         if (!u.IsAir)
             steps += TerrainMoveDelta(TerrainAt(u.Coord));
 
+        if (Weather == WeatherType.Sandstorm)
+            steps -= 1;
+        else if (Weather == WeatherType.ClearSky)
+            steps += 1;
+
         return Mathf.Max(1, steps);
     }
 
@@ -789,7 +840,12 @@ public sealed class BattleState
         if (u == null)
             return 0;
 
-        return u.Def.Range + (TerrainAt(u.Coord) == TerrainType.Snow ? 1 : 0);
+        int range = u.Def.Range + (TerrainAt(u.Coord) == TerrainType.Snow ? 1 : 0);
+        if (Weather == WeatherType.Sandstorm)
+            range -= 1;
+        else if (Weather == WeatherType.ClearSky)
+            range += 1;
+        return Mathf.Max(1, range);
     }
 
     /// <summary>某玩家本回合所有产出金币的来源（建筑）。</summary>
@@ -831,6 +887,9 @@ public sealed class BattleState
         };
         cell.Units.Add(u);
         Units.Add(u);
+
+        // 卡牌出兵、建筑出兵、航母出兵都走这里：落到礼物格立即拾取。
+        CollectGift(u);
         return u;
     }
 
@@ -1329,8 +1388,9 @@ public sealed class BattleState
         Cell from = Cell(u.Coord);
         from?.Units.Remove(u);
         u.Coord = to;
-        Cell(  to).Units.Add(u);
+        Cell(to).Units.Add(u);
         u.Moved = true;
+        CollectGift(u);
         return true;
     }
 
@@ -2532,6 +2592,10 @@ public sealed class BattleState
 
         st.Hand.RemoveAt(at);
 
+        // 月虹：打出一张牌后抽一张（先移除再抽，避免手牌上限时把刚打出的牌算回手牌）
+        if (Weather == WeatherType.Moonbow)
+            DrawCard(st, 1);
+
         // 先判断这一张带哪些实例关键字，后面决定要不要保留到弃牌堆/消耗堆
         LastRemovedEthereal = TakeEtherealOccurrence(st, cardId, occurrence);
         LastRemovedProducedExhaust = TakeOccurrence(st.ProducedExhaust, cardId, occurrence);
@@ -2833,6 +2897,423 @@ public sealed class BattleState
         }
     }
 
+    // ─────────────────────────── 天气 ───────────────────────────
+
+    public void SetupWeather(bool enabled, int graceTurns, int mask = 0x1FE)
+    {
+        WeatherEnabled = enabled;
+        WeatherGraceTurns = Mathf.Clamp(graceTurns, 0, 9);
+        WeatherMask = mask & 0x1FE;
+        WeatherGraceLeft = WeatherEnabled ? WeatherGraceTurns : 0;
+        Weather = WeatherType.None;
+        WeatherTurnsLeft = 0;
+        HasTornado = false;
+        Gifts.Clear();
+        AutoGiftPickups.Clear();
+        _nextGiftId = 1;
+        WeatherStrikeCells.Clear();
+        WeatherStrikeSerial = 0;
+        _lastThunderStrikeTurn = -1;
+        _lastTornadoDamageTurn = -1;
+        _earthquakeQueue.Clear();
+        WeatherHeals.Clear();
+        WeatherHealSerial = 0;
+        WeatherLog.Clear();
+        WeatherSerial++;
+        WeatherMessage = "";
+    }
+
+    private Random WeatherRng(int salt) =>
+        new(unchecked(_weatherSeed * 486187739 + TurnNumber * 7919
+            + WeatherSwitchCount * 104729 + salt));
+
+    /// <summary>每完成一整个大回合调用一次；由 EndTurn 统一驱动，联机两端顺序一致。</summary>
+    public void AdvanceWeatherRound()
+    {
+        if (!WeatherEnabled || Phase == BattlePhase.GameOver)
+            return;
+
+        // 回合结束时还没播完的地震倒塌，直接一次性结算，避免下一轮天气被阻塞。
+        FlushEarthquakeQueue();
+
+        if (Weather != WeatherType.None)
+        {
+            ApplyWeatherTick();
+            WeatherTurnsLeft--;
+            if (WeatherTurnsLeft <= 0)
+            {
+                Weather = WeatherType.None;
+                HasTornado = false;
+                WeatherTurnsLeft = 0;
+                WeatherGraceLeft = WeatherGraceTurns;
+                WeatherSerial++;
+                WeatherMessage = Loc.Name("天气结束", "Weather cleared");
+                CheckVictory();
+            }
+            return;
+        }
+
+        if (WeatherGraceLeft > 0)
+        {
+            WeatherGraceLeft--;
+            if (WeatherGraceLeft > 0)
+                return;
+        }
+
+        StartWeather();
+    }
+
+    /// <summary>开发调试：直接起一种天气。</summary>
+    /// <summary>开发调试：把礼物放到地图中心附近，便于截图。</summary>
+    /// <summary>开发调试：把礼物放到地图前景空地块。</summary>
+
+
+
+    public void DebugForceWeather(WeatherType type)
+    {
+        WeatherEnabled = true;
+        Weather = type;
+        WeatherDef def = WeatherCatalog.Get(type);
+        if (def == null)
+            return;
+        WeatherTurnsLeft = def.Duration;
+        WeatherSerial++;
+        WeatherSwitchCount++;
+        WeatherMessage = def.Name;
+        ApplyWeatherStart(def);
+        CheckVictory();
+    }
+
+    private void StartWeather()
+    {
+        Weather = WeatherCatalog.RandomType(WeatherRng(17), WeatherMask);
+        WeatherDef def = WeatherCatalog.Get(Weather);
+        if (def == null)
+        {
+            Weather = WeatherType.None;
+            return;
+        }
+
+        WeatherTurnsLeft = def.Duration;
+        WeatherSerial++;
+        WeatherSwitchCount++;
+        WeatherMessage = def.Name;
+        WeatherLog.Add(def.Name);
+        ApplyWeatherStart(def);
+        CheckVictory();
+    }
+
+    private void ApplyWeatherStart(WeatherDef def)
+    {
+        FlushEarthquakeQueue();
+        _earthquakeQueue.Clear();
+        Random rng = WeatherRng((int)Weather * 97 + 3);
+        switch (Weather)
+        {
+            case WeatherType.Thunderstorm:
+                ApplyThunderStrikes();
+                break;
+            case WeatherType.Tornado:
+            {
+                List<HexCoord> cells = Cells.Keys.ToList();
+                TornadoCoord = cells[rng.Next(cells.Count)];
+                HasTornado = true;
+                ApplyTornadoDamage();
+                break;
+            }
+            case WeatherType.Earthquake:
+            {
+                List<BuildingInst> candidates = Buildings
+                    .Where(b => !b.IsHq && !b.IsDead)
+                    .OrderBy(b => b.Id)
+                    .ToList();
+                for (int i = candidates.Count - 1; i > 0; i--)
+                {
+                    int j = rng.Next(i + 1);
+                    (candidates[i], candidates[j]) = (candidates[j], candidates[i]);
+                }
+
+                // 地震出现时先锁定目标，由战斗场景逐一播放倒塌；不在状态层瞬间移除。
+                foreach (BuildingInst b in candidates.Take(4))
+                    _earthquakeQueue.Add(b.Id);
+                if (_earthquakeQueue.Count > 0)
+                    WeatherLog.Add($"地震锁定 {_earthquakeQueue.Count} 栋建筑");
+                break;
+            }
+            case WeatherType.GiftRain:
+            {
+                // 新礼物追加到战场，不清理之前天气留下的礼物。
+                // 同一格允许落多个礼物：随机选择空地块时可以重复。
+                List<HexCoord> cells = Cells.Values
+                    .Where(c => c.Building == null)
+                    .Select(c => c.Coord)
+                    .ToList();
+                if (cells.Count == 0)
+                    break;
+
+                for (int i = 0; i < 5; i++)
+                {
+                    HexCoord c = cells[rng.Next(cells.Count)];
+                    var drop = new GiftDrop
+                    {
+                        Id = _nextGiftId++,
+                        Coord = c,
+                    };
+                    Gifts.Add(drop);
+
+                    // 礼物正落在军队头顶时，该格第一支存活军队直接拾取。
+                    UnitInst collector = Cell(c)?.Units.FirstOrDefault(u => u.Alive);
+                    if (collector != null)
+                    {
+                        drop.Collected = true;
+                        StateOf(collector.Owner).Gold += 800;
+                        AutoGiftPickups.Add((c, collector.Owner));
+                        WeatherGiftSerial++;
+                        WeatherLog.Add($"{collector.Def.NameZh} 直接拾取礼物 +800");
+                    }
+                }
+                WeatherGiftSerial++;
+                break;
+            }
+        }
+    }
+
+    public int EarthquakePendingCount => _earthquakeQueue.Count;
+
+    /// <summary>地震序列：摧毁队列中的下一栋建筑。由战斗场景按视觉节奏调用。</summary>
+    public bool TryDestroyNextEarthquakeBuilding(out BuildingInst destroyed)
+    {
+        destroyed = null;
+        while (_earthquakeQueue.Count > 0)
+        {
+            int id = _earthquakeQueue[0];
+            _earthquakeQueue.RemoveAt(0);
+            BuildingInst b = Buildings.FirstOrDefault(x => x.Id == id && !x.IsDead && !x.IsHq);
+            if (b == null)
+                continue;
+
+            RemoveBuildingNoRefund(b);
+            CheckVictory();
+            destroyed = b;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>立即清空地震倒塌队列；用于回合结束/天气切换时兜底。</summary>
+    public int FlushEarthquakeQueue()
+    {
+        int removed = 0;
+        while (TryDestroyNextEarthquakeBuilding(out _))
+            removed++;
+        return removed;
+    }
+
+    private void ApplyWeatherTick()
+    {
+        switch (Weather)
+        {
+            case WeatherType.Thunderstorm:
+                ApplyThunderStrikes();
+                break;
+            case WeatherType.Tornado:
+            {
+                List<HexCoord> next = TornadoCoord.Neighbors()
+                    .Where(Cells.ContainsKey)
+                    .ToList();
+                if (next.Count > 0)
+                {
+                    Random rng = WeatherRng(41);
+                    TornadoCoord = next[rng.Next(next.Count)];
+                }
+                ApplyTornadoDamage();
+                break;
+            }
+            case WeatherType.Sandstorm:
+            {
+                foreach (UnitInst u in Units.Where(u => u.Alive &&
+                                                        TerrainAt(u.Coord) == TerrainType.Sand).ToList())
+                {
+                    int dmg = Mathf.Max(1, Mathf.CeilToInt(u.MaxHp * 0.2f));
+                    u.Hp -= dmg;
+                    WeatherLog.Add($"{u.Def.NameZh} 沙尘暴 -{dmg}");
+                    if (u.Hp <= 0)
+                        KillUnit(u, Cell(u.Coord));
+                }
+                break;
+            }
+            case WeatherType.Aurora:
+            {
+                WeatherHeals.Clear();
+
+                foreach (UnitInst u in Units.Where(u => u.Alive))
+                {
+                    int before = u.Hp;
+                    u.Hp = Mathf.Min(u.MaxHp, u.Hp + Mathf.CeilToInt(u.MaxHp * 0.3f));
+                    int healed = u.Hp - before;
+                    if (healed > 0)
+                        WeatherHeals.Add((u.Coord, u.Owner, true, 0.9f, healed));
+                }
+
+                foreach (BuildingInst b in Buildings.Where(b => !b.IsDead))
+                {
+                    int before = b.Hp;
+                    b.Hp = Mathf.Min(b.MaxHp, b.Hp + Mathf.CeilToInt(b.MaxHp * 0.3f));
+                    int healed = b.Hp - before;
+                    if (healed > 0)
+                        WeatherHeals.Add((b.Coord, b.Owner, false, 1.25f, healed));
+                }
+
+                WeatherHealSerial++;
+                break;
+            }
+        }
+    }
+
+    /// <summary>雷雨每个大回合随机选择 5 个格子落雷并结算伤害。</summary>
+    private void ApplyThunderStrikes()
+    {
+        // 同一大回合只结算一次，避免天气开始/回合推进被重复调用时二次伤害。
+        if (_lastThunderStrikeTurn == TurnNumber)
+            return;
+        _lastThunderStrikeTurn = TurnNumber;
+
+        WeatherStrikeCells.Clear();
+        List<HexCoord> cells = Cells.Keys.ToList();
+        Random rng = WeatherRng(53 + WeatherTurnsLeft * 13);
+        for (int i = cells.Count - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            (cells[i], cells[j]) = (cells[j], cells[i]);
+        }
+
+        foreach (HexCoord c in cells.Take(5))
+        {
+            WeatherStrikeCells.Add(c);
+            DamageCell(c, 175);
+            if (Phase == BattlePhase.GameOver)
+                break;
+        }
+        WeatherStrikeSerial++;
+    }
+
+    private void ApplyTornadoDamage()
+    {
+        if (Weather != WeatherType.Tornado || !HasTornado)
+            return;
+        if (_lastTornadoDamageTurn == TurnNumber)
+            return;
+        _lastTornadoDamageTurn = TurnNumber;
+
+        bool anyDeath = false;
+        foreach (UnitInst u in Units.Where(u => u.Alive &&
+                                                HexCoord.Distance(u.Coord, TornadoCoord) <= 1).ToList())
+        {
+            int dmg = Mathf.Max(1, Mathf.CeilToInt(u.Hp * 0.5f));
+            u.Hp -= dmg;
+            WeatherLog.Add($"{u.Def.NameZh} 龙卷风 -{dmg}");
+            if (u.Hp <= 0)
+            {
+                u.Hp = 0;
+                KillUnit(u, Cell(u.Coord));
+                anyDeath = true;
+            }
+        }
+
+        foreach (BuildingInst b in Buildings.Where(b => !b.IsDead &&
+                                                        HexCoord.Distance(b.Coord, TornadoCoord) <= 1).ToList())
+        {
+            int dmg = Mathf.Max(1, Mathf.CeilToInt(b.Hp * 0.5f));
+            b.Hp -= dmg;
+            WeatherLog.Add($"{b.Def.NameZh} 龙卷风 -{dmg}");
+            if (b.Hp <= 0)
+            {
+                b.Hp = 0;
+                RemoveBuildingNoRefund(b);
+                anyDeath = true;
+            }
+        }
+
+        if (anyDeath)
+            CheckVictory();
+    }
+
+    private void DamageCell(HexCoord coord, int damage)
+    {
+        Cell cell = Cell(coord);
+        if (cell == null)
+            return;
+
+        bool anyDeath = false;
+        foreach (UnitInst u in cell.Units.ToList())
+        {
+            if (!u.Alive)
+                continue;
+            u.Hp -= damage;
+            WeatherLog.Add($"{u.Def.NameZh} 雷雨 -{damage}");
+            if (u.Hp <= 0)
+            {
+                // 血量归零立即移除，触发阵亡动画/结算，而不是留到回合末尾。
+                u.Hp = 0;
+                KillUnit(u, cell);
+                anyDeath = true;
+            }
+        }
+
+        if (cell.Building != null && !cell.Building.IsDead)
+        {
+            cell.Building.Hp -= damage;
+            WeatherLog.Add($"{cell.Building.Def.NameZh} 雷雨 -{damage}");
+            if (cell.Building.Hp <= 0)
+            {
+                cell.Building.Hp = 0;
+                RemoveBuildingNoRefund(cell.Building);
+                anyDeath = true;
+            }
+        }
+
+        if (anyDeath)
+            CheckVictory();
+    }
+
+    private void RemoveBuildingNoRefund(BuildingInst b)
+    {
+        if (b == null)
+            return;
+
+        Cell cell = Cell(b.Coord);
+        if (cell != null && cell.Building == b)
+            cell.Building = null;
+        Buildings.Remove(b);
+        RecalculateZones();
+    }
+
+    private void CollectGift(UnitInst u)
+    {
+        if (u == null)
+            return;
+
+        // 军队进入有多个礼物的格子时，一次性拾取该格所有未拾取礼物。
+        List<GiftDrop> gifts = Gifts
+            .Where(g => !g.Collected && g.Coord == u.Coord)
+            .ToList();
+        if (gifts.Count == 0)
+            return;
+
+        foreach (GiftDrop gift in gifts)
+        {
+            gift.Collected = true;
+            StateOf(u.Owner).Gold += 800;
+            WeatherGiftSerial++;
+            WeatherLog.Add($"{u.Def.NameZh} 拾取礼物 +800");
+        }
+
+        WeatherMessage = gifts.Count > 1
+            ? Loc.Name($"拾取 {gifts.Count} 个礼物 +{gifts.Count * 800}$",
+                $"Collected {gifts.Count} gifts +{gifts.Count * 800}$")
+            : Loc.Name("拾取礼物 +800$", "Gift +800$");
+    }
+
     public void EndTurn()
     {
         if (Phase == BattlePhase.GameOver)
@@ -2856,6 +3337,9 @@ public sealed class BattleState
         {
             FirstHalf = true;
             TurnNumber++;
+            AdvanceWeatherRound();
+            if (Phase == BattlePhase.GameOver)
+                return;
             BeginTurn(next);
         }
     }

@@ -27,6 +27,7 @@ public partial class HexMapView : Node3D
     private bool _mirrored;
     private readonly Dictionary<int, List<ShaderMaterial>> _subMats = new();
     private readonly Dictionary<int, List<StandardMaterial3D>> _subOutlines = new();
+    private readonly Dictionary<int, List<ShaderMaterial>> _subShaderOutlines = new();
     private readonly Dictionary<int, List<MeshInstance3D>> _subMeshes = new();
     private readonly Dictionary<int, float> _subAlpha = new();
 
@@ -1027,6 +1028,7 @@ public partial class HexMapView : Node3D
     {
         var list = new List<ShaderMaterial>();
         var outlines = new List<StandardMaterial3D>();
+        var shaderOutlines = new List<ShaderMaterial>();
         var meshes = new List<MeshInstance3D>();
         foreach (MeshInstance3D mi in view.FindChildren("*", "MeshInstance3D", true, false)
                      .Cast<MeshInstance3D>())
@@ -1042,8 +1044,16 @@ public partial class HexMapView : Node3D
                 {
                     var copy = (ShaderMaterial)sm.Duplicate(true);
                     copy.Shader = CelNormal;
+                    var outline = new ShaderMaterial { Shader = OutlineNormal };
+                    outline.SetShaderParameter("outline_color", new Vector3(0.231f, 0.180f, 0.086f));
+                    outline.SetShaderParameter("width", 0.028f);
+                    outline.SetShaderParameter("outline_alpha", 1f);
+                    outline.SetShaderParameter("screen_uniform", true);
+                    outline.SetShaderParameter("reference_distance", 21f);
+                    copy.NextPass = outline;
                     mi.SetSurfaceOverrideMaterial(s, copy);
                     list.Add(copy);
+                    shaderOutlines.Add(outline);
                 }
                 else if (src is StandardMaterial3D st &&
                          (st.ResourceName.Contains("Outline", System.StringComparison.OrdinalIgnoreCase)))
@@ -1058,6 +1068,7 @@ public partial class HexMapView : Node3D
 
         _subMats[unitId] = list;
         _subOutlines[unitId] = outlines;
+        _subShaderOutlines[unitId] = shaderOutlines;
         _subMeshes[unitId] = meshes;
         _subAlpha[unitId] = 1f;
     }
@@ -1086,6 +1097,18 @@ public partial class HexMapView : Node3D
             if (transparent)
                 m.SetShaderParameter("alpha", alpha);
 
+        }
+
+        if (_subShaderOutlines.TryGetValue(unitId, out List<ShaderMaterial> shaderOutlines))
+        {
+            int count = Mathf.Min(mats.Count, shaderOutlines.Count);
+            for (int i = 0; i < count; i++)
+            {
+                if (!IsInstanceValid(mats[i]) || !IsInstanceValid(shaderOutlines[i]))
+                    continue;
+                mats[i].NextPass = shaderOutlines[i];
+                shaderOutlines[i].SetShaderParameter("outline_alpha", alpha);
+            }
         }
 
         if (_subOutlines.TryGetValue(unitId, out List<StandardMaterial3D> outlines))
@@ -1267,6 +1290,16 @@ public partial class HexMapView : Node3D
     }
 
     /// <summary>建筑血条的世界锚点（屋顶上方）。</summary>
+    /// <summary>礼物停靠高度：有建筑时在其屋顶上，否则在地砖上。</summary>
+    public float GiftAnchorY(HexCoord coord, float clearance = 0.21f)
+    {
+        Cell cell = _state?.Cell(coord);
+        if (cell?.Building != null && !cell.Building.IsDead &&
+            _buildingTops.TryGetValue(cell.Building.Id, out float top) && top > 0.01f)
+            return TileTop + top + clearance;
+        return TileTop + clearance;
+    }
+
     public Vector3 BuildingBarAnchor(BuildingInst b)
     {
         float top = 1.2f;

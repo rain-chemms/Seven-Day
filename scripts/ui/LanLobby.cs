@@ -25,6 +25,7 @@ public partial class LanLobby : Control
     private PanelContainer _restorePanel;
     private PanelContainer _panel;
     private ColorRect _backdrop;
+    private PopupPanel _weatherFilterPopup;
     private Tween _anim;
     private bool _closing;
     private bool _starting;
@@ -252,6 +253,27 @@ public partial class LanLobby : Control
 
         box.AddChild(hqRow);
 
+        var weatherRow = new HBoxContainer();
+        weatherRow.AddThemeConstantOverride("separation", 10);
+        var weatherLabel = new Label { Text = Loc.T("settings.weather") };
+        weatherLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        weatherLabel.AddThemeFontSizeOverride("font_size", 15);
+        weatherRow.AddChild(weatherLabel);
+        var weatherToggle = new CheckButton { ButtonPressed = Session.WeatherEnabled };
+        weatherToggle.Toggled += on => { Session.WeatherEnabled = on; Settings.Save(); };
+        weatherRow.AddChild(weatherToggle);
+        var grace = new OptionButton();
+        for (int i = 0; i <= 9; i++) grace.AddItem(i + " 回合", i);
+        grace.Selected = Mathf.Clamp(Session.WeatherGraceTurns, 0, 9);
+        grace.ItemSelected += i => { Session.WeatherGraceTurns = (int)i; Settings.Save(); };
+        weatherRow.AddChild(grace);
+        var filterButton = new Button { Text = Loc.T("settings.weather_filter") };
+        filterButton.Pressed += ShowWeatherFilter;
+        ButtonJuice.Attach(filterButton);
+        UiSound.Attach(filterButton);
+        weatherRow.AddChild(filterButton);
+        box.AddChild(weatherRow);
+
 
         // 主机
         var hostRow = new HBoxContainer();
@@ -367,6 +389,17 @@ public partial class LanLobby : Control
     }
 
     /// <summary>根据输入有效性刷新字体颜色与两个按钮的可用状态。</summary>
+    private void ShowWeatherFilter()
+    {
+        if (_weatherFilterPopup != null && IsInstanceValid(_weatherFilterPopup))
+        {
+            _weatherFilterPopup.Hide();
+            _weatherFilterPopup = null;
+        }
+
+        _weatherFilterPopup = WeatherFilterUi.Create(this);
+    }
+
     private void ValidateInputs()
     {
         bool portOk = IsValidPort(_port?.Text, out _);
@@ -921,4 +954,14 @@ public partial class LanLobby : Control
         SetStatus($"已收到开局配置（我方 {cfg.DeckClient.Length} 张卡），进入战斗");
         PlayClose(() => GetTree().ChangeSceneToFile("res://scenes/battleScene.tscn"));
     }
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (_weatherFilterPopup != null && IsInstanceValid(_weatherFilterPopup) && _weatherFilterPopup.Visible &&
+            @event is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right })
+        {
+            _weatherFilterPopup.Hide();
+            GetViewport().SetInputAsHandled();
+        }
+    }
+
 }

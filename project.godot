@@ -40,6 +40,10 @@ project/assembly_name="Seven-Day"
 
 enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
 
+[gui]
+
+timers/tooltip_delay_sec=0.2
+
 [input_devices]
 
 pointing/android/enable_long_press_as_right_click=true

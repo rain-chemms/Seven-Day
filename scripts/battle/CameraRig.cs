@@ -170,6 +170,7 @@ public partial class CameraRig : Node3D
     }
 
     private float _shakeAmount;
+    private float _shakeFloor;
     private float _shakeLeft;
     private float _shakeDuration = 1f;
 
@@ -177,6 +178,17 @@ public partial class CameraRig : Node3D
     public void Shake(float amount, float duration)
     {
         _shakeAmount = Mathf.Max(_shakeAmount, amount);
+        _shakeFloor = 0f;
+        _shakeDuration = Mathf.Max(duration, 0.05f);
+        _shakeLeft = _shakeDuration;
+        SetProcess(true);
+    }
+
+    /// <summary>持续震动：整段保持较高幅度，只随时间缓慢减弱。</summary>
+    public void ShakeSustained(float amount, float duration, float floor)
+    {
+        _shakeAmount = Mathf.Max(_shakeAmount, amount);
+        _shakeFloor = Mathf.Clamp(floor, 0f, 0.95f);
         _shakeDuration = Mathf.Max(duration, 0.05f);
         _shakeLeft = _shakeDuration;
         SetProcess(true);
@@ -213,7 +225,8 @@ public partial class CameraRig : Node3D
         Vector3 shake = Vector3.Zero;
         if (_shakeLeft > 0f)
         {
-            float k = _shakeAmount * Mathf.Clamp(_shakeLeft / _shakeDuration, 0f, 1f);
+            float remain = Mathf.Clamp(_shakeLeft / _shakeDuration, 0f, 1f);
+            float k = _shakeAmount * (_shakeFloor + (1f - _shakeFloor) * remain);
             shake = new Vector3((float)GD.RandRange(-k, k), (float)GD.RandRange(-k, k) * 0.6f, 0f);
         }
 

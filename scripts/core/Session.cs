@@ -31,6 +31,39 @@ public static class Session
     }
 
     /// <summary>一局结束后回填，用于结算画面与历史记录。</summary>
+    /// <summary>是否开启天气；单人开局与联机建房共用。</summary>
+    public static bool WeatherEnabled
+    {
+        get => Settings.GetBool("battle", "weather_enabled", true);
+        set => Settings.SetBool("battle", "weather_enabled", value);
+    }
+
+    /// <summary>无天气持续回合数（0~9）。</summary>
+    public static int WeatherGraceTurns
+    {
+        get => Mathf.Clamp(Settings.GetInt("battle", "weather_grace", 2), 0, 9);
+        set => Settings.SetInt("battle", "weather_grace", Mathf.Clamp(value, 0, 9));
+    }
+
+    /// <summary>全部天气位（WeatherType 1~8），bit0 保留给无天气。</summary>
+    public const int AllWeatherMask = 0x1FE;
+
+    /// <summary>允许出现的天气集合；默认全开。</summary>
+    public static int WeatherMask
+    {
+        get => Settings.GetInt("battle", "weather_mask", AllWeatherMask) & AllWeatherMask;
+        set => Settings.SetInt("battle", "weather_mask", value & AllWeatherMask);
+    }
+
+    public static bool WeatherTypeEnabled(Battle.WeatherType type) =>
+        (WeatherMask & (1 << (int)type)) != 0;
+
+    public static void SetWeatherTypeEnabled(Battle.WeatherType type, bool enabled)
+    {
+        int bit = 1 << (int)type;
+        WeatherMask = enabled ? WeatherMask | bit : WeatherMask & ~bit;
+    }
+
     public static int LastTurns;
     public static bool LastWin;
 

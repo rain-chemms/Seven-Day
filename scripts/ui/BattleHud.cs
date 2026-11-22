@@ -59,6 +59,16 @@ public partial class BattleHud : CanvasLayer
     private Control _effects;
 
     private Label _turnLabel;
+    private PanelContainer _weatherPanel;
+    private TextureRect _weatherIcon;
+    private Label _weatherName;
+    private Label _weatherTurns;
+    private WeatherFx _weatherFx;
+    private WeatherAnnouncement _weatherAnnouncement;
+    private int _lastWeatherSerial;
+    private int _lastWeatherTurns = -1;
+    private int _lastWeatherGrace = -1;
+
     private Label _goldLabel;
     private Label _enemyGoldLabel;
     private Label _toastLabel;
@@ -120,6 +130,8 @@ public partial class BattleHud : CanvasLayer
     {
         Layer = 10;
         BuildUi();
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--demo-weather-announce") >= 0)
+            CallDeferred(nameof(DemoWeatherAnnouncement));
     }
 
     private void BuildUi()
@@ -151,6 +163,10 @@ public partial class BattleHud : CanvasLayer
         // 血条：在地图之上、手牌之下
         _bars = new HealthBars { Name = "HealthBars" };
         _root.AddChild(_bars);
+
+        _weatherFx = new WeatherFx { Name = "WeatherFx" };
+        _weatherFx.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_weatherFx);
 
         // ── 顶部信息条 ──
         var top = new PanelContainer
@@ -239,6 +255,42 @@ public partial class BattleHud : CanvasLayer
             if (_gearButton != null)
                 _gearButton.PivotOffset = _gearButton.Size * 0.5f;
         }).CallDeferred();
+
+        _weatherPanel = new PanelContainer
+        {
+            Name = "WeatherPanel",
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            CustomMinimumSize = new Vector2(240, 42),
+            ZIndex = 260,
+        };
+        _weatherPanel.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
+        _weatherPanel.OffsetLeft = -120;
+        _weatherPanel.OffsetTop = 108;
+        _weatherPanel.OffsetRight = 120;
+        _weatherPanel.OffsetBottom = 150;
+        _weatherPanel.AddThemeStyleboxOverride("panel",
+            UiTheme.Box("res://gameAsset/textures/ui/panel/panel_light.png", 18, 8, 4, 8, 4));
+        var weatherRow = new HBoxContainer();
+        weatherRow.AddThemeConstantOverride("separation", 8);
+        _weatherPanel.AddChild(weatherRow);
+        _weatherIcon = new TextureRect
+        {
+            CustomMinimumSize = new Vector2(34, 34),
+            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+        };
+        weatherRow.AddChild(_weatherIcon);
+        var weatherText = new VBoxContainer();
+        weatherText.AddThemeConstantOverride("separation", -2);
+        weatherRow.AddChild(weatherText);
+        _weatherName = NewLabel("无天气", 16);
+        _weatherTurns = NewLabel("", 12);
+        weatherText.AddChild(_weatherName);
+        weatherText.AddChild(_weatherTurns);
+        _root.AddChild(_weatherPanel);
+
+        _weatherAnnouncement = new WeatherAnnouncement { Name = "WeatherAnnouncement" };
+        _root.AddChild(_weatherAnnouncement);
 
         // ── 右侧信息面板 ──
         _infoPanel = new PanelContainer
@@ -601,6 +653,11 @@ public partial class BattleHud : CanvasLayer
     public void Setup(BattleState state)
     {
         _state = state;
+        _weatherFx?.SetState(state);
+        _lastWeatherSerial = -1;
+        _lastWeatherTurns = -1;
+        _lastWeatherGrace = -1;
+        RefreshWeather();
 
 
         // 手牌顺序编号（设置里的开关，默认开）
@@ -2096,7 +2153,11 @@ public partial class BattleHud : CanvasLayer
     }
 
     /// <summary>血条层：设置相机与每帧的数据。</summary>
-    public void SetHealthCamera(Camera3D camera) => _bars?.SetCamera(camera);
+    public void SetHealthCamera(Camera3D camera)
+    {
+        _bars?.SetCamera(camera);
+        _weatherFx?.SetCamera(camera);
+    }
 
     public void SetHealthBars(List<HealthBars.Bar> bars) => _bars?.SetBars(bars);
 
@@ -2560,6 +2621,7 @@ public partial class BattleHud : CanvasLayer
 
     public override void _Process(double delta)
     {
+        RefreshWeather();
         if (_toastTimer > 0)
         {
             _toastTimer -= (float)delta;
@@ -2567,6 +2629,64 @@ public partial class BattleHud : CanvasLayer
                 _toastPanel.Modulate = new Color(1, 1, 1, 0);
             else if (_toastTimer < 0.6f)
                 _toastPanel.Modulate = new Color(1, 1, 1, _toastTimer / 0.6f);
+        }
+    }
+
+    private void DemoWeatherAnnouncement()
+    {
+        WeatherType type = _state != null && _state.Weather != WeatherType.None
+            ? _state.Weather
+            : WeatherType.Thunderstorm;
+        WeatherDef def = WeatherCatalog.Get(type);
+        if (def != null)
+            _weatherAnnouncement?.Show(type, def.Name, def.Desc);
+    }
+
+    private void RefreshWeather()
+    {
+        if (_state == null || _weatherPanel == null)
+            return;
+
+        if (_lastWeatherSerial == _state.WeatherSerial &&
+            _lastWeatherTurns == _state.WeatherTurnsLeft &&
+            _lastWeatherGrace == _state.WeatherGraceLeft)
+            return;
+
+        bool changed = _lastWeatherSerial >= 0 && _lastWeatherSerial != _state.WeatherSerial;
+        _lastWeatherSerial = _state.WeatherSerial;
+        _lastWeatherTurns = _state.WeatherTurnsLeft;
+        _lastWeatherGrace = _state.WeatherGraceLeft;
+
+        WeatherDef def = WeatherCatalog.Get(_state.Weather);
+        _weatherPanel.Visible = true;
+        if (def == null)
+        {
+            _weatherName.Text = Loc.T("weather.none");
+            _weatherTurns.Text = _state.WeatherGraceLeft > 0
+                ? Loc.T("weather.grace_left", _state.WeatherGraceLeft)
+                : Loc.T("weather.grace_soon");
+            _weatherIcon.Texture = null;
+        }
+        else
+        {
+            _weatherName.Text = def.Name;
+            _weatherTurns.Text = Loc.T("weather.turns_left", _state.WeatherTurnsLeft);
+            _weatherIcon.Texture = GD.Load<Texture2D>(def.Icon);
+        }
+
+        if (changed)
+        {
+            if (def != null && System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--no-weather-announce") < 0)
+                _weatherAnnouncement?.Show(_state.Weather, def.Name, def.Desc);
+            else
+                Toast(Loc.T("weather.ended"));
+            _weatherPanel.PivotOffset = _weatherPanel.Size * 0.5f;
+            _weatherPanel.Scale = Vector2.One * 0.82f;
+            _weatherPanel.Modulate = new Color(1, 1, 1, 0);
+            Tween tw = CreateTween().SetParallel(true);
+            tw.TweenProperty(_weatherPanel, "scale", Vector2.One, 0.28f)
+                .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+            tw.TweenProperty(_weatherPanel, "modulate:a", 1f, 0.18f);
         }
     }
 

@@ -17,6 +17,7 @@ public partial class MapSelect : Control
     private TextureRect _mapPreview;
     private PanelContainer _panel;
     private ColorRect _bg;
+    private PopupPanel _weatherFilterPopup;
     private Tween _anim;
 
 
@@ -186,6 +187,27 @@ public partial class MapSelect : Control
         SelectDiff(Session.Difficulty);
 
         // 弹性空隙：难度与底部按钮之间拉开距离，右栏不再挤在上半部分
+        // 天气：人机对战开局前直接配置
+        right.AddChild(SectionLine());
+        var weatherLabel = new Label { Text = Loc.T("settings.weather") };
+        weatherLabel.AddThemeFontSizeOverride("font_size", 15);
+        right.AddChild(weatherLabel);
+        var weatherRow = new HBoxContainer();
+        weatherRow.AddThemeConstantOverride("separation", 8);
+        var weatherToggle = new CheckButton { ButtonPressed = Session.WeatherEnabled };
+        weatherToggle.Toggled += on => { Session.WeatherEnabled = on; Settings.Save(); };
+        weatherRow.AddChild(weatherToggle);
+        var weatherGrace = new OptionButton();
+        for (int i = 0; i <= 9; i++) weatherGrace.AddItem(i + " 回合", i);
+        weatherGrace.Selected = Mathf.Clamp(Session.WeatherGraceTurns, 0, 9);
+        weatherGrace.ItemSelected += i => { Session.WeatherGraceTurns = (int)i; Settings.Save(); };
+        weatherRow.AddChild(weatherGrace);
+        var filterButton = new Button { Text = Loc.T("settings.weather_filter") };
+        filterButton.Pressed += ShowWeatherFilter;
+        ButtonJuice.Attach(filterButton);
+        UiSound.Attach(filterButton);
+        weatherRow.AddChild(filterButton);
+        right.AddChild(weatherRow);
         right.AddChild(new Control { SizeFlagsVertical = SizeFlags.ExpandFill });
 
         right.AddChild(SectionLine());
@@ -212,6 +234,9 @@ public partial class MapSelect : Control
         OnMapSelected(0);
         Loc.Changed += RefreshTexts;
         TreeExiting += () => Loc.Changed -= RefreshTexts;
+
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--demo-weather-filter") >= 0)
+            CallDeferred(nameof(ShowWeatherFilter));
 
         if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--demo-mapselect-back") >= 0)
         {
@@ -482,6 +507,17 @@ public partial class MapSelect : Control
     /// <summary>已经在切场景了：防止同一次点击触发两次跳转。</summary>
     private bool _leaving;
 
+    private void ShowWeatherFilter()
+    {
+        if (_weatherFilterPopup != null && IsInstanceValid(_weatherFilterPopup))
+        {
+            _weatherFilterPopup.Hide();
+            _weatherFilterPopup = null;
+        }
+
+        _weatherFilterPopup = WeatherFilterUi.Create(this);
+    }
+
     private void StartBattle()
     {
         // 人机对战：彻底离开上一局联机会话，并清掉重连暂存
@@ -494,4 +530,14 @@ public partial class MapSelect : Control
 
         PlayClose(() => GetTree().ChangeSceneToFile("res://scenes/battleScene.tscn"));
     }
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (_weatherFilterPopup != null && IsInstanceValid(_weatherFilterPopup) && _weatherFilterPopup.Visible &&
+            @event is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right })
+        {
+            _weatherFilterPopup.Hide();
+            GetViewport().SetInputAsHandled();
+        }
+    }
+
 }

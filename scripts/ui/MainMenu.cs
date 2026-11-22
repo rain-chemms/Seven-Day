@@ -1848,6 +1848,48 @@ public partial class MainMenu : Node3D
         outer.AddChild(terrainGrid);
 
         AddTerrainEntries(terrainGrid);
+
+        outer.AddChild(SectionDivider());
+        var weatherTitle = new Label { Text = Loc.T("gallery.weather") };
+        weatherTitle.AddThemeFontSizeOverride("font_size", 20);
+        outer.AddChild(weatherTitle);
+
+        var weatherGrid = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        weatherGrid.AddThemeConstantOverride("separation", 8);
+        outer.AddChild(weatherGrid);
+
+        foreach (Battle.WeatherDef w in Battle.WeatherCatalog.All)
+        {
+            var row = new HBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+            row.AddThemeConstantOverride("separation", 10);
+
+            var icon = new TextureRect
+            {
+                CustomMinimumSize = new Vector2(64, 64),
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
+                Texture = GD.Load<Texture2D>(w.Icon),
+            };
+            row.AddChild(icon);
+
+            var text = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+            text.AddThemeConstantOverride("separation", 2);
+            var name = new Label { Text = w.Name };
+            name.AddThemeFontSizeOverride("font_size", 17);
+            name.AddThemeColorOverride("font_color", w.Positive ? new Color("3E7D4A") : UiTheme.Ink);
+            text.AddChild(name);
+            var desc = new Label
+            {
+                Text = w.Desc,
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                CustomMinimumSize = new Vector2(200, 0),
+            };
+            desc.AddThemeFontSizeOverride("font_size", 13);
+            desc.AddThemeColorOverride("font_color", UiTheme.Ink);
+            text.AddChild(desc);
+            row.AddChild(text);
+            weatherGrid.AddChild(row);
+        }
     }
 
     /// <summary>切换语言后重建总览内容（建筑名/描述、地形、提示语）。</summary>

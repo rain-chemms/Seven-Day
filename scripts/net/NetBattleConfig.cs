@@ -22,6 +22,11 @@ public sealed class NetBattleConfig
     public string[] DeckClient { get; set; } = System.Array.Empty<string>();
     public int SeedClient { get; set; }
 
+    /// <summary>天气开关 / 无天气持续回合数，由主机决定并同步。</summary>
+    public bool WeatherEnabled { get; set; } = true;
+    public int WeatherGrace { get; set; } = 2;
+    public int WeatherMask { get; set; } = 0x1FE;
+
     private static readonly JsonSerializerOptions Options = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

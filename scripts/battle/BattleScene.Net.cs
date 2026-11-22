@@ -84,6 +84,9 @@ public partial class BattleScene
             // 初始基地等级由创建房间的主机决定，双方相同
             DeckHost = Session.EffectiveDeck(map).ToArray(),
             SeedHost = rng.Next(1, int.MaxValue),
+            WeatherEnabled = Session.WeatherEnabled,
+            WeatherGrace = Session.WeatherGraceTurns,
+            WeatherMask = Session.WeatherMask,
             HqClient = Session.StartHqLevel,
             DeckClient = clientDeck.ToArray(),
             SeedClient = rng.Next(1, int.MaxValue),
@@ -145,7 +148,10 @@ public partial class BattleScene
             actorZero ? cfg.HqClient : cfg.HqHost,
             actorZero ? cfg.SeedHost : cfg.SeedClient,
             actorZero ? cfg.SeedClient : cfg.SeedHost,
-            !actorZero);   // actor 1 镜像：自己的基地在地图另一端
+            !actorZero,   // actor 1 镜像：自己的基地在地图另一端
+            cfg.WeatherEnabled,
+            cfg.WeatherGrace,
+            cfg.WeatherMask);
     }
 
     /// <summary>开局第一回合：主机先手（本地 Player），客户端先手是对方（本地 Enemy）。</summary>
