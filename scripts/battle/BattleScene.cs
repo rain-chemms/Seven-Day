@@ -154,7 +154,8 @@ public partial class BattleScene : Node3D
         }
 
         // 房主载入未完成对局：把存档当成重连数据，交给同一套回放流程
-        if (Session.RestoreLanSave)
+        bool restoringLanSave = Session.RestoreLanSave;
+        if (restoringLanSave)
         {
             Session.RestoreLanSave = false;
             LanSaveStore.RestoreIntoPending();
@@ -162,16 +163,16 @@ public partial class BattleScene : Node3D
 
         // 模式隔离：进入单机战斗时必须彻底清掉上一局联机会话，
         // 避免残留的 host/client 身份让出牌走 NetSendDeploy 却没有对端。
-        if (Session.SingleBattle && !Session.RestoreLanSave)
+        if (Session.SingleBattle && !restoringLanSave)
         {
             LanSession.Leave();
             Session.LanBattle = false;
             NetResumeStore.Clear();
         }
 
-        if (Session.RestoreLanSave)
+        if (restoringLanSave)
         {
-            // 显式恢复联机存档，保留现有会话/重连数据
+            // 显式恢复联机存档，保留 Pending 回放数据与快照，即使客户端尚未连回。
         }
         else if (!Session.LanBattle)
         {

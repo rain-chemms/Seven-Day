@@ -91,6 +91,9 @@ public sealed class AIController
 
         DeployUnits(deployBudget, keepGold);
 
+        ManageSubmarines();
+        ManageCarriers();
+
         await MoveAndAttack(air: true);
         await MoveAndAttack(air: false);
 
@@ -425,6 +428,64 @@ public sealed class AIController
     }
 
     // ─────────────────────────── 行动 ───────────────────────────
+
+    /// <summary>根据血量、附近威胁和可攻击目标决定潜艇潜浮。</summary>
+    private void ManageSubmarines()
+    {
+        foreach (UnitInst sub in MyUnits.Where(u => u.DefId == "submarine" && !u.DiveUsed).ToList())
+        {
+            float hpRatio = (float)sub.Hp / Mathf.Max(1, sub.MaxHp);
+            bool threatened = EnemyUnits.Any(e => HexCoord.Distance(e.Coord, sub.Coord) <= 2);
+            bool canAttack = !sub.Submerged && _s.AttackTargets(sub).Any();
+
+            if (!sub.Submerged)
+            {
+                bool shouldDive = (!canAttack && threatened)
+                    || (hpRatio < 0.35f && !canAttack)
+                    || (hpRatio < 0.55f && threatened);
+                if (shouldDive)
+                {
+                    if (_s.ToggleSubmarineDive(sub, out _))
+                        _log.Add($"{_id} 潜艇深潜规避");
+                }
+                continue;
+            }
+
+            // 潜航时若附近有残血目标且自身状态尚可，浮出准备攻击。
+            bool prey = EnemyUnits.Any(e =>
+                HexCoord.Distance(e.Coord, sub.Coord) <= Mathf.Max(1, sub.Def.Range)
+                && e.Hp <= sub.Def.Damage * 1.25f);
+            if (prey && hpRatio > 0.45f)
+            {
+                if (_s.ToggleSubmarineDive(sub, out _))
+                    _log.Add($"{_id} 潜艇浮出攻击");
+            }
+        }
+    }
+
+    /// <summary>航母根据敌方空中/地面构成选择出兵。</summary>
+    private void ManageCarriers()
+    {
+        foreach (UnitInst carrier in MyUnits.Where(u => u.DefId == "carrier" && !u.CarrierSpawnUsed).ToList())
+        {
+            bool enemyAir = EnemyUnits.Any(u => u.IsAir);
+            int groundCount = EnemyUnits.Count(u => !u.IsAir);
+            string cardId = enemyAir && groundCount <= EnemyUnits.Count(u => u.IsAir)
+                ? "unit_fighter"
+                : "unit_helicopter";
+
+            if (!_s.CanCarrierSpawn(carrier, cardId, out _))
+            {
+                cardId = cardId == "unit_fighter" ? "unit_helicopter" : "unit_fighter";
+                if (!_s.CanCarrierSpawn(carrier, cardId, out _))
+                    continue;
+            }
+
+            UnitInst spawned = _s.TryCarrierSpawn(carrier, cardId, out _);
+            if (spawned != null)
+                _log.Add($"{_id} 航母出动 {spawned.DefId}");
+        }
+    }
 
     private async Task MoveAndAttack(bool air)
     {

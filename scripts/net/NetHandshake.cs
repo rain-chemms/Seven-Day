@@ -2,6 +2,7 @@ using System;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Godot;
+using SevenDay.Battle;
 
 namespace SevenDay.Net;
 
@@ -65,6 +66,9 @@ public sealed class NetResumePayload
     public int ClientSeqBase { get; set; }
     public NetBattleConfig Config { get; set; }
     public string[] History { get; set; } = System.Array.Empty<string>();
+
+    /// <summary>断线瞬间的天气快照；回放完成后直接应用，避免随机回放偏差。</summary>
+    public WeatherSnapshot Weather { get; set; }
 
     private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
 

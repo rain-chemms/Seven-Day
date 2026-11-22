@@ -1132,10 +1132,13 @@ public partial class HexMapView : Node3D
         {
             foreach (MeshInstance3D mi in meshes)
             {
-                if (IsInstanceValid(mi))
-                    mi.CastShadow = alpha < 0.99f
-                        ? GeometryInstance3D.ShadowCastingSetting.Off
-                        : GeometryInstance3D.ShadowCastingSetting.On;
+                if (!IsInstanceValid(mi))
+                    continue;
+                // 敌方完全深潜时连本体和描边外壳一起隐藏，避免轮廓暴露位置。
+                mi.Visible = alpha > 0.01f;
+                mi.CastShadow = alpha < 0.99f
+                    ? GeometryInstance3D.ShadowCastingSetting.Off
+                    : GeometryInstance3D.ShadowCastingSetting.On;
             }
         }
     }

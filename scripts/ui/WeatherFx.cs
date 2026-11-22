@@ -122,7 +122,7 @@ public partial class WeatherFx : Control
                 }
                 else
                 {
-                    _tornadoScreen = _tornadoScreen.MoveToward(target, 130f * dt);
+                    _tornadoScreen = _tornadoScreen.MoveToward(target, 240f * dt);
                 }
             }
         }

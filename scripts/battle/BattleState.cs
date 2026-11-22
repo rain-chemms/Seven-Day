@@ -191,6 +191,26 @@ public sealed class GiftDrop
     public bool Collected;
 }
 
+/// <summary>联机重连时随状态包一起下发的天气快照。</summary>
+public sealed class WeatherSnapshot
+{
+    public int Weather { get; set; }
+    public int TurnsLeft { get; set; }
+    public int GraceLeft { get; set; }
+    public int GraceTurns { get; set; }
+    public int Serial { get; set; }
+    public int SwitchCount { get; set; }
+    public int Mask { get; set; } = 0x1FE;
+    public int Seed { get; set; }
+    public int StrikeSerial { get; set; }
+    public bool Enabled { get; set; }
+    public bool HasTornado { get; set; }
+    public int TornadoQ { get; set; }
+    public int TornadoR { get; set; }
+    public int[] EarthquakeQueue { get; set; } = System.Array.Empty<int>();
+    public int[] StrikeCells { get; set; } = System.Array.Empty<int>();
+}
+
 public sealed class BattleState
 {
     /// <summary>每回合的基础抽牌数（不含指挥部/兵营等建筑的额外发牌）。</summary>
@@ -2898,6 +2918,69 @@ public sealed class BattleState
     }
 
     // ─────────────────────────── 天气 ───────────────────────────
+
+    public WeatherSnapshot CaptureWeatherSnapshot()
+    {
+        var strikeCells = new List<int>(WeatherStrikeCells.Count * 2);
+        foreach (HexCoord c in WeatherStrikeCells)
+        {
+            strikeCells.Add(c.Q);
+            strikeCells.Add(c.R);
+        }
+
+        return new WeatherSnapshot
+        {
+            Weather = (int)Weather,
+            TurnsLeft = WeatherTurnsLeft,
+            GraceLeft = WeatherGraceLeft,
+            GraceTurns = WeatherGraceTurns,
+            Serial = WeatherSerial,
+            SwitchCount = WeatherSwitchCount,
+            Mask = WeatherMask,
+            Seed = _weatherSeed,
+            StrikeSerial = WeatherStrikeSerial,
+            Enabled = WeatherEnabled,
+            HasTornado = HasTornado,
+            TornadoQ = TornadoCoord.Q,
+            TornadoR = TornadoCoord.R,
+            EarthquakeQueue = _earthquakeQueue.ToArray(),
+            StrikeCells = strikeCells.ToArray(),
+        };
+    }
+
+    public void ApplyWeatherSnapshot(WeatherSnapshot s)
+    {
+        if (s == null)
+            return;
+
+        int weather = s.Weather;
+        Weather = System.Enum.IsDefined(typeof(WeatherType), weather)
+            ? (WeatherType)weather
+            : WeatherType.None;
+        WeatherTurnsLeft = Mathf.Max(0, s.TurnsLeft);
+        WeatherGraceLeft = Mathf.Max(0, s.GraceLeft);
+        WeatherGraceTurns = Mathf.Clamp(s.GraceTurns, 0, 9);
+        WeatherSerial = Mathf.Max(0, s.Serial);
+        WeatherSwitchCount = Mathf.Max(0, s.SwitchCount);
+        WeatherMask = s.Mask & 0x1FE;
+        if (s.Seed != 0)
+            _weatherSeed = s.Seed;
+        WeatherStrikeSerial = Mathf.Max(0, s.StrikeSerial);
+        WeatherEnabled = s.Enabled;
+        HasTornado = s.HasTornado && Weather == WeatherType.Tornado;
+        TornadoCoord = new HexCoord(s.TornadoQ, s.TornadoR);
+
+        _earthquakeQueue.Clear();
+        if (Weather == WeatherType.Earthquake && s.EarthquakeQueue != null)
+            _earthquakeQueue.AddRange(s.EarthquakeQueue);
+
+        WeatherStrikeCells.Clear();
+        if (Weather == WeatherType.Thunderstorm && s.StrikeCells != null)
+        {
+            for (int i = 0; i + 1 < s.StrikeCells.Length; i += 2)
+                WeatherStrikeCells.Add(new HexCoord(s.StrikeCells[i], s.StrikeCells[i + 1]));
+        }
+    }
 
     public void SetupWeather(bool enabled, int graceTurns, int mask = 0x1FE)
     {

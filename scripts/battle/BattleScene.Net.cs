@@ -379,6 +379,7 @@ public partial class BattleScene
             AssignActor = 1,          // 之后加入的一方固定是 actor 1
             HostLocked = true,
             History = _netHistory.Select(x => x.ToJson()).ToArray(),
+            Weather = _state?.CaptureWeatherSnapshot(),
         };
 
         string mapName = GameDatabase.Map(LanSession.Config.MapId)?.NameZh ?? LanSession.Config.MapId;
@@ -484,6 +485,12 @@ public partial class BattleScene
 
             ReplayApply(it);
             _netHistory.Add(it);
+        }
+
+        if (payload.Weather != null)
+        {
+            _state.ApplyWeatherSnapshot(payload.Weather);
+            GD.Print($"[Net] 恢复天气快照：{_state.Weather} 剩余{_state.WeatherTurnsLeft}回合");
         }
 
         _netReshuffleSerial = _state.ReshuffleSerial;
@@ -620,6 +627,7 @@ public partial class BattleScene
             HostLocked = LanSession.HostLocked,
             ClientSeqBase = _netLastClientSeq,
             History = _netHistory.Select(x => x.ToJson()).ToArray(),
+            Weather = _state?.CaptureWeatherSnapshot(),
         };
 
         NetBridge.Instance.SendBattleResume(peerId, payload.ToJson());
@@ -653,6 +661,7 @@ public partial class BattleScene
             HostLocked = LanSession.HostLocked,
             ClientSeqBase = _netLastClientSeq,
             History = _netHistory.Select(x => x.ToJson()).ToArray(),
+            Weather = _state?.CaptureWeatherSnapshot(),
         };
 
         NetBridge.Instance.SendBattleResume(peerId, payload.ToJson());
@@ -940,6 +949,7 @@ public partial class BattleScene
                 Token = LanSession.MatchToken,
                 Config = LanSession.Config,
                 History = _netHistory.Select(x => x.ToJson()).ToArray(),
+                Weather = _state?.CaptureWeatherSnapshot(),
             };
 
             string path = $"user://lan_match_{System.DateTime.Now:yyyyMMdd_HHmmss}.json";
