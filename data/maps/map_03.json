@@ -6,7 +6,7 @@
   "descEn": "Naval test map: land on both flanks, a wide central sea and one island. Ideal for testing naval bases, submarine diving, carrier radar and destroyer fire.",
   "width": 13,
   "height": 11,
-  "startGold": 800,
+  "startGold": 300,
   "terrainRows": [
 	"gggggwwwwgggg",
 	"ggggwwwwwgggg",

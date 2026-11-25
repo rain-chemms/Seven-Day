@@ -6,7 +6,7 @@
   "descEn": "All-terrain proving ground: grass, sand, rock, snow and water each claim a patch — good for testing terrain bonuses and limits.",
   "width": 11,
   "height": 9,
-  "startGold": 350,
+  "startGold": 300,
   "terrainRows": [
 	"ggddssrnggw",
 	"ggddssrrggw",

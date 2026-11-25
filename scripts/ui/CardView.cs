@@ -471,8 +471,11 @@ public partial class CardView : Control
 
         bool unit = Def.KindEnum == CardKind.Unit;
         bool strike = Def.KindEnum == CardKind.Strike;
+        bool status = Def.Status;
 
-        Color bg = unit ? new Color("E3D7B4") : strike ? new Color("E9C4B8") : new Color("C7DCEA");
+        Color bg = status ? new Color("C49AE0")
+            : unit ? new Color("E3D7B4")
+            : strike ? new Color("E9C4B8") : new Color("C7DCEA");
         _frame ??= new StyleBoxFlat
         {
             BorderWidthLeft = 3,
@@ -557,7 +560,8 @@ public partial class CardView : Control
             _artPlaceholder.Visible = true;
             var ps = new StyleBoxFlat
             {
-                BgColor = strike ? new Color("C2543E") : new Color("6C7C4A"),
+                BgColor = status ? new Color("76459A")
+                    : strike ? new Color("C2543E") : new Color("6C7C4A"),
             };
             _artPlaceholder.AddThemeStyleboxOverride("panel", ps);
         }

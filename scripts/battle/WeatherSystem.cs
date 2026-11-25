@@ -51,8 +51,8 @@ public static class WeatherCatalog
         {
             Type = WeatherType.Tornado, Id = "tornado",
             NameZh = "龙卷风", NameEn = "Tornado", Duration = 5, Positive = false,
-            DescZh = "龙卷风每回合先向随机方向移动 1 格，再对范围内单位造成其当前生命值 50% 的伤害（至少 1）。",
-            DescEn = "Each round the tornado moves one hex in a random direction, then deals 50% of current HP (min 1) to units in range 1.",
+            DescZh = "龙卷风每回合先向随机方向移动 1 格，再对半径 2 内的单位与建筑造成其当前生命值 50% 的伤害（至少 1）。",
+            DescEn = "Each round the tornado moves one hex in a random direction, then deals 50% of current HP (min 1) to units and buildings within range 2.",
             Icon = "res://gameAsset/textures/ui/weather/weatherIcon/weather_tornado.png",
         },
         new()

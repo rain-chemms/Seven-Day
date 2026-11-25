@@ -95,6 +95,12 @@ public sealed class CardDef
     public string Effect { get; set; } = "";
     public int Power { get; set; }
 
+    /// <summary>范围效果半径（格）；0 表示单体/无范围。</summary>
+    public int Radius { get; set; }
+
+    /// <summary>状态牌：战斗中塞入，不能进入出战卡组。</summary>
+    public bool Status { get; set; }
+
     /// <summary>
     /// 关键字：retain = 保留（回合结束不被弃掉）；exhaust = 消耗（打出后进消耗堆，不再洗回牌库）。
     /// </summary>

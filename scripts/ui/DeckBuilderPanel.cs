@@ -807,6 +807,7 @@ public partial class DeckBuilderPanel : PanelContainer
     private static IEnumerable<CardDef> AllCards()
     {
         return GameDatabase.Cards.Values
+            .Where(d => !d.Status)
             .OrderBy(d => d.KindEnum switch
             {
                 CardKind.Unit => 0,

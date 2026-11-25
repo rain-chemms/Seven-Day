@@ -14,7 +14,7 @@ public partial class MapSelect : Control
     private readonly List<(Button Button, AIDifficulty Diff)> _diffButtons = new();
     private Label _mapInfo;
     private Label _mapDesc;
-    private TextureRect _mapPreview;
+    private MapPreviewView _mapPreview;
     private PanelContainer _panel;
     private ColorRect _bg;
     private PopupPanel _weatherFilterPopup;
@@ -138,13 +138,10 @@ public partial class MapSelect : Control
         left.AddChild(_mapDesc);
 
         // 地图预览图（res://gameAsset/textures/mapPreview/mapPreview_<id>.png）
-        _mapPreview = new TextureRect
+        _mapPreview = new MapPreviewView
         {
             CustomMinimumSize = new Vector2(0, 232),
-            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-            StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
             SizeFlagsVertical = SizeFlags.ExpandFill,
-            MouseFilter = MouseFilterEnum.Ignore,
         };
         left.AddChild(_mapPreview);
 

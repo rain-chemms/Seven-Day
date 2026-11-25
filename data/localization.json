@@ -223,7 +223,9 @@
 	"weather.ended": "天气结束",
 	"settings.weather_filter": "天气筛选",
 	"settings.weather_filter_hint": "只有勾选的天气会在对战中随机出现。",
-	"settings.weather_none": "当前没有勾选任何天气，对局将不会出现特殊天气。"
+	"settings.weather_none": "当前没有勾选任何天气，对局将不会出现特殊天气。",
+	"ability.sanction.name": "公约制裁",
+	"ability.sanction.desc": "核弹打击后生效：{0} 个自己的回合内不能打出任何卡牌。"
   },
   "en": {
 	"game.title": "Seven-Day",
@@ -449,6 +451,8 @@
 	"weather.ended": "Weather cleared",
 	"settings.weather_filter": "Weather Filter",
 	"settings.weather_filter_hint": "Only checked weather types can appear in battle.",
-	"settings.weather_none": "No weather selected; no special weather will appear."
+	"settings.weather_none": "No weather selected; no special weather will appear.",
+	"ability.sanction.name": "Sanction",
+	"ability.sanction.desc": "After a nuclear strike, you cannot play cards for {0} of your turns."
   }
 }

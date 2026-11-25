@@ -201,6 +201,18 @@ public partial class AudioManager : Node
     public static void PlayCardUsed() =>
         PlaySfx("res://gameAsset/audios/ui/cardBattle_used.ogg", -3f);
 
+    /// <summary>核弹打击：警报音效。</summary>
+    public static void PlayNuclearAlarm() =>
+        PlaySfx("res://gameAsset/audios/sfx/nuclear_alarm.ogg", -6f);
+
+    /// <summary>核弹爆炸：爆炸音效。</summary>
+    public static void PlayNuclearExplosion() =>
+        PlaySfx("res://gameAsset/audios/sfx/nuclear_explosion.ogg", -5f);
+
+    /// <summary>核弹下落：下落呼啸音效。</summary>
+    public static void PlayNuclearFall() =>
+        PlaySfx("res://gameAsset/audios/sfx/nuclear_fall.ogg", -1f);
+
     /// <summary>抽牌。</summary>
     public static void PlayCardDrawn() =>
         PlaySfx("res://gameAsset/audios/ui/cardBattle_drawed.ogg", -2.5f);

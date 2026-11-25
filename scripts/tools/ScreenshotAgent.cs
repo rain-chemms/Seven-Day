@@ -27,6 +27,7 @@ public partial class ScreenshotAgent : Node
 
         _wait = 1.6;
         string waitArg = OS.GetCmdlineUserArgs()
+            .Concat(OS.GetCmdlineArgs())
             .FirstOrDefault(a => a.StartsWith("--shot-wait="));
         if (waitArg != null && float.TryParse(waitArg.Substring("--shot-wait=".Length), out float w))
             _wait = Mathf.Clamp(w, 0.2f, 20f);

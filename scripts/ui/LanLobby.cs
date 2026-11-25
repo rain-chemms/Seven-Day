@@ -17,7 +17,7 @@ public partial class LanLobby : Control
     private Button _hostBtn;
     private Button _joinBtn;
     private OptionButton _mapOption;
-    private TextureRect _mapPreview;
+    private MapPreviewView _mapPreview;
     private readonly List<Button> _hqButtons = new();
     private int _hqLevel = 1;
     private Button _backBtn;
@@ -189,12 +189,10 @@ public partial class LanLobby : Control
         _mapOption.ItemSelected += _ => { UpdatePreviewFromSelection(); ApplyChoicesToSession(applyMap: false); };
         box.AddChild(mapRow);
 
-        _mapPreview = new TextureRect
+        _mapPreview = new MapPreviewView
         {
             CustomMinimumSize = new Vector2(0, 150),
-            ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-            StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
-            MouseFilter = MouseFilterEnum.Ignore,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
         };
         box.AddChild(_mapPreview);
 

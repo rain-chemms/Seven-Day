@@ -103,7 +103,8 @@ public partial class BattleScene
         var list = new List<string>();
         foreach (string id in deck)
         {
-            if (GameDatabase.Card(id) != null)
+            CardDef card = GameDatabase.Card(id);
+            if (card != null && !card.Status)
                 list.Add(id);
         }
 
@@ -1590,7 +1591,10 @@ public partial class BattleScene
             case NetIntentType.Attack:
             {
                 if (actorUnit != null)
+                {
                     _state.PerformAttack(actorUnit, to);
+                    PlayCounterEffects();
+                }
                 break;
             }
 

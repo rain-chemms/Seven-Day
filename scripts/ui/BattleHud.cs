@@ -1384,6 +1384,63 @@ public partial class BattleHud : CanvasLayer
     // ─────────────────────────── 收入飘字 ───────────────────────────
 
     /// <summary>在某建筑上方弹出「+N$」金色飘字：缩放 0→1 同时淡入，停留后 1→0 淡出。</summary>
+    /// <summary>伤害数字：从受击对象附近随机飘出，红色字体 + 黑色描边。</summary>
+    public void ShowDamageNumber(Vector2 screenPos, int amount)
+    {
+        if (_effects == null || amount <= 0)
+            return;
+
+        Vector2 viewport = GetViewport().GetVisibleRect().Size;
+        float x = Mathf.Clamp(screenPos.X + GD.Randf() * 48f - 24f, 8f, viewport.X - 148f);
+        float y = Mathf.Clamp(screenPos.Y + GD.Randf() * 18f - 12f, 190f, viewport.Y - 190f);
+
+        var holder = new Control
+        {
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            Size = new Vector2(140, 48),
+            PivotOffset = new Vector2(70, 24),
+            Position = new Vector2(x, y),
+            ZIndex = 60,
+        };
+        _effects.AddChild(holder);
+
+        var label = new Label
+        {
+            Text = $"-{amount}",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        label.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        label.AddThemeFontSizeOverride("font_size", 32);
+        label.AddThemeColorOverride("font_color", new Color("FF3B30"));
+        label.AddThemeConstantOverride("outline_size", 8);
+        label.AddThemeColorOverride("font_outline_color", Colors.Black);
+        holder.AddChild(label);
+
+        Vector2 startPos = holder.Position;
+        float vx = GD.Randf() * 40f - 20f;
+        float vy = -78f - GD.Randf() * 28f;
+        const float gravity = 560f;
+        const float duration = 0.95f;
+
+        Tween tween = CreateTween();
+        tween.TweenMethod(Callable.From<float>(progress =>
+        {
+            float time = progress * duration;
+            holder.Position = startPos + new Vector2(
+                vx * time,
+                vy * time + 0.5f * gravity * time * time);
+            holder.Scale = Vector2.One * Mathf.Lerp(1f, 0.48f, progress);
+        }), 0f, 1f, duration);
+        tween.Parallel().TweenProperty(holder, "modulate:a", 0f, 0.45f).SetDelay(0.5f);
+        tween.Chain().TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(holder))
+                holder.QueueFree();
+        }));
+    }
+
     public void ShowIncomePopup(Vector2 screenPos, int amount, float delay = 0f, float hold = 0.9f)
     {
         if (_root == null || amount <= 0)

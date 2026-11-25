@@ -199,11 +199,28 @@ public partial class BattleScene : Node3D
         _map = new HexMapView { Name = "HexMap" };
         AddChild(_map);
         _map.Build(_state);
+        _state.DamageNumberRequested += OnDamageNumberRequested;
 
         _rig = new CameraRig { Name = "CameraRig" };
         AddChild(_rig);
-        _rig.FocusOn(MapCenter());
+        Vector3 mapFocus = MapCenter();
         float span = Mathf.Max(map.Width * HexLayout.Sqrt3, map.Height * 1.5f);
+        if (map.Id == "map_06" && _state.Cells.Count > 0)
+        {
+            float minX = float.MaxValue, maxX = float.MinValue;
+            float minZ = float.MaxValue, maxZ = float.MinValue;
+            foreach (HexCoord c in _state.Cells.Keys)
+            {
+                Vector3 p = HexLayout.ToWorld(c);
+                minX = Mathf.Min(minX, p.X);
+                maxX = Mathf.Max(maxX, p.X);
+                minZ = Mathf.Min(minZ, p.Z);
+                maxZ = Mathf.Max(maxZ, p.Z);
+            }
+            mapFocus = new Vector3((minX + maxX) * 0.5f, mapFocus.Y, (minZ + maxZ) * 0.5f);
+            span = Mathf.Max(maxX - minX, maxZ - minZ) + 3f;
+        }
+        _rig.FocusOn(mapFocus);
         _rig.FrameMap(span, 1.62f);
         _rig.SetPitch(55f);
         _rig.SetVerticalOffset(-1.4f);
@@ -239,10 +256,13 @@ public partial class BattleScene : Node3D
 
         // 先按正常开局开始第一回合（主机 Player / 客户端 Enemy），再回放历史
         NetBeginFirstTurn();
+        _netReplaying = true;
         NetResumeReplayIfNeeded();
+        _netReplaying = false;
         // 开局等同一次正常回合开始（基础抽牌 3 张 + 建筑发牌），不再额外补牌
         _map.SyncEntities();
         _map.RefreshZones();
+        _map.ShowRadiation(_state.RadiatedCells);
         _hud.Setup(_state);
         if (!NetMode && OS.GetCmdlineUserArgs().Contains("--weather-now"))
         {
@@ -731,6 +751,24 @@ public partial class BattleScene : Node3D
         // 开发调试：--demo-anims 打印每个兵种模型里自带的动画
         if (OS.GetCmdlineUserArgs().Contains("--demo-anims"))
             DemoAnimsFlow();
+
+        // 开发调试：--demo-counter 两个坦克相邻，检查自动反击
+        if (OS.GetCmdlineUserArgs().Contains("--demo-counter"))
+            CallDeferred(nameof(DemoCounterFlow));
+
+        // 开发调试：--demo-interference 检查战术干扰与紫色状态牌
+        if (OS.GetCmdlineUserArgs().Contains("--demo-interference"))
+            CallDeferred(nameof(DemoInterferenceFlow));
+
+        // 开发调试：--demo-nuclear 核弹镜头与蘑菇云
+        if (OS.GetCmdlineUserArgs().Contains("--demo-nuclear"))
+            CallDeferred(nameof(DemoNuclearFlow));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-nukestate"))
+            CallDeferred(nameof(DemoNuclearStateFlow));
+
+        if (OS.GetCmdlineUserArgs().Contains("--demo-nukepreview"))
+            CallDeferred(nameof(DemoNuclearPreviewFlow));
 
         // 开发调试：--demo-unitanim 检查移动朝向与攻击动作
         if (OS.GetCmdlineUserArgs().Contains("--demo-unitanim"))
@@ -1380,6 +1418,120 @@ public partial class BattleScene : Node3D
     }
 
     /// <summary>炮台额外开炮：建炮台、放敌人、选建筑，然后直接调用一次。</summary>
+    private async void DemoNuclearPreviewFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5f), SceneTreeTimer.SignalName.Timeout);
+        _state.Player.Gold = 3000;
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("nuclearStrike");
+        RefreshAll();
+
+        CardDef card = GameDatabase.Card("nuclearStrike");
+        SelectCard(0, card);
+        HexCoord target = new(2, 5);
+        if (_state.Cell(target) == null)
+            target = _state.Cells.Keys.First();
+        Vector2 screen = _rig.Camera.UnprojectPosition(HexLayout.ToWorld(target, HexMapView.TileTop));
+        UpdateHover(screen);
+        GD.Print($"[NukePreview] target={target} screen={screen} hints={_state.Cells.Count}");
+    }
+
+    private async void DemoNuclearStateFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.35f), SceneTreeTimer.SignalName.Timeout);
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("nuclearStrike");
+        HexCoord target = _state.Cells.Keys.First();
+        _state.PlayIndex = 0;
+        string log = _state.PlayGlobalCard(_state.Player, "nuclearStrike", target, out string err);
+        WeatherSnapshot snap = _state.CaptureWeatherSnapshot();
+        int before = _state.RadiatedCells.Count;
+        _state.RadiatedCells.Clear();
+        _state.RadiationTurns.Clear();
+        _state.ApplyWeatherSnapshot(snap);
+        _map.SyncEntities();
+        RefreshAll();
+        GD.Print($"[NukeState] err={err} log={log} hand={_state.Player.Hand.Count} " +
+                 $"rad={_state.RadiatedCells.Count} restored={before} units={_state.Units.Count}");
+    }
+
+    private async void DemoNuclearFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.35f), SceneTreeTimer.SignalName.Timeout);
+        _state.Player.Gold = 2000;
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("nuclearStrike");
+        GD.Print($"[NukeDemo] before={string.Join(",", _state.Player.Hand)}");
+        _hud.RefreshAll();
+        RefreshAll();
+
+        HexCoord target = _state.Cells.Keys
+            .OrderBy(c => Mathf.Abs(c.Q - 2) + Mathf.Abs(c.R - 5))
+            .First();
+        _pendingCardIndex = _state.Player.Hand.Count - 1;
+        CardDef card = GameDatabase.Card("nuclearStrike");
+        TryPlayGlobal(card, target);
+        await ToSignal(GetTree().CreateTimer(3.2f), SceneTreeTimer.SignalName.Timeout);
+        GD.Print($"[NukeDemo] after hand={string.Join(",", _state.Player.Hand)} discard={_state.Player.Discard.Count} radiated={_state.RadiatedCells.Count}");
+    }
+
+    private async void DemoInterferenceFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(0.5), SceneTreeTimer.SignalName.Timeout);
+        _state.Player.Hand.Clear();
+        _state.Player.Hand.Add("tacticalInterference");
+        _state.Player.Hand.Add("interference");
+        _state.Player.Hand.Add("interference");
+        string log = _state.PlayGlobalCard(_state.Player, "tacticalInterference", null, out string err);
+        _map.SyncEntities();
+        RefreshAll();
+        GD.Print($"[Interference] log={log} err={err} enemyHand={_state.Enemy.Hand.Count} statusInDeck=" +
+                 $"{_state.Player.Deck.Count(id => GameDatabase.Card(id)?.Status == true)}");
+    }
+
+    private async void DemoCounterFlow()
+    {
+        await ToSignal(GetTree().CreateTimer(1.0), SceneTreeTimer.SignalName.Timeout);
+        Cell a = null, b = null;
+        foreach (Cell c in _state.Cells.Values)
+        {
+            if (c.IsSky || c.Building != null || c.Units.Count > 0 || c.Terrain == TerrainType.Water)
+                continue;
+            foreach (HexCoord nb in c.Coord.Neighbors())
+            {
+                Cell n = _state.Cell(nb);
+                if (n == null || n.IsSky || n.Building != null || n.Units.Count > 0 ||
+                    n.Terrain == TerrainType.Water)
+                    continue;
+                a = c;
+                b = n;
+                break;
+            }
+            if (a != null)
+                break;
+        }
+
+        if (a == null)
+        {
+            GD.Print("[Counter] no adjacent land cells");
+            return;
+        }
+
+        UnitInst defender = _state.SpawnUnit("tank", PlayerId.Player, a.Coord);
+        UnitInst attacker = _state.SpawnUnit("tank", PlayerId.Enemy, b.Coord);
+        _map.SyncEntities();
+        GD.Print($"[Counter] before attacker={attacker.Hp} defender={defender.Hp}");
+
+        string log = _state.PerformAttack(attacker, defender.Coord);
+        int counterCount = _state.LastCounterEvents.Count;
+        PlayCounterEffects();
+        _map.SyncEntities();
+        _map.RefreshZones();
+        RefreshAll();
+        GD.Print($"[Counter] log={log} attacker={attacker.Hp} defender={defender.Hp} events={counterCount}");
+    }
+
     private async void DemoExtraFireFlow()
     {
         await ToSignal(GetTree().CreateTimer(0.4), SceneTreeTimer.SignalName.Timeout);
@@ -5000,6 +5152,7 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(Mathf.Max(delay, 0.05f)), SceneTreeTimer.SignalName.Timeout);
 
         string log = _state.PerformAttack(drone, foeCell.Value);
+        PlayCounterEffects();
         _map.SyncEntities();
         _map.RefreshZones();
 
@@ -5047,6 +5200,7 @@ public partial class BattleScene : Node3D
         GD.Print($"[DroneSame] 攻击前 无人机格={drone.Coord} 建筑格={foe.Coord} 建筑HP={foe.Hp}");
 
         string log = _state.PerformAttack(drone, foe.Coord);
+        PlayCounterEffects();
         _map.SyncEntities();
 
         GD.Print($"[DroneSame] 战报={log}");
@@ -6413,6 +6567,7 @@ public partial class BattleScene : Node3D
         }
 
         _state.Volleys.Clear();
+        PlayCounterEffects();
 
         // 视图的清理延后到「炮弹落地」那一刻，避免单位在爆炸前就消失
         var sync = GetTree().CreateTimer(Mathf.Max(0.12f, delay));
@@ -6434,6 +6589,7 @@ public partial class BattleScene : Node3D
             return;
 
         string log = _state.PerformAttack(attacker, coord);
+        PlayCounterEffects();
         _hud.Toast(string.IsNullOrEmpty(log) ? "没有可攻击的目标" : log);
 
         foreach (UnitInst t in _state.UnitsAt(coord))
@@ -6456,6 +6612,73 @@ public partial class BattleScene : Node3D
         _map.RefreshZones();
         RefreshAll();
         CheckGameOver();
+    }
+
+    /// <summary>状态层每次扣血时触发；随机飘出一个红底黑描边的负伤害数字。</summary>
+    private void OnDamageNumberRequested(HexCoord coord, int amount, bool building)
+    {
+        if (amount <= 0 || _map == null || _netReplaying)
+            return;
+        ShowDamageNumber(coord, amount, building);
+    }
+
+    private void ShowDamageNumber(HexCoord coord, int amount, bool building)
+    {
+        if (_hud == null || _rig == null || _rig.Camera == null)
+            return;
+
+        bool air = !building && _state != null &&
+                   _state.UnitsAt(coord).Any(u => u.IsAir && u.Alive);
+        float baseY = building ? 1.25f : (air ? 2.05f : 1.45f);
+        Vector3 world = HexLayout.ToWorld(coord, HexMapView.TileTop + baseY);
+        Vector2 screen = _rig.Camera.UnprojectPosition(world);
+        _hud.ShowDamageNumber(screen, amount);
+    }
+
+    /// <summary>播放状态层结算出的自动反击；状态已经扣血，表现层只补动画/音效。</summary>
+    private void PlayCounterEffects()
+    {
+        if (_state == null || _map == null)
+            return;
+
+        var events = _state.TakeCounterEvents();
+        for (int i = 0; i < events.Count; i++)
+        {
+            CounterEvent ev = events[i];
+            var timer = GetTree().CreateTimer(i * 0.12f);
+            timer.Timeout += () => PlayOneCounter(ev);
+        }
+    }
+
+    private void PlayOneCounter(CounterEvent ev)
+    {
+        UnitInst defender = _state?.Units.FirstOrDefault(u => u.Id == ev.DefenderId && u.Alive);
+        if (defender == null)
+            return;
+
+        Vector3 targetWorld = HexLayout.ToWorld(ev.TargetCoord, HexMapView.TileTop);
+        if (!_map.FaceUnitTurretToward(defender, targetWorld))
+            _map.FaceUnitToward(defender, targetWorld);
+
+        _map.PlayUnitAttack(defender.Id);
+        AudioManager.PlayAttack(defender.DefId);
+        _map.FlashCell(ev.TargetCoord, new Color("F2C230"));
+
+        float impact = PlayAttackVfx(defender, ev.TargetCoord);
+        var punch = GetTree().CreateTimer(Mathf.Max(impact, 0.05f));
+        punch.Timeout += () =>
+        {
+            if (ev.TargetKind == CounterTargetKind.Building)
+            {
+                if (_state?.BuildingAt(ev.TargetCoord) is { } building)
+                    _map.PunchBuilding(building.Id);
+            }
+            else
+            {
+                foreach (UnitInst target in _state.UnitsAt(ev.TargetCoord))
+                    _map.PunchUnit(target.Id);
+            }
+        };
     }
 
     /// <summary>单位开火：步兵/直升机打子弹，坦克打炮弹，战斗机打导弹。</summary>
@@ -7054,12 +7277,17 @@ public partial class BattleScene : Node3D
 
             // 敌方指挥部不参与直接伤害卡（只能用部队推进解决），高亮时排除掉
             var enemies = _state.Cells.Values
-                .Where(c => !(c.Building is { IsDead: false } b && b.IsHq && b.Owner == PlayerId.Enemy))
+                .Where(c => card.Effect == "nuclear" || !(c.Building is { IsDead: false } b && b.IsHq && b.Owner == PlayerId.Enemy))
                 .Where(c => c.Units.Any(u => u.Alive && u.Owner == PlayerId.Enemy) ||
                             (c.Building != null && c.Building.Owner == PlayerId.Enemy))
                 .Select(c => c.Coord);
             _map.ShowHints(enemies, new Color("E8563F"));
-            _hud.Toast($"已选择「{card.NameZh}」：点击要打击的格子（不能直接打指挥部）");
+            if (card.Effect == "nuclear" && _hover != null)
+                _map.ShowRadiusPreview(HexCoord.Spiral(_hover.Value, Mathf.Max(1, card.Radius)),
+                    new Color("FF7A3C"));
+            _hud.Toast(card.Effect == "nuclear"
+                ? $"已选择「{card.NameZh}」：橙色范围为半径 {card.Radius} 格；可直接瞄准指挥部"
+                : $"已选择「{card.NameZh}」：点击要打击的格子（不能直接打指挥部）");
         }
         else
         {
@@ -7580,8 +7808,8 @@ public partial class BattleScene : Node3D
         _weatherTornado.Position = _tornadoPos;
         _weatherTornado.RotationDegrees = new Vector3(0, (float)Time.GetTicksMsec() * 0.18f, 0);
         float pulse = 1f + Mathf.Sin((float)Time.GetTicksMsec() * 0.004f) * 0.012f;
-        float grow = pulse * 1.015f;
-        _weatherTornado.Scale = new Vector3(grow, 1.015f, grow);
+        float grow = pulse * 1.82f;
+        _weatherTornado.Scale = new Vector3(grow, 1.82f, grow);
         _weatherTornado.Visible = _tornadoAlpha > 0.001f;
 
         bool hovered = false;
@@ -8854,6 +9082,7 @@ public partial class BattleScene : Node3D
 
     /// <summary>在某格打出第 index 张手牌（点地图 / 拖到地图都走这里）。</summary>
     private bool _cardFlying;
+    private bool _cinematic;
 
     /// <summary>
     /// 打出需要指定格子的卡：先播「卡牌沿曲线飞向目标格」的动画，落地后才真正生效。
@@ -9021,6 +9250,90 @@ public partial class BattleScene : Node3D
         ResolveCardNow(card.Id, null);
     }
 
+    private async Task PlayNuclearCinematic(HexCoord target)
+    {
+        if (_cinematic)
+            return;
+
+        _cinematic = true;
+        Vector3 impact = HexLayout.ToWorld(target, HexMapView.TileTop + 0.25f);
+        Vector3 start = impact + Vector3.Up * 40f;
+
+        Node3D bomb = _vfx.SpawnNukeBomb(start);
+
+        // 从当前战场机位平滑拉向高空核弹，不允许瞬间跳切。
+        float startFocusY = impact.Y + (start.Y - impact.Y) * 0.80f + 1.4f;
+        _rig.CinematicTo(new Vector3(impact.X, startFocusY, impact.Z), 30f, 34f, 0.55f);
+        await ToSignal(GetTree().CreateTimer(0.55f), SceneTreeTimer.SignalName.Timeout);
+        AudioManager.PlayNuclearFall();
+
+        const float fall = 2.2f;
+        float elapsed = 0f;
+        while (elapsed < fall)
+        {
+            elapsed += (float)GetProcessDeltaTime();
+            float t = Mathf.Clamp(elapsed / fall, 0f, 1f);
+            // 五次曲线：前段几乎悬停，末段快速砸向地面。
+            float eased = Mathf.Pow(t, 5f);
+            bomb.Position = start.Lerp(impact, eased);
+            bomb.Rotation = new Vector3(
+                0.12f * Mathf.Sin(t * Mathf.Tau),
+                t * Mathf.Tau * 1.8f,
+                0.08f * Mathf.Sin(t * Mathf.Tau * 0.7f));
+            // 镜头只跟随部分高度，核弹会在画面中明显向下加速。
+            float focusY = impact.Y + (bomb.Position.Y - impact.Y) * 0.80f + 1.4f;
+            _rig.SetCinematicFrame(new Vector3(impact.X, focusY, impact.Z), 26f, 34f);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
+
+        if (IsInstanceValid(bomb))
+            bomb.QueueFree();
+
+        AudioManager.PlayNuclearExplosion();
+        ShowNuclearFlashBlur();
+        _vfx.MushroomCloud(impact, 1f);
+
+        // 爆炸后镜头平滑拉远，而不是瞬间跳到最远机位。
+        _rig.CinematicTo(impact + Vector3.Up * 2.8f, 48f, 34f, 1.35f);
+
+        await ToSignal(GetTree().CreateTimer(3.9f), SceneTreeTimer.SignalName.Timeout);
+        _rig.ResetView(0.85f);
+        _cinematic = false;
+    }
+
+    private void ShowNuclearFlashBlur()
+    {
+        var layer = new CanvasLayer { Name = "NuclearFlashLayer", Layer = 120 };
+        var rect = new ColorRect
+        {
+            Color = Colors.White,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        layer.AddChild(rect);
+        rect.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+
+        var mat = new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>("res://gameAsset/shaders/effects/nuclear_flash.gdshader"),
+        };
+        mat.SetShaderParameter("blur_radius", 3.5f);
+        mat.SetShaderParameter("flash", 1.0f);
+        rect.Material = mat;
+        AddChild(layer);
+
+        var tween = CreateTween();
+        tween.SetParallel(true);
+        tween.TweenMethod(Callable.From<float>(v => mat.SetShaderParameter("blur_radius", v)),
+            3.5f, 0f, 1.6f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+        tween.TweenMethod(Callable.From<float>(v => mat.SetShaderParameter("flash", v)),
+            1.0f, 0f, 0.55f).SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+        tween.Chain().TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(layer))
+                layer.QueueFree();
+        }));
+    }
+
     /// <summary>打击卡/维修卡的特效，返回「命中延迟」（秒）；siloId 指定从哪座发射井发射。</summary>
     private float PlayCardVfx(PlayerId owner, CardDef card, HexCoord target, int siloId = 0)
     {
@@ -9031,6 +9344,11 @@ public partial class BattleScene : Node3D
 
         switch (card.Effect)
         {
+            case "nuclear":
+                AudioManager.PlayNuclearAlarm();
+                _ = PlayNuclearCinematic(target);
+                return 2.75f;
+
             case "airstrike":
                 for (int i = 0; i < 3; i++)
                     _vfx.MissileStrike(at, 1.05f, 4.2f, 0.5f, i * 0.14f);
@@ -9691,6 +10009,7 @@ public partial class BattleScene : Node3D
         await ToSignal(GetTree().CreateTimer(Mathf.Max(impact, 0.03f)), SceneTreeTimer.SignalName.Timeout);
 
         _state.PerformAttack(attacker, target);
+        PlayCounterEffects();
         _map.SyncEntities();
         _map.RefreshZones();
 
@@ -9860,7 +10179,7 @@ public partial class BattleScene : Node3D
 
     public override void _UnhandledInput(InputEvent @event)
     {
-        if (_state == null)
+        if (_state == null || _cinematic)
             return;
 
         if (@event is InputEventKey { Pressed: true, Echo: false } numKey)
@@ -10082,6 +10401,7 @@ public partial class BattleScene : Node3D
         {
             _hover = null;
             _map.ShowHover(null);
+            _map.ClearRadiusPreview();
             return;
         }
 
@@ -10090,12 +10410,30 @@ public partial class BattleScene : Node3D
         {
             _hover = null;
             _map.ShowHover(null);
+            _map.ClearRadiusPreview();
             return;
         }
 
         bool changed = _hover == null || _hover.Value != coord;
         _hover = coord;
         _map.ShowHover(coord);
+
+        if (changed)
+        {
+            if (_selCard >= 0 && _selCard < _state.Player.Hand.Count)
+            {
+                CardDef hoverCard = GameDatabase.Card(_state.Player.Hand[_selCard]);
+                if (hoverCard?.Effect == "nuclear")
+                    _map.ShowRadiusPreview(HexCoord.Spiral(coord, Mathf.Max(1, hoverCard.Radius)),
+                        new Color("FF7A3C"));
+                else
+                    _map.ClearRadiusPreview();
+            }
+            else
+            {
+                _map.ClearRadiusPreview();
+            }
+        }
 
         // 选卡/选目标时，鼠标移到新格子上给一声轻提示（带 120ms 去抖，扫过一排不会连响）
         if (changed && _selCard >= 0)
@@ -10868,6 +11206,7 @@ public partial class BattleScene : Node3D
         }
 
         _hud.Toast(message);
+        PlayCounterEffects();
         AudioManager.PlayAttack(b.DefId);
         _map.FlashCell(b.Coord, new Color("FF6A4D"));
         _map.SyncEntities();
@@ -10900,6 +11239,8 @@ public partial class BattleScene : Node3D
 
         _hud.RefreshAll();
         _map.ShowHover(_hover);
+        _map.RefreshZones();
+        _map.ShowRadiation(_state.RadiatedCells);
         RefreshSubmarineVisuals();
 
         // 金币/等级变化后，右侧信息面板的按钮可用状态要跟着刷新

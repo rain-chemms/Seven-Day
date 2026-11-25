@@ -17,18 +17,19 @@ public sealed class Cell
     public readonly List<UnitInst> Units = new();
 
     /// <summary>该格属于哪个玩家的控制区；双方同时覆盖时为争夺区。</summary>
+    public bool IsSky;
     public bool ControlPlayer;
     public bool ControlEnemy;
 
     public bool Contested => ControlPlayer && ControlEnemy;
-    public bool PassableGround => Terrain != TerrainType.Water && Building == null;
+    public bool PassableGround => !IsSky && Terrain != TerrainType.Water && Building == null;
 
     /// <summary>
     /// 陆军能否进入这一格：不能过水；有建筑时只能是**己方**建筑
     /// （允许走进并停留在自家建筑上，但不能进敌方建筑）。
     /// </summary>
     public bool CanGroundEnter(PlayerId owner) =>
-        Terrain != TerrainType.Water && (Building == null || Building.Owner == owner);
+        !IsSky && Terrain != TerrainType.Water && (Building == null || Building.Owner == owner);
 }
 
 public sealed class BuildingInst
@@ -91,7 +92,10 @@ public sealed class UnitInst
     /// <summary>航母：本回合是否已经出过兵。</summary>
     public bool CarrierSpawnUsed;
 
-    public int MaxHp => Def.Hp;
+    /// <summary>辐射等效果造成的最大生命值缩放（1 = 正常）。</summary>
+    public float MaxHpScale = 1f;
+
+    public int MaxHp => Mathf.Max(1, Mathf.RoundToInt(Def.Hp * MaxHpScale));
     public bool IsAir => Def.IsAir;
     public bool Alive => Hp > 0;
     public bool CanAct => !Moved || !Attacked;
@@ -110,6 +114,9 @@ public sealed class PlayerState
 
     /// <summary>呼叫增援拿到的卡：手牌实例费用临时为 0（打出后消失）。</summary>
     public readonly List<string> ZeroCost = new();
+
+    /// <summary>「公约制裁」剩余回合数；大于 0 时不能打出任何卡牌。</summary>
+    public int SanctionTurns;
 
     /// <summary>消耗堆：打出「消耗」关键字的卡进这里，永远不会洗回牌库。</summary>
     public readonly List<string> Exhaust = new();
@@ -209,7 +216,23 @@ public sealed class WeatherSnapshot
     public int TornadoR { get; set; }
     public int[] EarthquakeQueue { get; set; } = System.Array.Empty<int>();
     public int[] StrikeCells { get; set; } = System.Array.Empty<int>();
+
+    /// <summary>重连时恢复的辐射格（q,r 成对）及各自剩余回合。</summary>
+    public int[] RadiationCells { get; set; } = System.Array.Empty<int>();
+    public int[] RadiationTurns { get; set; } = System.Array.Empty<int>();
 }
+
+public enum CounterTargetKind { Unit, Building }
+
+/// <summary>一次自动反击的表现数据；状态已结算，表现层只负责播放。</summary>
+public sealed record CounterEvent(
+    int DefenderId,
+    HexCoord DefenderCoord,
+    HexCoord TargetCoord,
+    string TargetName,
+    CounterTargetKind TargetKind,
+    int Damage,
+    bool TargetKilled);
 
 public sealed class BattleState
 {
@@ -222,6 +245,7 @@ public sealed class BattleState
     public AIDifficulty Difficulty = AIDifficulty.Normal;
 
     public readonly Dictionary<HexCoord, Cell> Cells = new();
+    public readonly Dictionary<HexCoord, Cell> AirCells = new();
     public readonly List<BuildingInst> Buildings = new();
     public readonly List<UnitInst> Units = new();
 
@@ -248,6 +272,11 @@ public sealed class BattleState
     public HexCoord TornadoCoord;
     public readonly List<HexCoord> WeatherStrikeCells = new();
     public int WeatherStrikeSerial;
+
+    /// <summary>被核弹污染、持续存在的辐射格。</summary>
+    public readonly HashSet<HexCoord> RadiatedCells = new();
+    public readonly Dictionary<HexCoord, int> RadiationTurns = new();
+    public readonly List<string> RadiationLog = new();
     private int _lastThunderStrikeTurn = -1;
     private int _lastTornadoDamageTurn = -1;
     public readonly List<GiftDrop> Gifts = new();
@@ -328,6 +357,18 @@ public sealed class BattleState
             {
                 char ch = c < row.Length ? row[c] : 'g';
                 var coord = new HexCoord(startQ + c, r);
+                if (ch == ' ')
+                    continue; // 地图外：不创建空中格
+                if (ch == '.')
+                {
+                    s.AirCells[coord] = new Cell
+                    {
+                        Coord = coord,
+                        Terrain = TerrainType.Dirt,
+                        IsSky = true,
+                    };
+                    continue;
+                }
                 s.Cells[coord] = new Cell
                 {
                     Coord = coord,
@@ -340,8 +381,8 @@ public sealed class BattleState
         s.Enemy = new PlayerState { Id = PlayerId.Enemy, Gold = map.StartGold };
         List<string> pDeck = playerDeck ?? Session.EffectiveDeck(map);
         List<string> eDeck = enemyDeck ?? new List<string>(map.EnemyDeck);
-        s.Player.Deck.AddRange(pDeck);
-        s.Enemy.Deck.AddRange(eDeck);
+        s.Player.Deck.AddRange(pDeck.Where(id => GameDatabase.Card(id)?.Status != true));
+        s.Enemy.Deck.AddRange(eDeck.Where(id => GameDatabase.Card(id)?.Status != true));
 
         // 开局洗牌一次（按阵营各自的随机数；联机时两端种子一致，洗出的顺序相同）
         s.Shuffle(s.Player.Deck, PlayerId.Player);
@@ -379,7 +420,12 @@ public sealed class BattleState
         _ => TerrainType.Grass,
     };
 
-    public Cell Cell(HexCoord c) => Cells.TryGetValue(c, out Cell cell) ? cell : null;
+    public Cell Cell(HexCoord c)
+    {
+        if (Cells.TryGetValue(c, out Cell cell))
+            return cell;
+        return AirCells.TryGetValue(c, out Cell air) ? air : null;
+    }
 
     public PlayerState StateOf(PlayerId id) => id == PlayerId.Player ? Player : Enemy;
     public PlayerId OpponentOf(PlayerId id) => id == PlayerId.Player ? PlayerId.Enemy : PlayerId.Player;
@@ -390,7 +436,7 @@ public sealed class BattleState
     {
         BuildingDef def = GameDatabase.Building(defId);
         Cell cell = Cell(coord);
-        if (def == null || cell == null || cell.Building != null)
+        if (def == null || cell == null || cell.IsSky || cell.Building != null)
             return null;
 
         var b = new BuildingInst
@@ -419,7 +465,7 @@ public sealed class BattleState
     public bool CanBuildAt(HexCoord coord, PlayerId player, string defId = "")
     {
         Cell cell = Cell(coord);
-        if (cell == null || cell.Building != null)
+        if (cell == null || cell.IsSky || cell.Building != null)
             return false;
 
         bool navyBase = defId == "navyBase";
@@ -599,13 +645,27 @@ public sealed class BattleState
             foreach (HexCoord h in HexCoord.Spiral(b.Coord, b.ControlRadius))
             {
                 Cell cell = Cell(h);
-                if (cell == null)
+                if (cell == null || cell.IsSky)
                     continue;
                 if (b.Owner == PlayerId.Player)
                     cell.ControlPlayer = true;
                 else
                     cell.ControlEnemy = true;
             }
+        }
+
+        // 军队站在哪一格，就临时占领哪一格；离开后这里会自然清空。
+        foreach (UnitInst u in Units)
+        {
+            if (!u.Alive)
+                continue;
+            Cell cell = Cell(u.Coord);
+            if (cell == null || cell.IsSky)
+                continue;
+            if (u.Owner == PlayerId.Player)
+                cell.ControlPlayer = true;
+            else
+                cell.ControlEnemy = true;
         }
     }
 
@@ -892,7 +952,7 @@ public sealed class BattleState
     {
         UnitDef def = GameDatabase.Unit(defId);
         Cell cell = Cell(coord);
-        if (def == null || cell == null)
+        if (def == null || cell == null || (cell.IsSky && !def.IsAir))
             return null;
 
         var u = new UnitInst
@@ -910,10 +970,27 @@ public sealed class BattleState
 
         // 卡牌出兵、建筑出兵、航母出兵都走这里：落到礼物格立即拾取。
         CollectGift(u);
+        RecalculateZones();
         return u;
     }
 
     /// <summary>单位阵亡：移除并结算「强制兵役」的召唤金额 110% 负债。</summary>
+    private void DamageUnit(UnitInst u, int amount)
+    {
+        if (u == null || amount <= 0)
+            return;
+        u.Hp -= amount;
+        DamageNumberRequested?.Invoke(u.Coord, amount, false);
+    }
+
+    private void DamageBuilding(BuildingInst b, int amount)
+    {
+        if (b == null || amount <= 0)
+            return;
+        b.Hp -= amount;
+        DamageNumberRequested?.Invoke(b.Coord, amount, true);
+    }
+
     public void KillUnit(UnitInst u, Cell cell = null)
     {
         if (u == null)
@@ -925,6 +1002,7 @@ public sealed class BattleState
         PlayerState st = StateOf(u.Owner);
         if (st.Conscription && u.SummonCost > 0)
             st.Gold -= Mathf.CeilToInt(u.SummonCost * 1.1f);
+        RecalculateZones();
     }
 
     private const string MarkerPlaceholderPrefix = "\u0001";
@@ -1184,6 +1262,7 @@ public sealed class BattleState
     public List<string> RollRandomCardChoices(PlayerState st)
     {
         var pool = GameDatabase.Cards.Values
+            .Where(c => !c.Status)
             .Select(c => c.Id)
             .OrderBy(id => id)
             .ToList();
@@ -1363,10 +1442,12 @@ public sealed class BattleState
                 Cell cell = Cell(nb);
                 if (cell == null)
                     continue;
+                if (cell.IsSky && !u.IsAir)
+                    continue;
                 if (u.Def.Navy)
                 {
                     // 海军只能在水面移动；有建筑时只能停自家建筑
-                    if (cell.Terrain != TerrainType.Water)
+                    if (cell.IsSky || cell.Terrain != TerrainType.Water)
                         continue;
                     if (cell.Building != null && cell.Building.Owner != u.Owner)
                         continue;
@@ -1405,12 +1486,20 @@ public sealed class BattleState
             return false;
         }
 
+        Cell dest = Cell(to);
+        if (dest == null || (dest.IsSky && !u.IsAir))
+        {
+            error = "目标格不可进入";
+            return false;
+        }
+
         Cell from = Cell(u.Coord);
         from?.Units.Remove(u);
         u.Coord = to;
-        Cell(to).Units.Add(u);
+        dest.Units.Add(u);
         u.Moved = true;
         CollectGift(u);
+        RecalculateZones();
         return true;
     }
 
@@ -1583,6 +1672,8 @@ public sealed class BattleState
 
         int dmg = EffectiveDamage(u);
         var log = new List<string>();
+        var hitTargets = new List<UnitInst>();
+        LastCounterEvents.Clear();
 
         // 自杀式单位（FPV 无人机）：先冲到目标格，再自爆。
         // 注意：如果目标就是自己脚下那一格（站在敌方建筑上打它），也照样自爆，
@@ -1604,7 +1695,8 @@ public sealed class BattleState
                 continue;
             if (!t.IsAir && !u.Def.CanHitGround)
                 continue;
-            t.Hp -= dmg;
+            hitTargets.Add(t);
+            DamageUnit(t, dmg);
             log.Add($"{t.Def.NameZh} -{dmg}");
             if (t.Hp <= 0)
             {
@@ -1615,7 +1707,7 @@ public sealed class BattleState
 
         if (cell.Building != null && cell.Building.Owner != u.Owner)
         {
-            cell.Building.Hp -= dmg;
+            DamageBuilding(cell.Building, dmg);
             log.Add($"{cell.Building.Def.NameZh} -{dmg}");
             if (cell.Building.Hp <= 0)
             {
@@ -1625,10 +1717,12 @@ public sealed class BattleState
             }
         }
 
+        ResolveUnitCounters(u, hitTargets, log);
+
         u.Attacked = true;
 
         // 自爆：打完自己也报销（无人机撞上去就没了）
-        if (suicide)
+        if (suicide && u.Alive)
         {
             KillUnit(u, cell);
             u.Hp = 0;
@@ -1637,6 +1731,69 @@ public sealed class BattleState
 
         CheckVictory();
         return string.Join("，", log);
+    }
+
+    /// <summary>被攻击后存活、且攻击者在射程内的单位会以 50% 当前攻击力反击。</summary>
+    private void ResolveUnitCounters(UnitInst attacker, List<UnitInst> defenders, List<string> log)
+    {
+        foreach (UnitInst defender in defenders)
+        {
+            if (attacker == null || !attacker.Alive)
+                break;
+            if (defender == null || !defender.Alive || defender.Owner == attacker.Owner)
+                continue;
+            if (defender.DefId == "submarine" && defender.Submerged)
+                continue;
+            if (defender.Def == null || defender.Def.Damage <= 0)
+                continue;
+
+            bool canHit = attacker.IsAir ? defender.Def.CanHitAir : defender.Def.CanHitGround;
+            if (!canHit)
+                continue;
+            if (HexCoord.Distance(defender.Coord, attacker.Coord) > AttackRangeOf(defender))
+                continue;
+
+            int counterDamage = Mathf.Max(1, Mathf.RoundToInt(EffectiveDamage(defender) * 0.5f));
+            DamageUnit(attacker, counterDamage);
+            bool killed = attacker.Hp <= 0;
+            LastCounterEvents.Add(new CounterEvent(
+                defender.Id, defender.Coord, attacker.Coord, attacker.Def.NameZh,
+                CounterTargetKind.Unit, counterDamage, killed));
+            log.Add($"{defender.Def.NameZh} 反击 {attacker.Def.NameZh} -{counterDamage}");
+            if (killed)
+            {
+                KillUnit(attacker, Cell(attacker.Coord));
+                log.Add($"{attacker.Def.NameZh} 被反击消灭");
+            }
+        }
+    }
+
+    /// <summary>建筑主动开火后，被击中且存活的单位若能够到建筑，也会自动反击。</summary>
+    private string ResolveCounterAgainstBuilding(UnitInst defender, BuildingInst attacker)
+    {
+        if (defender == null || !defender.Alive || attacker == null || attacker.IsDead)
+            return "";
+        if (defender.DefId == "submarine" && defender.Submerged)
+            return "";
+        if (defender.Def == null || defender.Def.Damage <= 0 || !defender.Def.CanHitGround)
+            return "";
+        if (HexCoord.Distance(defender.Coord, attacker.Coord) > AttackRangeOf(defender))
+            return "";
+
+        int counterDamage = Mathf.Max(1, Mathf.RoundToInt(EffectiveDamage(defender) * 0.5f));
+        DamageBuilding(attacker, counterDamage);
+        bool killed = attacker.Hp <= 0;
+        LastCounterEvents.Add(new CounterEvent(
+            defender.Id, defender.Coord, attacker.Coord, attacker.Def.NameZh,
+            CounterTargetKind.Building, counterDamage, killed));
+
+        string message = $"{defender.Def.NameZh} 反击 {attacker.Def.NameZh} -{counterDamage}";
+        if (killed)
+        {
+            Demolish(attacker);
+            message += $"；{attacker.Def.NameZh} 被反击摧毁";
+        }
+        return message;
     }
 
     // ─────────────────────────── 卡牌 ───────────────────────────
@@ -1654,6 +1811,12 @@ public sealed class BattleState
         if (card.KindEnum != CardKind.Unit)
         {
             error = "这张卡不需要指定地块";
+            return false;
+        }
+
+        if (StateOf(player).SanctionTurns > 0)
+        {
+            error = "公约制裁：本回合不能打出任何卡牌";
             return false;
         }
 
@@ -1737,6 +1900,12 @@ public sealed class BattleState
             return false;
         }
 
+        if (st.SanctionTurns > 0)
+        {
+            error = "公约制裁：本回合不能打出任何卡牌";
+            return false;
+        }
+
         if (st.Gold < EffectiveCost(st, cardId))
         {
             error = "金币不足";
@@ -1792,7 +1961,8 @@ public sealed class BattleState
         }
 
         // 直接伤害卡不能砸指挥部
-        if (cell.Building is { IsDead: false } hq && hq.IsHq && hq.Owner != st.Id)
+        if (card.Effect != "nuclear" &&
+            cell.Building is { IsDead: false } hq && hq.IsHq && hq.Owner != st.Id)
         {
             error = "不能直接攻击敌方指挥部，请派部队推进";
             return false;
@@ -1846,6 +2016,63 @@ public sealed class BattleState
     /// 打出不需要「部署」的卡：魔法卡（全局效果）与打击卡（指定一格）。
     /// 返回一句给玩家看的战报；失败时 error 非空。
     /// </summary>
+    /// <summary>核弹：范围 2 内所有单位/建筑受到伤害，并把格子永久标记为辐射区。</summary>
+    private string PlayNuclearStrike(PlayerState st, CardDef card, HexCoord center, out string error)
+    {
+        error = "";
+        int playCost = EffectiveCost(st, card.Id);
+        if (st.Gold < playCost)
+        {
+            error = "金币不足";
+            return "";
+        }
+
+        st.Gold -= playCost;
+        RemoveCardFromHand(st, card.Id);
+        SendToPlayedPile(st, card);
+        st.SanctionTurns = Mathf.Max(st.SanctionTurns, 2);
+
+        var log = new List<string>();
+        int hitUnits = 0, hitBuildings = 0;
+        foreach (HexCoord h in HexCoord.Spiral(center, Mathf.Max(1, card.Radius)))
+        {
+            Cell cell = Cell(h);
+            if (cell == null)
+                continue;
+            RadiatedCells.Add(h);
+            RadiationTurns[h] = 2;
+
+            foreach (UnitInst u in cell.Units.ToList())
+            {
+                if (!u.Alive)
+                    continue;
+                DamageUnit(u, card.Power);
+                hitUnits++;
+                if (u.Hp <= 0)
+                {
+                    KillUnit(u, cell);
+                    log.Add($"{u.Def.NameZh} 被消灭");
+                }
+            }
+
+            if (cell.Building != null && !cell.Building.IsDead && !cell.Building.IsHq)
+            {
+                DamageBuilding(cell.Building, card.Power);
+                hitBuildings++;
+                if (cell.Building.Hp <= 0)
+                {
+                    var b = cell.Building;
+                    Demolish(b);
+                    log.Add($"{b.Def.NameZh} 被摧毁");
+                }
+            }
+        }
+
+        CheckVictory();
+        string summary = $"{card.NameZh}：命中 {hitUnits} 个单位、{hitBuildings} 座建筑，辐射区 {RadiatedCells.Count} 格";
+        return log.Count == 0 ? summary : summary + "；" + string.Join("；", log);
+    }
+
     public string PlayGlobalCard(PlayerState st, string cardId, HexCoord? target, out string error)
     {
         error = "";
@@ -1859,6 +2086,9 @@ public sealed class BattleState
             error = "未知卡牌";
             return "";
         }
+
+        if (card.KindEnum == CardKind.Strike && card.Effect == "nuclear")
+            return PlayNuclearStrike(st, card, target!.Value, out error);
 
         if (card.KindEnum == CardKind.Strike)
         {
@@ -1905,7 +2135,7 @@ public sealed class BattleState
             {
                 if (!u.Alive || u.Owner == st.Id)
                     continue;
-                u.Hp -= power;
+                DamageUnit(u, power);
                 hits.Add($"{u.Def.NameZh} -{power}");
                 if (u.Hp <= 0)
                 {
@@ -1916,7 +2146,7 @@ public sealed class BattleState
 
             if (cell.Building != null && cell.Building.Owner != st.Id)
             {
-                cell.Building.Hp -= power;
+                DamageBuilding(cell.Building, power);
                 hits.Add($"{cell.Building.Def.NameZh} -{power}");
                 if (cell.Building.Hp <= 0)
                 {
@@ -2154,7 +2384,50 @@ public sealed class BattleState
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
                 return $"{card.NameZh}：战时医疗提升至 {st.MedicalStacks * 25}%";
-            }            default:                st.Gold -= playCost;
+            }            case "false_prosperity":
+            {
+                st.Gold += 450;
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                int inserted = 0;
+                for (int i = 0; i < 2; i++)
+                {
+                    if (st.Hand.Count < HandLimit)
+                        st.Hand.Add("interference");
+                    else
+                        st.Discard.Add("interference");
+                    inserted++;
+                }
+                return $"{card.NameZh}：获得 450$，加入 {inserted} 张「干扰」";
+            }
+            case "tactical_interference":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+
+                PlayerState foe = StateOf(OpponentOf(st.Id));
+                int inserted = 0;
+                for (int i = 0; i < 2; i++)
+                {
+                    if (foe.Hand.Count < HandLimit)
+                        foe.Hand.Add("interference");
+                    else
+                        foe.Discard.Add("interference");
+                    inserted++;
+                }
+                return $"{card.NameZh}：向对方手中加入 {inserted} 张「干扰」";
+            }
+            case "interference":
+            {
+                st.Gold -= playCost;
+                RemoveCardFromHand(st, cardId);
+                SendToPlayedPile(st, card);
+                return $"{card.NameZh}：支付 {playCost}$，进入消耗堆";
+            }
+            default:                st.Gold -= playCost;
                 RemoveCardFromHand(st, cardId);
                 SendToPlayedPile(st, card);
                 return card.NameZh;
@@ -2172,6 +2445,20 @@ public sealed class BattleState
     }
 
     // ─────────────────────────── 回合 ───────────────────────────
+
+    private void ApplyRadiationAtTurnStart(PlayerId who)
+    {
+        RadiationLog.Clear();
+        foreach (UnitInst u in Units.Where(u => u.Alive && u.Owner == who &&
+                                                RadiatedCells.Contains(u.Coord)).ToList())
+        {
+            u.MaxHpScale *= 0.5f;
+            int max = u.MaxHp;
+            if (u.Hp > max)
+                u.Hp = max;
+            RadiationLog.Add($"{u.Def.NameZh} 最大生命值降至 {max}");
+        }
+    }
 
     public void BeginTurn(PlayerId who)
     {
@@ -2213,6 +2500,8 @@ public sealed class BattleState
         }
 
         // 金币收入
+        ApplyRadiationAtTurnStart(who);
+
         int income = 0;
         foreach (BuildingInst b in Buildings.Where(b => b.Owner == who && !b.IsDead))
             income += IncomeOf(b);
@@ -2306,6 +2595,19 @@ public sealed class BattleState
     /// <summary>本回合防御建筑的开火记录（给表现层放特效用）。</summary>
     public readonly List<(HexCoord From, HexCoord To, string Kind)> Volleys = new();
 
+    /// <summary>最近一次攻击产生的自动反击表现事件。</summary>
+    public readonly List<CounterEvent> LastCounterEvents = new();
+
+    /// <summary>伤害数字表现事件：格子、伤害值、是否建筑。</summary>
+    public event Action<HexCoord, int, bool> DamageNumberRequested;
+
+    public List<CounterEvent> TakeCounterEvents()
+    {
+        var result = new List<CounterEvent>(LastCounterEvents);
+        LastCounterEvents.Clear();
+        return result;
+    }
+
     /// <summary>
     /// 回合开始时建筑自动开火（草案：炮台/防空炮每回合自动攻击控制区内最近的敌人，
     /// 指挥部每回合攻击控制区内一格）。返回战报文本。
@@ -2314,6 +2616,7 @@ public sealed class BattleState
     {
         var log = new List<string>();
         Volleys.Clear();
+        LastCounterEvents.Clear();
 
         // 只有炮台/防空炮这类防御建筑是「每回合自动开火」；
         // 指挥部的攻击在草案里是玩家主动选择的操作，这里不自动触发。
@@ -2340,7 +2643,7 @@ public sealed class BattleState
 
             if (target != null)
             {
-                target.Hp -= dmg;
+                DamageUnit(target, dmg);
                 Volleys.Add((b.Coord, target.Coord,
                     b.Def.CanHitAir && !b.Def.CanHitGround ? "aa" : "shell"));
                 log.Add($"{b.Def.NameZh} 击中 {target.Def.NameZh} -{dmg}");
@@ -2348,6 +2651,12 @@ public sealed class BattleState
                 {
                     KillUnit(target);
                     log.Add($"{target.Def.NameZh} 被消灭");
+                }
+                else
+                {
+                    string counterLog = ResolveCounterAgainstBuilding(target, b);
+                    if (!string.IsNullOrEmpty(counterLog))
+                        log.Add(counterLog);
                 }
 
                 fired = true;
@@ -2364,7 +2673,7 @@ public sealed class BattleState
 
                 if (enemyBuilding != null)
                 {
-                    enemyBuilding.Hp -= dmg;
+                    DamageBuilding(enemyBuilding, dmg);
                     Volleys.Add((b.Coord, enemyBuilding.Coord, "shell"));
                     log.Add($"{b.Def.NameZh} 轰击 {enemyBuilding.Def.NameZh} -{dmg}");
                     if (enemyBuilding.Hp <= 0)
@@ -2430,15 +2739,19 @@ public sealed class BattleState
             .ThenBy(u => HexCoord.Distance(u.Coord, b.Coord))
             .FirstOrDefault();
 
+        LastCounterEvents.Clear();
         if (target != null)
         {
-            target.Hp -= dmg;
+            DamageUnit(target, dmg);
+            string counterLog = ResolveCounterAgainstBuilding(target, b);
             message = $"{b.Def.NameZh} 额外开炮命中 {target.Def.NameZh} -{dmg}";
             if (target.Hp <= 0)
             {
                 KillUnit(target);
                 message += $"，{target.Def.NameZh} 被消灭";
             }
+            if (!string.IsNullOrEmpty(counterLog))
+                message += "；" + counterLog;
         }
         else
         {
@@ -2457,7 +2770,7 @@ public sealed class BattleState
                 return false;
             }
 
-            enemyBuilding.Hp -= dmg;
+            DamageBuilding(enemyBuilding, dmg);
             message = $"{b.Def.NameZh} 额外开炮轰击 {enemyBuilding.Def.NameZh} -{dmg}";
             if (enemyBuilding.Hp <= 0)
             {
@@ -2928,6 +3241,17 @@ public sealed class BattleState
             strikeCells.Add(c.R);
         }
 
+        var radiationCells = new List<int>(RadiationTurns.Count * 2);
+        var radiationTurns = new List<int>(RadiationTurns.Count);
+        foreach (var pair in RadiationTurns)
+        {
+            if (pair.Value <= 0)
+                continue;
+            radiationCells.Add(pair.Key.Q);
+            radiationCells.Add(pair.Key.R);
+            radiationTurns.Add(pair.Value);
+        }
+
         return new WeatherSnapshot
         {
             Weather = (int)Weather,
@@ -2945,6 +3269,8 @@ public sealed class BattleState
             TornadoR = TornadoCoord.R,
             EarthquakeQueue = _earthquakeQueue.ToArray(),
             StrikeCells = strikeCells.ToArray(),
+            RadiationCells = radiationCells.ToArray(),
+            RadiationTurns = radiationTurns.ToArray(),
         };
     }
 
@@ -2979,6 +3305,25 @@ public sealed class BattleState
         {
             for (int i = 0; i + 1 < s.StrikeCells.Length; i += 2)
                 WeatherStrikeCells.Add(new HexCoord(s.StrikeCells[i], s.StrikeCells[i + 1]));
+        }
+
+        // 辐射状态独立于天气，重连后按快照精确恢复，避免回放时序造成差异。
+        // 旧存档没有 RadiationCells 字段时保持回放得到的辐射，不强行清空。
+        if (s.RadiationCells != null)
+        {
+            RadiatedCells.Clear();
+            RadiationTurns.Clear();
+            for (int i = 0; i + 1 < s.RadiationCells.Length; i += 2)
+            {
+                HexCoord c = new(s.RadiationCells[i], s.RadiationCells[i + 1]);
+                int turns = (i / 2 < (s.RadiationTurns?.Length ?? 0))
+                    ? s.RadiationTurns[i / 2]
+                    : 2;
+                if (turns <= 0 || Cell(c) == null)
+                    continue;
+                RadiatedCells.Add(c);
+                RadiationTurns[c] = turns;
+            }
         }
     }
 
@@ -3218,7 +3563,7 @@ public sealed class BattleState
                                                         TerrainAt(u.Coord) == TerrainType.Sand).ToList())
                 {
                     int dmg = Mathf.Max(1, Mathf.CeilToInt(u.MaxHp * 0.2f));
-                    u.Hp -= dmg;
+                    DamageUnit(u, dmg);
                     WeatherLog.Add($"{u.Def.NameZh} 沙尘暴 -{dmg}");
                     if (u.Hp <= 0)
                         KillUnit(u, Cell(u.Coord));
@@ -3290,10 +3635,10 @@ public sealed class BattleState
 
         bool anyDeath = false;
         foreach (UnitInst u in Units.Where(u => u.Alive &&
-                                                HexCoord.Distance(u.Coord, TornadoCoord) <= 1).ToList())
+                                                HexCoord.Distance(u.Coord, TornadoCoord) <= 2).ToList())
         {
             int dmg = Mathf.Max(1, Mathf.CeilToInt(u.Hp * 0.5f));
-            u.Hp -= dmg;
+            DamageUnit(u, dmg);
             WeatherLog.Add($"{u.Def.NameZh} 龙卷风 -{dmg}");
             if (u.Hp <= 0)
             {
@@ -3304,10 +3649,10 @@ public sealed class BattleState
         }
 
         foreach (BuildingInst b in Buildings.Where(b => !b.IsDead &&
-                                                        HexCoord.Distance(b.Coord, TornadoCoord) <= 1).ToList())
+                                                        HexCoord.Distance(b.Coord, TornadoCoord) <= 2).ToList())
         {
             int dmg = Mathf.Max(1, Mathf.CeilToInt(b.Hp * 0.5f));
-            b.Hp -= dmg;
+            DamageBuilding(b, dmg);
             WeatherLog.Add($"{b.Def.NameZh} 龙卷风 -{dmg}");
             if (b.Hp <= 0)
             {
@@ -3332,7 +3677,7 @@ public sealed class BattleState
         {
             if (!u.Alive)
                 continue;
-            u.Hp -= damage;
+            DamageUnit(u, damage);
             WeatherLog.Add($"{u.Def.NameZh} 雷雨 -{damage}");
             if (u.Hp <= 0)
             {
@@ -3345,7 +3690,7 @@ public sealed class BattleState
 
         if (cell.Building != null && !cell.Building.IsDead)
         {
-            cell.Building.Hp -= damage;
+            DamageBuilding(cell.Building, damage);
             WeatherLog.Add($"{cell.Building.Def.NameZh} 雷雨 -{damage}");
             if (cell.Building.Hp <= 0)
             {
@@ -3397,6 +3742,26 @@ public sealed class BattleState
             : Loc.Name("拾取礼物 +800$", "Gift +800$");
     }
 
+    private void TickRadiationRounds()
+    {
+        if (RadiationTurns.Count == 0)
+            return;
+
+        foreach (HexCoord c in RadiationTurns.Keys.ToList())
+        {
+            int left = RadiationTurns[c] - 1;
+            if (left <= 0)
+            {
+                RadiationTurns.Remove(c);
+                RadiatedCells.Remove(c);
+            }
+            else
+            {
+                RadiationTurns[c] = left;
+            }
+        }
+    }
+
     public void EndTurn()
     {
         if (Phase == BattlePhase.GameOver)
@@ -3406,6 +3771,8 @@ public sealed class BattleState
         PlayerState ending = StateOf(CurrentPlayer);
         if (ending.ForcedMarchTurns > 0)
             ending.ForcedMarchTurns--;
+        if (ending.SanctionTurns > 0)
+            ending.SanctionTurns--;
 
         // 回合结束：把当前玩家手里「没有保留关键字」的卡弃掉
         DiscardHand(CurrentPlayer);
@@ -3420,6 +3787,7 @@ public sealed class BattleState
         {
             FirstHalf = true;
             TurnNumber++;
+            TickRadiationRounds();
             AdvanceWeatherRound();
             if (Phase == BattlePhase.GameOver)
                 return;

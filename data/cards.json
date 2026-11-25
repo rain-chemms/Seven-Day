@@ -37,7 +37,7 @@
 	"descriptionEn": "Air unit. Ignores terrain.",
 	"kind": "unit",
 	"unit": "helicopter",
-	"cost": 350
+	"cost": 250
   },
   {
 	"id": "unit_fighter",
@@ -159,7 +159,7 @@
 	"descriptionEn": "Water only. Toggle dive/surface: submerged submarines cannot attack and are hidden from the enemy.",
 	"kind": "unit",
 	"unit": "submarine",
-	"cost": 350
+	"cost": 275
   },
   {
 	"id": "unit_destroyer",
@@ -179,7 +179,7 @@
 	"descriptionEn": "Huge carrier: radar sweeps enemy submarines, and launches one fighter or attack helicopter each turn.",
 	"kind": "unit",
 	"unit": "carrier",
-	"cost": 1250
+	"cost": 1425
   },
   {
 	"id": "reinforce",
@@ -286,5 +286,55 @@
 	"kind": "global",
 	"cost": 50,
 	"effect": "battlefield_survey"
+  },
+  {
+	"id": "tacticalInterference",
+	"nameZh": "战术干扰",
+	"nameEn": "Tactical Interference",
+	"descriptionZh": "将两张「干扰」塞入对方手中。",
+	"descriptionEn": "Insert two Interference cards into the opponent's hand.",
+	"kind": "global",
+	"cost": 225,
+	"effect": "tactical_interference",
+	"keywords": []
+  },
+  {
+	"id": "interference",
+	"nameZh": "干扰",
+	"nameEn": "Interference",
+	"descriptionZh": "状态牌：具有「保留」与「消耗」。支付 150$ 后打出，之后进入消耗堆；不能加入出战卡组。",
+	"descriptionEn": "Status: Retain and Exhaust. Pay 150$ to play; it then goes to the exhaust pile. Cannot be added to a deck.",
+	"kind": "global",
+	"cost": 150,
+	"effect": "interference",
+	"status": true,
+	"keywords": [
+	  "retain",
+      "exhaust"
+	]
+  },
+  {
+	"id": "falseProsperity",
+	"nameZh": "虚假繁荣",
+	"nameEn": "False Prosperity",
+	"descriptionZh": "获得 450$，然后将两张「干扰」加入自己的手牌；手牌放不下时进入弃牌堆。",
+	"descriptionEn": "Gain 450$, then add two Interference cards to your hand; excess goes to the discard pile.",
+	"kind": "global",
+	"cost": 0,
+	"effect": "false_prosperity",
+	"keywords": []
+  },
+  {
+	"id": "nuclearStrike",
+	"nameZh": "核弹打击",
+	"nameEn": "Nuclear Strike",
+	"descriptionZh": "对中心半径 2 格内所有单位与建筑造成 750 伤害，并留下辐射：辐射内的军队每回合最大生命值减少 50%。",
+	"descriptionEn": "Deal 750 damage to all units and buildings within radius 2, and leave radiation: units inside lose 50% max HP each turn.",
+	"kind": "strike",
+	"cost": 1500,
+	"effect": "nuclear",
+	"power": 750,
+	"radius": 2,
+	"keywords": []
   }
 ]

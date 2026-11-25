@@ -76,6 +76,13 @@ public partial class HexMapView : Node3D
     private Node3D _ringRoot;
     private Node3D _borderRoot;
     private Node3D _hintRoot;
+    private Node3D _radiusPreviewRoot;
+    private Node3D _radiationRoot;
+    private readonly Dictionary<HexCoord, Node3D> _radiationViews = new();
+    private ShaderMaterial _radiationMat;
+    private StandardMaterial3D _radiationEdgeMat;
+    private StandardMaterial3D _radiationParticleMat;
+    private Mesh _radiationParticleMesh;
     private Node3D _buildingRoot;
     private Node3D _unitRoot;
     private MeshInstance3D _hover;
@@ -94,11 +101,38 @@ public partial class HexMapView : Node3D
         _borderRoot = NewChild("TileBorders");
         _ringRoot = NewChild("ZoneRings");
         _hintRoot = NewChild("Hints");
+        _radiationRoot = NewChild("Radiation");
         _buildingRoot = NewChild("Buildings");
         _unitRoot = NewChild("Units");
 
         LoadMeshes();
         BuildMaterials();
+        _radiationMat = new ShaderMaterial
+        {
+            Shader = GD.Load<Shader>("res://gameAsset/shaders/effects/radiation.gdshader"),
+        };
+        _radiationEdgeMat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.86f, 1f, 0.22f, 0.95f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            NoDepthTest = true,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+        };
+        _radiationParticleMat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.45f, 1f, 0.32f, 0.85f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
+        };
+        _radiationParticleMesh = new SphereMesh
+        {
+            Radius = 0.055f,
+            Height = 0.11f,
+            RadialSegments = 6,
+            Rings = 3,
+        };
 
         _hover = new MeshInstance3D { Name = "Hover", Mesh = _fillMesh, Visible = false };
         // 不做深度穿透，否则会盖在建筑上面
@@ -291,6 +325,7 @@ public partial class HexMapView : Node3D
 
     public void ClearHints()
     {
+        ClearRadiusPreview();
         foreach (MeshInstance3D m in _hints.Values)
             m.QueueFree();
         _hints.Clear();
@@ -352,6 +387,43 @@ public partial class HexMapView : Node3D
         }
     }
 
+    /// <summary>核弹等范围卡的生效范围预览：半透明填充 + 高亮外环。</summary>
+    public void ShowRadiusPreview(IEnumerable<HexCoord> cells, Color color)
+    {
+        ClearRadiusPreview();
+        _radiusPreviewRoot = NewChild("RadiusPreview");
+        foreach (HexCoord c in cells)
+        {
+            if (_state.Cell(c) == null)
+                continue;
+
+            Vector3 world = HexLayout.ToWorld(c, TileTop + 0.026f);
+            _radiusPreviewRoot.AddChild(new MeshInstance3D
+            {
+                Mesh = _fillMesh,
+                Position = world,
+                MaterialOverride = MakeUnshaded(new Color(color, 0.26f), noDepth: false),
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            });
+            _radiusPreviewRoot.AddChild(new MeshInstance3D
+            {
+                Mesh = _ringMesh,
+                Position = world + Vector3.Up * 0.002f,
+                MaterialOverride = MakeUnshaded(new Color(color, 0.95f), noDepth: true),
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            });
+        }
+    }
+
+    public void ClearRadiusPreview()
+    {
+        if (_radiusPreviewRoot == null)
+            return;
+        if (IsInstanceValid(_radiusPreviewRoot))
+            _radiusPreviewRoot.QueueFree();
+        _radiusPreviewRoot = null;
+    }
+
     public void ShowHover(HexCoord? coord)
     {
         if (_hover == null)
@@ -365,6 +437,99 @@ public partial class HexMapView : Node3D
         _hover.Visible = true;
         _hover.Position = HexLayout.ToWorld(coord.Value, TileTop + 0.02f);
     }
+
+    /// <summary>显示持续辐射区：绿色脉冲六边形 + 上升粒子；移除时透明渐变并缩小。</summary>
+    public void ShowRadiation(IEnumerable<HexCoord> cells)
+    {
+        if (_radiationRoot == null)
+            return;
+
+        var desired = new HashSet<HexCoord>(cells ?? Enumerable.Empty<HexCoord>());
+        foreach (HexCoord c in _radiationViews.Keys.ToList())
+        {
+            if (desired.Contains(c))
+                continue;
+            Node3D view = _radiationViews[c];
+            _radiationViews.Remove(c);
+            FadeRadiationView(view);
+        }
+
+        foreach (HexCoord c in desired)
+        {
+            if (_radiationViews.ContainsKey(c))
+                continue;
+            CreateRadiationView(c);
+        }
+    }
+
+    private void CreateRadiationView(HexCoord c)
+    {
+        Vector3 world = HexLayout.ToWorld(c, TileTop + 0.035f);
+        var root = new Node3D { Name = "RadiationCell", Position = world };
+        _radiationRoot.AddChild(root);
+
+        root.AddChild(new MeshInstance3D
+        {
+            Mesh = _fillMesh,
+            MaterialOverride = _radiationMat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        });
+        root.AddChild(new MeshInstance3D
+        {
+            Mesh = _ringMesh,
+            Position = Vector3.Up * 0.003f,
+            MaterialOverride = _radiationEdgeMat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        });
+        root.AddChild(new CpuParticles3D
+        {
+            Amount = 4,
+            Lifetime = 1.9,
+            OneShot = false,
+            Emitting = true,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 0.68f,
+            Direction = Vector3.Up,
+            Spread = 32f,
+            InitialVelocityMin = 0.08f,
+            InitialVelocityMax = 0.38f,
+            Gravity = Vector3.Zero,
+            Mesh = _radiationParticleMesh,
+            MaterialOverride = _radiationParticleMat,
+            Position = Vector3.Up * 0.15f,
+        });
+
+        _radiationViews[c] = root;
+    }
+
+    private void FadeRadiationView(Node3D view)
+    {
+        if (view == null || !IsInstanceValid(view))
+            return;
+
+        var tween = CreateTween().SetParallel(true);
+        tween.TweenProperty(view, "scale", new Vector3(0.72f, 0.72f, 0.72f), 0.85f)
+            .SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.In);
+        foreach (Node child in view.GetChildren())
+        {
+            if (child is MeshInstance3D mesh)
+            {
+                tween.TweenProperty(mesh, "transparency", 1f, 0.85f);
+            }
+            else if (child is CpuParticles3D particles)
+            {
+                particles.Emitting = false;
+                tween.TweenProperty(particles, "transparency", 1f, 0.85f);
+            }
+        }
+        tween.Chain().TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(view))
+                view.QueueFree();
+        }));
+    }
+
+
 
     // ─────────────────────────── 建筑 / 单位 ───────────────────────────
 

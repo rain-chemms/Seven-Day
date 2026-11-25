@@ -14,7 +14,7 @@ public partial class CameraRig : Node3D
     private float _pitchDeg = 52f;
 
     private const float MinDistance = 6f;
-    private const float MaxDistance = 34f;
+    private const float MaxDistance = 140f;
     private const float MinPitch = 28f;
     private const float MaxPitch = 82f;
 
@@ -53,6 +53,15 @@ public partial class CameraRig : Node3D
         Apply();
     }
 
+    /// <summary>核弹演出：逐帧直接设定焦点/距离/俯仰，不经过输入。</summary>
+    public void SetCinematicFrame(Vector3 focus, float distance, float pitchDeg)
+    {
+        _focus = focus;
+        _distance = Mathf.Clamp(distance, MinDistance, MaxDistance);
+        _pitchDeg = Mathf.Clamp(pitchDeg, MinPitch, MaxPitch);
+        Apply();
+    }
+
     /// <summary>按地图范围自动取景：distance 是相机到焦点的距离，pitch 是俯角。</summary>
     public void FrameMap(float mapSpan, float extraDistance = 1.12f)
     {
@@ -81,6 +90,7 @@ public partial class CameraRig : Node3D
     private float _initPitch = 55f;
     private bool _hasInit;
     private Tween _resetTween;
+    private Tween _cineTween;
 
     /// <summary>把当前取景记成「初始视角」，之后可以一键复位。</summary>
     public void SaveInitialView()
@@ -98,6 +108,25 @@ public partial class CameraRig : Node3D
         $"init=({_initFocus} {_initDistance:F2} {_initYaw:F1} {_initPitch:F1})";
 
     /// <summary>复位到初始视角（带一点过渡，不是瞬移）。</summary>
+    /// <summary>核弹演出用：从当前机位平滑过渡到目标机位。</summary>
+    public void CinematicTo(Vector3 focus, float distance, float pitchDeg, float duration)
+    {
+        Vector3 fromFocus = _focus;
+        float fromDistance = _distance;
+        float fromPitch = _pitchDeg;
+        _cineTween?.Kill();
+        _cineTween = CreateTween();
+        _cineTween.TweenMethod(Callable.From<float>(t =>
+        {
+            _focus = fromFocus.Lerp(focus, t);
+            _distance = Mathf.Lerp(fromDistance, distance, t);
+            _pitchDeg = Mathf.Lerp(fromPitch, pitchDeg, t);
+            Apply();
+        }), 0f, 1f, duration)
+            .SetTrans(Tween.TransitionType.Cubic)
+            .SetEase(Tween.EaseType.InOut);
+    }
+
     public void ResetView(float duration = 0.35f)
     {
         if (!_hasInit)
@@ -111,6 +140,7 @@ public partial class CameraRig : Node3D
         // yaw 走最短路径，避免绕一大圈
         float yawDelta = Mathf.Wrap(_initYaw - fromYaw, -180f, 180f);
 
+        _cineTween?.Kill();
         _resetTween?.Kill();
         _resetTween = CreateTween();
         _resetTween.TweenMethod(Callable.From<float>(t =>

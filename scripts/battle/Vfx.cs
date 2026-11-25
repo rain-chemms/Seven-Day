@@ -151,12 +151,12 @@ public partial class Vfx : Node3D
     // ─────────────────────────── 爆炸 ───────────────────────────
 
     /// <summary>地面爆炸：星形闪光 + 冲击波环 + 烟雾 + 火花粒子。</summary>
-    public void Explosion(Vector3 pos, float radius = 1.0f, float delay = 0f)
+    public void Explosion(Vector3 pos, float radius = 1.0f, float delay = 0f, bool playSound = true)
     {
         if (delay > 0f)
         {
             var timer = GetTree().CreateTimer(delay);
-            timer.Timeout += () => Explosion(pos, radius);
+            timer.Timeout += () => Explosion(pos, radius, 0f, playSound);
             return;
         }
 
@@ -275,8 +275,9 @@ public partial class Vfx : Node3D
             .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
 
         Shake?.Invoke(0.16f * radius, 0.22f);
-        // 爆炸音效：半径越大越响（0.55~1.0）
-        SevenDay.Core.AudioManager.PlayExplosion(Mathf.Clamp(0.55f + radius * 0.35f, 0.5f, 1.0f));
+        // 爆炸音效：半径越大越响（0.55~1.0）；核弹爆炸单独使用专用音效。
+        if (playSound)
+            SevenDay.Core.AudioManager.PlayExplosion(Mathf.Clamp(0.55f + radius * 0.35f, 0.5f, 1.0f));
 
         KillAfter(root, 0.75f);
     }
@@ -964,6 +965,459 @@ public partial class Vfx : Node3D
 
         Shake?.Invoke(0.08f * scale, 0.18f);
         KillAfter(root, 1.0f);
+    }
+
+    // ─────────────────────────── 核弹 ───────────────────────────
+
+    private static void AddGreenExhaust(Node3D root)
+    {
+        var jet = new CpuParticles3D
+        {
+            Amount = 80,
+            Lifetime = 0.65,
+            OneShot = false,
+            Emitting = true,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 0.07f,
+            Direction = Vector3.Up,
+            Spread = 12f,
+            InitialVelocityMin = 3.2f,
+            InitialVelocityMax = 6.0f,
+            Gravity = Vector3.Zero,
+            ScaleAmountMin = 0.45f,
+            ScaleAmountMax = 1.1f,
+            Mesh = new SphereMesh { Radius = 0.045f, Height = 0.09f, RadialSegments = 5, Rings = 3 },
+            MaterialOverride = new StandardMaterial3D
+            {
+                AlbedoColor = new Color(0.35f, 1f, 0.42f, 0.85f),
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                BlendMode = BaseMaterial3D.BlendModeEnum.Add,
+            },
+            Position = new Vector3(0f, 1.08f, 0f),
+            LocalCoords = true,
+        };
+        root.AddChild(jet);
+
+        var light = new OmniLight3D
+        {
+            LightColor = new Color(0.35f, 1f, 0.45f),
+            LightEnergy = 1.3f,
+            OmniRange = 3.0f,
+            Position = new Vector3(0f, 1.1f, 0f),
+        };
+        root.AddChild(light);
+    }
+
+    private static StandardMaterial3D SolidMat(Color color) => new()
+    {
+        AlbedoColor = color,
+        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+        DisableReceiveShadows = true,
+    };
+
+    /// <summary>生成一枚从高空中落下的 3D 核弹；位置由调用方逐帧驱动。</summary>
+    public Node3D SpawnNukeBomb(Vector3 start)
+    {
+        var packed = GD.Load<PackedScene>("res://gameAsset/models/decorates/nuclearBomb/nuclear_bomb.glb");
+        if (packed != null)
+        {
+            var model = packed.Instantiate<Node3D>();
+            model.Name = "NukeBomb";
+            model.Position = new Vector3(0f, 1.4f, 0f);
+            AddGreenExhaust(model);
+
+            // 以弹头为旋转支点：下落时头部保持稳定，尾部摆动。
+            var pivot = new Node3D { Name = "NukeBombPivot", Position = start };
+            pivot.AddChild(model);
+            AddChild(pivot);
+            return pivot;
+        }
+
+        var root = new Node3D { Name = "NukeBomb", Position = start };
+        var bodyMat = SolidMat(new Color("4A4F52"));
+        var darkMat = SolidMat(new Color("252A2D"));
+        var stripeMat = SolidMat(new Color("E2B23E"));
+
+        var body = new MeshInstance3D
+        {
+            Mesh = new CapsuleMesh { Radius = 0.24f, Height = 1.0f, RadialSegments = 10, Rings = 4 },
+            MaterialOverride = bodyMat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        root.AddChild(body);
+
+        var nose = new MeshInstance3D
+        {
+            Mesh = new CylinderMesh
+            {
+                TopRadius = 0.02f,
+                BottomRadius = 0.24f,
+                Height = 0.42f,
+                RadialSegments = 10,
+            },
+            Position = new Vector3(0f, 0.68f, 0f),
+            MaterialOverride = darkMat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        root.AddChild(nose);
+
+        var stripe = new MeshInstance3D
+        {
+            Mesh = new CylinderMesh { TopRadius = 0.245f, BottomRadius = 0.245f, Height = 0.08f, RadialSegments = 10 },
+            Position = new Vector3(0f, 0.05f, 0f),
+            MaterialOverride = stripeMat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        root.AddChild(stripe);
+
+        for (int i = 0; i < 4; i++)
+        {
+            float a = i * Mathf.Pi * 0.5f;
+            var fin = new MeshInstance3D
+            {
+                Mesh = new BoxMesh { Size = new Vector3(0.52f, 0.32f, 0.035f) },
+                Position = new Vector3(Mathf.Cos(a) * 0.28f, -0.38f, Mathf.Sin(a) * 0.28f),
+                Rotation = new Vector3(0f, -a, 0f),
+                MaterialOverride = darkMat,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+            root.AddChild(fin);
+        }
+
+        var glow = new OmniLight3D
+        {
+            LightColor = new Color("FF9A3C"),
+            LightEnergy = 1.8f,
+            OmniRange = 5f,
+            Position = new Vector3(0f, -0.4f, 0f),
+        };
+        root.AddChild(glow);
+        return root;
+    }
+
+    /// <summary>程序化蘑菇云：云柱、云盖、冲击环和上升粒子。</summary>
+    public void MushroomCloud(Vector3 position, float size = 1f)
+    {
+        NuclearGreenBurst(position, size);
+        NuclearShockwave(position, size);
+        var packed = GD.Load<PackedScene>("res://gameAsset/models/decorates/mushroomCloud/mushroom_cloud.glb");
+        if (packed != null)
+        {
+            var model = packed.Instantiate<Node3D>();
+            model.Name = "MushroomCloud";
+            model.Position = position;
+            AddChild(model);
+            AnimateMushroom(model, size);
+            return;
+        }
+
+        var root = new Node3D { Name = "MushroomCloud", Position = position };
+        AddChild(root);
+
+        var cloudMat = SolidMat(new Color("6A625A"));
+        var hotMat = SolidMat(new Color("C47A48"));
+        var emberMat = SolidMat(new Color("E7A24A"));
+
+        var stem = new MeshInstance3D
+        {
+            Mesh = new CylinderMesh
+            {
+                TopRadius = 3.1f * size,
+                BottomRadius = 1.05f * size,
+                Height = 5.6f * size,
+                RadialSegments = 12,
+            },
+            Position = new Vector3(0f, 2.8f * size, 0f),
+            MaterialOverride = hotMat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        root.AddChild(stem);
+
+        var cap = new MeshInstance3D
+        {
+            Mesh = new SphereMesh { Radius = 4.3f * size, Height = 2.4f * size, RadialSegments = 16, Rings = 8 },
+            Position = new Vector3(0f, 6.0f * size, 0f),
+            Scale = new Vector3(1.2f, 0.55f, 1.2f),
+            MaterialOverride = cloudMat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        root.AddChild(cap);
+
+        for (int i = 0; i < 7; i++)
+        {
+            float a = Mathf.Tau * i / 7f;
+            var puff = new MeshInstance3D
+            {
+                Mesh = new SphereMesh { Radius = 1.45f * size, Height = 1.1f * size, RadialSegments = 10, Rings = 5 },
+                Position = new Vector3(Mathf.Cos(a) * 2.9f * size, (5.1f + (i % 3) * 0.32f) * size,
+                    Mathf.Sin(a) * 2.9f * size),
+                MaterialOverride = cloudMat,
+                CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+            root.AddChild(puff);
+        }
+
+        var embers = new CpuParticles3D
+        {
+            Amount = 48,
+            Lifetime = 2.6,
+            OneShot = true,
+            Explosiveness = 0.95f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 2.2f * size,
+            Direction = Vector3.Up,
+            Spread = 65f,
+            InitialVelocityMin = 1.5f * size,
+            InitialVelocityMax = 4.2f * size,
+            Gravity = new Vector3(0f, -1.2f, 0f),
+            ScaleAmountMin = 0.4f,
+            ScaleAmountMax = 1.0f,
+            Mesh = new SphereMesh { Radius = 0.12f * size, Height = 0.24f * size, RadialSegments = 5, Rings = 3 },
+            MaterialOverride = SolidMat(new Color("D88A3A")),
+            Position = new Vector3(0f, 1.2f * size, 0f),
+        };
+        root.AddChild(embers);
+        embers.Emitting = true;
+
+        root.Scale = new Vector3(0.15f, 0.12f, 0.15f);
+        var tween = CreateTween();
+        tween.TweenProperty(root, "scale", new Vector3(1.15f, 1.2f, 1.15f), 0.75f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        tween.TweenInterval(0.9f);
+        tween.TweenProperty(root, "scale", new Vector3(1.4f, 1.45f, 1.4f), 1.4f);
+        tween.TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(root))
+                root.QueueFree();
+        }));
+
+        Shake?.Invoke(1.2f * size, 1.35f);
+        Explosion(position + Vector3.Up * 0.35f, 3.4f * size, 0f, false);
+    }
+
+    private void AnimateMushroom(Node3D root, float size)
+    {
+        foreach (Node n in root.FindChildren("*", "MeshInstance3D", true, false))
+        {
+            if (n is MeshInstance3D mi)
+                mi.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+        }
+
+        root.Scale = new Vector3(0.12f, 0.08f, 0.12f);
+        var rise = CreateTween();
+        rise.TweenProperty(root, "scale", new Vector3(1.08f, 1.14f, 1.08f), 1.25f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        rise.Parallel().TweenProperty(root, "position", root.Position + Vector3.Up * 0.45f, 2.4f)
+            .SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+
+        // 达到最大体积后先停留一小段时间，再开始淡出。
+        var fade = CreateTween();
+        fade.TweenInterval(2.9f);
+        fade.TweenProperty(root, "scale", new Vector3(1.12f, 1.16f, 1.12f), 1.35f);
+        fade.TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(root))
+                root.QueueFree();
+        }));
+
+        // 材质 alpha 1 → 0；复制材质，避免影响共享资源。
+        var mats = new System.Collections.Generic.List<StandardMaterial3D>();
+        foreach (Node n in root.FindChildren("*", "MeshInstance3D", true, false))
+        {
+            if (n is not MeshInstance3D mi)
+                continue;
+            for (int s = 0; s < mi.Mesh.GetSurfaceCount(); s++)
+            {
+                var src = mi.Mesh.SurfaceGetMaterial(s) as StandardMaterial3D;
+                if (src == null)
+                    continue;
+                var mat = (StandardMaterial3D)src.Duplicate();
+                mi.SetSurfaceOverrideMaterial(s, mat);
+                mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+                mats.Add(mat);
+            }
+        }
+
+        var fadeMats = CreateTween();
+        fadeMats.TweenInterval(2.9f);
+        foreach (StandardMaterial3D mat in mats)
+        {
+            Color c = mat.AlbedoColor;
+            fadeMats.Parallel().TweenProperty(mat, "albedo_color",
+                new Color(c.R, c.G, c.B, 0f), 1.25f);
+        }
+
+        Shake?.Invoke(1.2f * size, 1.35f);
+        Explosion(root.Position, 3.4f * size, 0f, false);
+    }
+
+    /// <summary>核爆绿色辐射粒子：向外飞散的荧光尘与缓慢上升的辐射云。</summary>
+    public void NuclearGreenBurst(Vector3 position, float size = 1f)
+    {
+        var root = new Node3D { Name = "NuclearGreenBurst", Position = position + Vector3.Up * 0.2f };
+        AddChild(root);
+
+        var greenMat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.18f, 1f, 0.28f, 0.95f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BlendMode = BaseMaterial3D.BlendModeEnum.Add,
+            NoDepthTest = true,
+        };
+        var paleMat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(0.5f, 1f, 0.45f, 0.8f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            BlendMode = BaseMaterial3D.BlendModeEnum.Add,
+            NoDepthTest = true,
+        };
+
+        var burst = new CpuParticles3D
+        {
+            Amount = 72,
+            Lifetime = 1.5,
+            OneShot = true,
+            Explosiveness = 1f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 1.2f * size,
+            Direction = Vector3.Up,
+            Spread = 180f,
+            InitialVelocityMin = 2.5f * size,
+            InitialVelocityMax = 7.0f * size,
+            Gravity = new Vector3(0f, -1.8f, 0f),
+            ScaleAmountMin = 0.35f,
+            ScaleAmountMax = 0.9f,
+            Mesh = new SphereMesh { Radius = 0.13f * size, Height = 0.26f * size, RadialSegments = 6, Rings = 3 },
+            MaterialOverride = greenMat,
+        };
+        root.AddChild(burst);
+        burst.Emitting = true;
+
+        var motes = new CpuParticles3D
+        {
+            Amount = 46,
+            Lifetime = 2.8,
+            OneShot = true,
+            Explosiveness = 0.85f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 2.2f * size,
+            Direction = Vector3.Up,
+            Spread = 55f,
+            InitialVelocityMin = 0.4f * size,
+            InitialVelocityMax = 1.8f * size,
+            Gravity = new Vector3(0f, 0.25f, 0f),
+            ScaleAmountMin = 0.3f,
+            ScaleAmountMax = 0.75f,
+            Mesh = new SphereMesh { Radius = 0.09f * size, Height = 0.18f * size, RadialSegments = 6, Rings = 3 },
+            MaterialOverride = paleMat,
+        };
+        root.AddChild(motes);
+        motes.Emitting = true;
+
+        var plume = new CpuParticles3D
+        {
+            Amount = 54,
+            Lifetime = 2.4,
+            OneShot = true,
+            Explosiveness = 0.9f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 0.8f * size,
+            Direction = Vector3.Up,
+            Spread = 22f,
+            InitialVelocityMin = 3.0f * size,
+            InitialVelocityMax = 6.2f * size,
+            Gravity = new Vector3(0f, -0.6f, 0f),
+            ScaleAmountMin = 0.5f,
+            ScaleAmountMax = 1.2f,
+            Mesh = new SphereMesh { Radius = 0.1f * size, Height = 0.2f * size, RadialSegments = 6, Rings = 3 },
+            MaterialOverride = greenMat,
+            Position = new Vector3(0f, 0.6f, 0f),
+        };
+        root.AddChild(plume);
+        plume.Emitting = true;
+
+        var light = new OmniLight3D
+        {
+            LightColor = new Color(0.35f, 1f, 0.4f),
+            LightEnergy = 3.2f,
+            OmniRange = 8f * size,
+            Position = new Vector3(0f, 1.0f, 0f),
+        };
+        root.AddChild(light);
+        var tween = CreateTween();
+        tween.TweenProperty(light, "light_energy", 0f, 2.2f);
+        KillAfter(root, 3.4f);
+    }
+
+    /// <summary>地面上的扁平冲击波：快速扩大并淡出。</summary>
+    public void NuclearShockwave(Vector3 position, float size = 1f)
+    {
+        var root = new Node3D { Name = "NuclearShockwave", Position = position + Vector3.Up * 0.04f };
+        AddChild(root);
+
+        var mat = new StandardMaterial3D
+        {
+            AlbedoColor = new Color(1f, 0.58f, 0.2f, 0.85f),
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            NoDepthTest = true,
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+        };
+        var ring = new MeshInstance3D
+        {
+            Mesh = new TorusMesh
+            {
+                InnerRadius = 2.7f * size,
+                OuterRadius = 3.15f * size,
+                Rings = 10,
+                RingSegments = 28,
+            },
+            MaterialOverride = mat,
+            Scale = new Vector3(0.12f, 1f, 0.12f),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+        };
+        root.AddChild(ring);
+
+        var tween = CreateTween();
+        tween.SetParallel(true);
+        tween.TweenProperty(ring, "scale", new Vector3(3.5f, 1f, 3.5f), 1.15f)
+            .SetTrans(Tween.TransitionType.Quad).SetEase(Tween.EaseType.Out);
+        tween.TweenProperty(mat, "albedo_color", new Color(1f, 0.35f, 0.08f, 0f), 1.35f);
+        tween.Chain().TweenCallback(Callable.From(() =>
+        {
+            if (IsInstanceValid(root))
+                root.QueueFree();
+        }));
+
+        var dust = new CpuParticles3D
+        {
+            Amount = 36,
+            Lifetime = 1.1,
+            OneShot = true,
+            Explosiveness = 0.9f,
+            EmissionShape = CpuParticles3D.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 1.2f * size,
+            Direction = new Vector3(0f, 0.25f, 0f),
+            Spread = 80f,
+            InitialVelocityMin = 3.0f * size,
+            InitialVelocityMax = 6.5f * size,
+            Gravity = new Vector3(0f, -1.5f, 0f),
+            ScaleAmountMin = 0.4f,
+            ScaleAmountMax = 1.0f,
+            Mesh = new SphereMesh { Radius = 0.09f * size, Height = 0.18f * size, RadialSegments = 5, Rings = 3 },
+            MaterialOverride = new StandardMaterial3D
+            {
+                AlbedoColor = new Color(0.75f, 0.55f, 0.38f, 0.65f),
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            },
+        };
+        root.AddChild(dust);
+        dust.Emitting = true;
     }
 
     // ─────────────────────────── 工具 ───────────────────────────

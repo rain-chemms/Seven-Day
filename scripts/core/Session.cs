@@ -138,7 +138,8 @@ public static class Session
         foreach (string part in raw.Split(',', System.StringSplitOptions.RemoveEmptyEntries))
         {
             string id = part.Trim();
-            if (GameDatabase.Card(id) != null)
+            CardDef card = GameDatabase.Card(id);
+            if (card != null && !card.Status)
                 list.Add(id);
         }
 

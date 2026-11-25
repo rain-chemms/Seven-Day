@@ -114,6 +114,19 @@ public static class ActiveEffects
         // 后续负面卡牌示例（例如减速）：
         // if (player.MovePenalty > 0) list.Add(new ActiveEffect { Id = "slow", ... Positive = false });
 
+        if (player.SanctionTurns > 0)
+        {
+            list.Add(new ActiveEffect
+            {
+                Id = "sanction",
+                NameKey = "ability.sanction.name",
+                DescKey = "ability.sanction.desc",
+                Positive = false,
+                Value = player.SanctionTurns,
+                DurationKey = "",
+            });
+        }
+
         return list;
     }
 }
